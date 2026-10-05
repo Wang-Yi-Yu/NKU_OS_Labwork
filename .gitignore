@@ -1,0 +1,14 @@
+# make 编译产物（各 lab 的 bin/ 和 obj/）
+bin/
+obj/
+
+# make grade / GDB 调试临时文件
+.gdb.in
+.qemu.out
+
+# make tags 生成的索引文件
+cscope*
+tags
+
+# 作业打包产物
+proj*-handin.tar.gz

@@ -113,13 +113,13 @@
 
 终端截图如下：
 
-![[./images/make-qemu-results.png]]
+![](./images/make-qemu-results.png)
 
 ### 5.2  GDB 断点命中 kern_entry
 
 终端截图如下：
 
-![[./images/tmux.png]]
+![](./images/tmux.png)
 
 
 ---

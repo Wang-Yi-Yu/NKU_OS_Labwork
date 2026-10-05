@@ -158,19 +158,20 @@ TARGETS: $(TARGETS)
 
 .PHONY: qemu 
 qemu: $(UCOREIMG) $(SWAPIMG) $(SFSIMG)
-#	$(V)$(QEMU) -kernel $(UCOREIMG) -nographic
 	$(V)$(QEMU) \
 		-machine virt \
 		-nographic \
 		-bios default \
-		-device loader,file=$(UCOREIMG),addr=0x80200000
+		-kernel $(UCOREIMG)
+# 旧版 QEMU(4.x)/OpenSBI v0.6 可用 -device loader,file=$(UCOREIMG),addr=0x80200000，
+# 但 QEMU 8.2 自带 OpenSBI v1.3 fw_dynamic，需通过 -kernel 告知固件内核入口地址
 
 debug: $(UCOREIMG) $(SWAPIMG) $(SFSIMG)
 	$(V)$(QEMU) \
 		-machine virt \
 		-nographic \
 		-bios default \
-		-device loader,file=$(UCOREIMG),addr=0x80200000\
+		-kernel $(UCOREIMG) \
 		-s -S
 
 gdb:

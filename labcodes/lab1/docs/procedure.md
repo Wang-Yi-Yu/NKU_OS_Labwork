@@ -217,7 +217,7 @@ Breakpoint 2, kern_entry () at kern/init/entry.S:7      <-- 先命中的是断�
 (gdb) si                                # auipc sp, 0x3 —— la sp, bootstacktop 展开的第一条
 0x0000000080200004 in kern_entry () at kern/init/entry.S:7
 7           la sp, bootstacktop
-(gdb) si                                # addi sp, sp, 0x1000 —— la 的第二条，sp 装载完成
+(gdb) si                                # mv sp, sp —— la 的第二条，sp 装载完成
 9           tail kern_init
 (gdb) info registers pc sp
 pc             0x80200008       0x80200008 <kern_entry+8>
@@ -242,7 +242,7 @@ Symbol "bootstacktop" is at 0x80203000 in a file compiled without debugging.
 
 **结果分析**：
 
-- `la sp, bootstacktop` 是伪指令，被汇编成 `auipc sp, 0x3` + `addi sp, sp, 0x1000` 两条；执行完 `sp = 0x80203000`，与符号 `bootstacktop` 的链接地址**完全一致**；
+- `la sp, bootstacktop` 是伪指令，被汇编成 `auipc sp, 0x3` + `mv sp, sp` 两条；执行完 `sp = 0x80203000`，与符号 `bootstacktop` 的链接地址**完全一致**；
 - 内核栈区为 `bootstack(0x80201000) ~ bootstacktop(0x80203000)`，大小 KSTACKSIZE = 2 页 = 8KB，位于 `.data` 段中，且按 PGSHIFT 对齐到页边界；
 - `tail kern_init` 被汇编为一条 `j` 指令（尾调用，不压返回地址），执行后 `pc = 0x8020000a <kern_init>`，`sp` 不变——控制权干净地移交给 C 代码，`kern_init` 中第一件事就是 `memset(edata, 0, end - edata)` 清 .bss。
 

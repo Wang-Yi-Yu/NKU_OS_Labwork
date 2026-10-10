@@ -89,7 +89,7 @@
 
 ### 4.2 练习：理解内核启动中的程序入口操作
 
-> 阅读 `kern/init/entry.S` 内容代码，结合操作系统内核启动流程，说明指令 `la sp` , bootstacktop 完成了什么操作，目的是什么？ `tail kern_init` 完成了什么操作，目的是什么？
+> 阅读 `kern/init/entry.S` 内容代码，结合操作系统内核启动流程，说明指令 `la sp, bootstacktop` 完成了什么操作，目的是什么？ `tail kern_init` 完成了什么操作，目的是什么？
 
 **负责人：** 2414007-王奕瑜
 
@@ -99,12 +99,12 @@
 
 **（1）`la sp, bootstacktop` 完成的操作与目的**
 
-- **操作**：`la` 是"加载地址"伪指令，它把链接器符号 `bootstacktop` 的地址装入栈指针寄存器 `sp`。`bootstacktop` 是在 `entry.S` 的 `.data` 段中静态分配的内核栈（`bootstack: .space KSTACKSIZE`，2 页共 8KB，按 `PGSHIFT` 对齐到页边界）的高地址端。该伪指令会被汇编器展开为 `auipc sp, 0x3` + `addi sp, sp, 0x1000` 两条实际指令（我们用 GDB 单步验证过：执行后 `sp = 0x80203000`，与 `info address bootstacktop` 输出一致）。
+- **操作**：`la` 是"加载地址"伪指令，它把链接器符号 `bootstacktop` 的地址装入栈指针寄存器 `sp`。`bootstacktop` 是在 `entry.S` 的 `.data` 段中静态分配的内核栈（`bootstack: .space KSTACKSIZE`，2 页共 8KB，按 `PGSHIFT` 对齐到页边界）的高地址端。该伪指令会被汇编器展开为 `auipc sp, 0x3` + `mv sp, sp` 两条实际指令（我们用 GDB 单步验证过：执行后 `sp = 0x80203000`，与 `info address bootstacktop` 输出一致）。
 - **目的**：为 C 语言建立运行环境中最关键的一步——设置内核栈。C 语言的函数调用依赖栈来保存返回地址、局部变量和被调用者保存寄存器，没有合法的 `sp` 就无法调用任何 C 函数。OpenSBI 跳转过来时留下的 `sp` 属于固件的栈，内核不能依赖它。由于 RISC-V 的栈从高地址向低地址增长，所以把 `sp` 初始化在栈区的高地址端 `bootstacktop`. 初始时栈为空，之后每次压栈只会向低地址推进，最多用到 `bootstack` 处，不会越界。这样 `kern_init` 一进来就可以安全地执行函数调用。
 
 **（2）`tail kern_init` 完成的操作与目的**
 
-- **操作**：`tail` 表示尾调用，它被汇编为一条 `j kern_init` 跳转指令。与普通 `call` 的区别是：它只跳转、不把返回地址压栈/写入 ra，即不保留任何返回到 entry.S的路径。
+- **操作**：`tail` 表示尾调用，它被汇编为一条 `j kern_init` 跳转指令。与普通 `call` 的区别是：它只跳转、不把返回地址压栈/写入 ra，即不保留任何返回到 entry.S 的路径。
 - **目的**：把 CPU 的控制权干净、单向地移交给 C 语言编写的内核初始化函数 `kern_init`。因为 `kern_entry` 是整个内核的最底层入口，它上面没有任何调用者，`kern_init` 正常情况下永不返回（其内部最终是 `while(1)` 死循环），使用尾调用既表达了这个语义，也避免了无意义的返回地址保存（如果用 `call`，ra 会在栈上留下一个永远不会被用到的返回地址）。
 
 ---

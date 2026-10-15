@@ -1,3 +1,18 @@
+/**
+ * @file   best_fit_pmm.c
+ * @brief  Best-Fit contiguous physical memory manager (best_fit_pmm_manager).
+ *
+ * Best-Fit allocates from the smallest free block that is still large enough,
+ * which leaves the smallest remainder. The management functions and the
+ * `best_fit_pmm_manager` instance are the lab2 exercise 2 task and go at the
+ * `lab2 function2-2 YOUR CODE` marker below. basic_check() and best_fit_check()
+ * are provided by the framework and must not be modified.
+ *
+ * Contract the tests rely on (same as default_pmm.c): the names `free_list` and
+ * `nr_free` (typically macros over a static `free_area_t free_area`), a free
+ * list of block head pages carrying PG_property, and Page::property holding the
+ * block size.
+ */
 #include <pmm.h>
 #include <list.h>
 #include <best_fit_pmm.h>
@@ -5,7 +20,12 @@
 
 //lab2 function2-2 YOUR CODE
 
+// clang-format off
 // Framework tests: students must not modify basic_check or best_fit_check.
+/**
+ * @brief Basic allocate/free sanity test shared by the allocator self tests.
+ * @note Provided by the lab framework, do not modify.
+ */
 static void
 basic_check(void) {
     struct Page *p0, *p1, *p2;
@@ -57,6 +77,11 @@ basic_check(void) {
     free_page(p2);
 }
 
+/**
+ * @brief Self test of the Best-Fit allocator (free list consistency, allocation
+ *        of the best-fitting block, splitting, merging and exhaustion).
+ * @note Provided by the lab framework, do not modify.
+ */
 static void
 best_fit_check(void) {
     int score = 0, sumscore = 6;
@@ -136,3 +161,4 @@ best_fit_check(void) {
     cprintf("grading: %d / %d points\n", score, sumscore);
     #endif
 }
+// clang-format on

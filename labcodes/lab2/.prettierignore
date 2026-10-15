@@ -1,0 +1,6 @@
+# Build output
+bin/
+obj/
+
+# Private notes (already ignored by docs/private/.gitignore)
+docs/private/

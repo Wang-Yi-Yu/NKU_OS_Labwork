@@ -222,7 +222,9 @@ osimg=$(make_print ucoreimg)
 swapimg=$(make_print swapimg)
 
 ## qemu-options
-qemuopts="-machine virt -nographic -bios default -device loader,file=bin/ucore.img,addr=0x80200000"
+## QEMU 8.x (OpenSBI v1.3 fw_dynamic) must be given the kernel via -kernel;
+## the old "-device loader,...,addr=0x80200000" no longer starts the kernel
+qemuopts="-machine virt -nographic -bios default -kernel bin/ucore.img"
 
 ## the lab2 kernel only while(1) after entering kernel mode and never calls readline,
 ## so no break function is needed and brkfun stays empty

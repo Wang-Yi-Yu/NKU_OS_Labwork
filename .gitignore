@@ -12,3 +12,6 @@ tags
 
 # 作业打包产物
 proj*-handin.tar.gz
+
+# WSL/Windows download marker files (xxx:Zone.Identifier)
+*:Zone.Identifier

@@ -114,12 +114,17 @@ static uint64_t fdt64_to_cpu(uint64_t x) {
  *         or an unrecognised token was encountered.
  *
  * @note Known limitations:
+ *
  *       - #address-cells and #size-cells are not handled; reg is assumed to consist of two 64-bit values;
+ *
  *       - only the first reg range of the first memory node is used; other ranges are ignored;
+ *
  *       - in_memory_node is cleared by any END_NODE, so after a child node of a memory node ends,
  *         later reg properties of that memory node are no longer recognised;
+ *
  *       - only the first 6 characters of the node name are compared, so names such as "memory-xxx"
  *         are also treated as memory nodes;
+ *
  *       - totalsize and the offsets are not checked against the blob bounds; the DTB is assumed valid.
  * @warning reg data is read through a uint64_t pointer, but property data is only guaranteed to be
  *          4-byte aligned. On platforms that require naturally aligned accesses this may fault.

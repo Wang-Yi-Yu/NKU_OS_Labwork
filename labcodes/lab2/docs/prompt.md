@@ -80,6 +80,77 @@
 
 ### 2.1 2414007-王奕瑜
 
+#### 2.1.1 实现物理内存探测与页描述符初始化功能
+
+````markdown
+[PROMPT]
+**任务**：修改`kern/mm/pmm.c`，在标有`//lab2 function1 YOUR CODE`的位置实现`static void page_init(void)`，完成物理内存探测与`Page`描述符初始化：根据设备树提供的物理内存信息建立描述符数组，并把排除 OpenSBI、内核镜像和描述符数组占用空间后的完整空闲页面交给当前`pmm_manager`管理。
+
+**操作要求**：你必须在项目中修改实际文件，保留现有代码，只在标记位置补全，不要改动`pmm_init()`等其他函数。将标记注释中的`YOUR CODE`替换为学号`2414007`（保留`lab2 function1`）。为新增代码添加英文 Doxygen 注释，`@author`写`Yiyu Wang(2414007)`。
+
+**输出要求**：直接进行文件操作，使用下面[RELY]、[GUARANTEE]、[SPECIFICATION]部分的信息，以工程真实代码为准，不要引入无关功能。
+
+[RELY]
+地址与页面宏：
+
+- `PGSIZE`（4096）、`PGSHIFT`（12）、`PPN(addr)`（`addr >> PGSHIFT`）：`kern/mm/mmu.h`
+- `ROUNDUP(a, n)`、`ROUNDDOWN(a, n)`：`libs/defs.h`，结果类型与`a`相同
+- `PHYSICAL_MEMORY_OFFSET`（`0xFFFFFFFF40000000`，内核线性映射的虚实偏移）、`PHYSICAL_MEMORY_END`（`0x88000000`，内核管理的物理内存上界）：`kern/mm/memlayout.h`
+- `DRAM_BASE`（`0x80000000`）：`libs/riscv.h`
+- `PADDR(kva)`：`kern/mm/pmm.h`，把内核虚拟地址转换为物理地址（`kva - va_pa_offset`），`kva`小于`KERNBASE`时 panic
+
+全局变量（`kern/mm/pmm.c`）：
+
+- `struct Page *pages;`——`Page`描述符数组的虚拟起始地址
+- `size_t npage;`——内核可管理的物理页号上界（不含）
+- `uint64_t va_pa_offset;`——虚拟地址与物理地址之差
+- `const size_t nbase;`——DRAM 起始位置对应的物理页号，`DRAM_BASE / PGSIZE`
+
+页描述符与状态宏（`kern/mm/memlayout.h`）：
+
+- `struct Page { int ref; uint64_t flags; unsigned int property; list_entry_t page_link; };`
+- `SetPageReserved(page)`、`PageReserved(page)`：设置/测试`PG_reserved`位；该位为 1 表示页面被内核占用，不能参与分配
+
+已有函数：
+
+- `uint64_t get_memory_base(void)`、`uint64_t get_memory_size(void)`（`kern/driver/dtb.h`）：返回设备树中的内存起始物理地址和字节数；设备树无效时返回 0
+- `panic(fmt, ...)`（`kern/debug/assert.h`中的宏，输出信息并终止内核）、`int cprintf(const char *fmt, ...)`
+- `void *memset(void *s, char c, size_t n)`（`libs/string.h`）
+- `static void init_memmap(struct Page *base, size_t n)`（`kern/mm/pmm.c`）：把`base`开始的`n`个页面作为初始空闲区交给当前`pmm_manager`，要求这些页面此时都带有`PG_reserved`
+- `static inline struct Page *pa2page(uintptr_t pa)`（`kern/mm/pmm.h`）：返回`&pages[PPN(pa) - nbase]`，`PPN(pa) >= npage`时 panic
+- 链接符号`extern char end[];`：内核镜像末尾的**虚拟**地址
+
+物理内存布局（默认 QEMU，DRAM 为`[0x80000000, 0x88000000)`）：
+
+- `[0x80000000, 0x80200000)`被 OpenSBI 占用
+- `[0x80200000, end 对应的物理地址)`被内核代码和数据占用
+- `Page`数组紧接在内核镜像之后，按页对齐，覆盖物理页号区间`[nbase, npage)`，自身也占用物理内存
+- 虚拟地址、物理地址、物理页号和`Page`描述符地址是四种不同的量，不能混用
+
+[GUARANTEE]
+必须实现：
+
+```c
+static void page_init(void);  // kern/mm/pmm.c
+```
+
+`page_init()`不接收参数，也不返回结果，由`pmm_init()`调用。允许新增辅助函数，但必须是`static`的，只在`pmm.c`内部使用，不得改变其他公开接口。
+
+[SPECIFICATION]
+**page_init**
+
+- Pre-Condition：`init_pmm_manager()`已经执行，`pmm_manager`已指向某个分配器并完成其`init()`；`dtb_init()`已经执行；内核已通过启动页表在线性映射下运行。
+- Post-Condition：`va_pa_offset`、`npage`和`pages`被正确设置；已向控制台输出设备树探测到的物理内存范围；`[nbase, npage)`内的每个页面都有描述符，内核镜像和描述符数组所在的页面保持保留状态且不会进入空闲区；描述符数组之后所有完整的空闲页面已通过`init_memmap()`注册给当前`pmm_manager`。
+- Case 1：设备树没有提供有效的物理内存信息。此时无法确定可管理的范围，必须终止初始化，不得继续建立描述符。
+- Case 2：设备树信息有效。依次完成：设置虚实偏移；输出探测到的内存范围；根据设备树内存末端和内核可管理的上界确定`npage`；把描述符数组放在内核镜像之后的第一个页边界，并使所有描述符在空闲区建立之前处于保留状态；换算出描述符数组末尾的物理地址，其向上按页对齐作为空闲区起点，设备树内存末端向下按页对齐作为空闲区终点，再把两者之间的页面注册为初始空闲区。
+- Case 3：描述符数组之后已没有可用的完整页面（空闲区起点不小于终点）。此时不得调用`init_memmap()`。
+- Requirements：
+  - 不足一页的内存末尾不能交给分配器。
+  - 描述符数组所在内存的初始内容不可假定为零，各描述符的状态必须由本函数显式确定。
+  - 比较或传递地址前，必须明确它是虚拟地址还是物理地址，并做相应的转换。
+  - 不得修改`best_fit_pmm.c`等其他文件。
+````
+
 ### 2.2 2414015-鲁昕宁
 
 ### 2.3 2411622-张雨函

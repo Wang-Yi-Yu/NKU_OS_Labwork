@@ -154,3 +154,104 @@ static void page_init(void);  // kern/mm/pmm.c
 ### 2.2 2414015-鲁昕宁
 
 ### 2.3 2411622-张雨函
+
+#### 2.3.1 实现 Best-Fit 连续物理内存分配算法
+
+````markdown
+[PROMPT]
+完成 `kern/mm/best_fit_pmm.c` 中的 **Best-Fit 连续物理内存分配器**，并在 `kern/mm/pmm.c` 中将当前物理内存管理器切换为 `best_fit_pmm_manager`。
+
+Best-Fit 需要在现有 First-Fit 管理框架基础上，实现：
+
+> 从所有能够满足请求的空闲块中，选择大小最小的空闲块进行分配。
+
+同时需要正确维护：
+
+- 空闲链表；
+- 空闲页数量；
+- 页面分割；
+- 相邻空闲块合并。
+
+---
+
+[RELY]
+
+可以依赖现有工程中的：
+
+- `kern/mm/default_pmm.c` 中完整的 First-Fit 实现；
+- `pmm.h` 中的 `struct pmm_manager`；
+- `struct Page`、`free_area_t`、`free_list`、`nr_free`；
+- `property` 和 `PG_property` 相关页面状态；
+- `list_init()`、`list_add()`、`list_del()`、`list_next()`、`list_prev()` 等链表操作；
+- 已经提供的 `basic_check()` 和 `best_fit_check()` 测试函数。
+
+不得修改：
+
+- `basic_check()`
+- `best_fit_check()`
+
+---
+
+[GUARANTEE]
+
+必须实现并注册：
+
+- Best-Fit 管理器初始化；
+- 空闲物理页区域初始化；
+- Best-Fit 连续物理页分配；
+- 连续物理页释放；
+- 空闲页数量查询；
+- `best_fit_pmm_manager`。
+
+同时修改 `init_pmm_manager()`，使：
+
+```c
+pmm_manager = &best_fit_pmm_manager;
+```
+
+最终实现必须能够通过现有的：
+
+- `basic_check()`
+- `best_fit_check()`
+
+---
+
+[SPECIFICATION]
+
+Best-Fit 分配器需要正确处理以下场景：
+
+- **空闲区初始化**  
+  使用链表维护连续空闲块，每个空闲块由首页记录 `property`，并正确维护 `nr_free`。
+
+- **Best-Fit 分配**  
+  申请连续 `n` 页时，遍历所有满足 `property >= n` 的空闲块，选择其中大小最小的块，而不是选择第一个满足条件的块。
+
+- **空闲块分割**  
+  当选中的空闲块大于请求大小时，从中分配 `n` 页，并将剩余部分重新作为空闲块加入管理。
+
+- **页面释放**  
+  释放连续页面后，将其重新加入空闲链表，并正确恢复 `property` 和页面状态。
+
+- **相邻块合并**  
+  释放后的空闲块如果与前一个或后一个空闲块在物理地址上连续，应进行合并，避免形成不必要的外部碎片。
+
+- **空闲页计数**  
+  初始化、分配和释放过程中均需正确维护 `nr_free`。
+
+- **分配失败**  
+  当不存在能够满足请求的连续空闲块时返回 `NULL`。
+
+---
+实现成功时应满足
+
+- `free_list` 能正确表示当前所有连续空闲块；
+- `nr_free` 与实际空闲物理页数量一致；
+- 分配后的剩余空闲区域能够继续被正常管理；
+- 释放页面能够与前后相邻空闲块正确合并；
+- 当同时存在多个可满足请求的空闲块时，始终选择最小的那个；
+- `best_fit_pmm_manager` 正确注册所有管理函数；
+- 系统实际使用 Best-Fit，而不是原来的 First-Fit。
+
+特别需要满足 `best_fit_check()` 中的 Best-Fit 行为：
+
+> 当同时存在一个 2 页空闲块和一个 1 页空闲块，并申请 1 页时，应选择 1 页空闲块，而不是链表中更早出现的 2 页空闲块。

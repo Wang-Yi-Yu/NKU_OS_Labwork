@@ -153,6 +153,114 @@ static void page_init(void);  // kern/mm/pmm.c
 
 ### 2.2 2414015-鲁昕宁
 
+#### 2.2.1 实现任意大小的内存单元 SLUB 分配算法
+
+````markdown
+[PROMPT]
+**任务**：新增 `kern/mm/slub.h` 与 `kern/mm/slub.c`，实现一个简化的 SLUB 对象分配器，并在 `kern/init/init.c` 的 `pmm_init()` 之后调用它的初始化。SLUB 分为两层：第一层按页取得和归还内存，第二层在页内按对象大小切分、分配和释放。第一层不重新实现，只调用已经接入内核的页分配接口；当前 `pmm_manager` 是 First-Fit、Best-Fit 还是 Buddy System，由 `init_pmm_manager()` 的既有选择决定。本任务的重点是第二层。
+
+**操作要求**：你必须在项目中修改和新增实际文件。保留 First-Fit、Best-Fit、Buddy System 及其 `pmm_manager` 实现，不要修改这些分配器，也不要在 SLUB 中引用它们的符号或判断当前用的是哪一种。`kern/mm` 下的 `.c` 会被 Makefile 自动编译，不要为了加入 `slub.c` 去改编译规则。为新增的公开接口添加英文 Doxygen 注释，`@author` 写 `鲁昕宁(2414015)`。
+
+**输出要求**：直接进行文件操作，使用下面 [RELY]、[GUARANTEE]、[SPECIFICATION] 部分的信息，以工程真实代码为准。只实现对象分配所需的尺寸类、页内空闲槽和整页归还，不要实现每 CPU 缓存、锁或调试统计。
+
+[RELY]
+页分配只使用以下已有接口（`kern/mm/pmm.h`）。它们转发到当前 `pmm_manager`，因此更换 `init_pmm_manager()` 中的管理器后，SLUB 的页来源自动切换：
+
+- `struct Page *alloc_pages(size_t n)`：分配 `n` 个连续物理页；无法满足时返回 `NULL`
+- `void free_pages(struct Page *base, size_t n)`：释放从 `base` 开始的 `n` 个连续物理页
+- `alloc_page()`、`free_page(page)`：上述二者在 `n == 1` 时的写法
+
+页与地址（`kern/mm/pmm.h`、`kern/mm/mmu.h`）：
+
+- `PGSIZE` 为 4096
+- `page2pa(page)` 返回该页的物理地址
+- `va_pa_offset` 是内核线性映射的虚实偏移；页的内核虚拟地址是 `page2pa(page) + va_pa_offset`
+- `struct Page` 的 `property`、`flags`、`page_link` 属于页分配器。页在被 `alloc_pages()` 分配出去期间，SLUB 不得把这些字段当作自己的空闲链表或尺寸记录
+
+[GUARANTEE]
+必须提供：
+
+```c
+void slub_init(void);
+void *slub_alloc(size_t size);
+void slub_free(void *obj);
+```
+
+`slub_alloc()` 按字节数分配一个对象，返回其内核虚拟地址。`slub_free()` 释放该地址；调用者不再次传入大小，分配器自己要能判断这块内存属于哪个尺寸类，或它本身就是一整段按页分配的内存。允许在 `slub.c` 内新增 `static` 辅助函数，不得把它们放进公开头文件，也不得改变 `pmm_manager` 的接口。
+
+[SPECIFICATION]
+**slub_init**
+
+- Pre-Condition：`pmm_init()` 已完成，`alloc_pages()` / `free_pages()` 可用。
+- Post-Condition：各尺寸类的缓存为空，尚未向页分配器领取页面。重复初始化不得泄漏已经领出的页。
+
+**slub_alloc**
+
+- Pre-Condition：已经调用过 `slub_init()`。`size` 是本次要分配的字节数。
+- Post-Condition：成功时返回一块至少 `size` 字节、按该对象尺寸对齐的内核虚拟地址，且不与任何尚未释放的对象重叠。失败时返回 `NULL`，已有对象和页分配器的空闲页数量都保持不变。
+- Case 1：`size` 为 0。返回 `NULL`。
+- Case 2：`size` 不超过一个页内对象的最大尺寸类。将其向上归入最小的、能装下它的尺寸类。尺寸类是 2 的幂，最小 16 字节，最大不超过 `PGSIZE` 去掉每页管理信息后还能至少放下一个对象的大小。优先从该尺寸类已有的、尚有空槽的页中取一个槽；没有这样的页时，用 `alloc_pages()` 领取新页并切成该尺寸的槽，再取出一个。页内管理信息和空闲槽链表都放在 SLUB 自己的数据或该页内容中。
+- Case 3：`size` 大于页内对象的最大尺寸类。直接领取能够覆盖 `size` 的最少连续页数，把起始内核虚拟地址作为对象返回，不再切分。页分配器无法满足时返回 `NULL`。
+- Requirements：同一次运行里，对象级分配结果不得依赖当前页分配器是 First-Fit、Best-Fit 还是 Buddy System。三种管理器只影响页从哪里来，不影响尺寸类、切槽和释放规则。
+
+**slub_free**
+
+- Pre-Condition：`obj` 为 `NULL`，或者是仍未释放的、由 `slub_alloc()` 返回的地址。
+- Post-Condition：对应对象可以被再次分配。一个页内对象全部释放后，该页通过 `free_pages()` 归还页分配器；按整页分配的对象则按当初领取的页数归还。不得归还仍含有未释放对象的页，也不得把同一页归还两次。
+- Case 1：`obj` 为 `NULL`。不执行任何操作。
+- Case 2：`obj` 是页内对象。槽回到该页所属尺寸类的空闲槽中。该页上还有其他未释放对象时，页继续留在 SLUB。该页上已经没有未释放对象时，整页归还。
+- Case 3：`obj` 是大于页内尺寸类、当初按连续页分配的对象。按分配时的页数归还。
+````
+
+#### 2.2.2 设计并实现 SLUB 分配算法的测试方案
+
+````markdown
+[PROMPT]
+**任务**：为已实现的 SLUB 增加自测函数 `slub_check()`，在 `kern/init/init.c` 里于 `slub_init()` 之后调用。测试只通过 `slub_alloc()`、`slub_free()` 和空闲页计数观察行为，用来确认不同大小对象的分配、写入、释放和页归还。
+
+**操作要求**：你必须在项目中修改实际文件。测试代码放在 `kern/mm/slub.c`，并在 `kern/mm/slub.h` 声明 `slub_check()`。不要修改 First-Fit、Best-Fit、Buddy System，也不要在测试里判断当前是哪一种页分配器。失败时用 `assert` 停住；全部通过时用 `cprintf` 打印 `slub_check() succeeded`。为 `slub_check()` 添加英文 Doxygen 注释，`@author` 写 `鲁昕宁(2414015)`。
+
+**输出要求**：直接进行文件操作，使用下面 [RELY]、[GUARANTEE]、[SPECIFICATION] 部分的信息。测试结束前释放本次分配的全部分配对象，使空闲页数量回到进入测试时的值。
+
+[RELY]
+SLUB 接口（`kern/mm/slub.h`，行为以 2.2.1 的规格为准）：
+
+- `void slub_init(void)`
+- `void *slub_alloc(size_t size)`：按字节数分配，返回内核虚拟地址；失败或 `size` 为 0 时返回 `NULL`
+- `void slub_free(void *obj)`：释放对象；`obj` 为 `NULL` 时不操作。调用者不再传入大小
+
+页计数与断言：
+
+- `size_t nr_free_pages(void)`（`kern/mm/pmm.h`）：当前页分配器的空闲页数。SLUB 领页时它减少，空页归还后它增加
+- `PGSIZE` 为 4096
+- `assert(x)`（`kern/debug/assert.h`）：条件为假时内核 panic
+- `int cprintf(const char *fmt, ...)`
+- 页内尺寸类是 2 的幂，最小 16 字节；大于页内最大尺寸类的请求按连续整页分配
+
+[GUARANTEE]
+必须提供并在 `slub_init()` 之后调用：
+
+```c
+void slub_check(void);
+```
+
+允许在 `slub.c` 内新增 `static` 辅助函数。不得改变 `slub_alloc()`、`slub_free()` 的公开语义，也不得改变 `pmm_manager`。
+
+[SPECIFICATION]
+**slub_check**
+
+- Pre-Condition：`slub_init()` 已经执行，页分配器可用。
+- Post-Condition：下列情况全部满足，否则 `assert` 失败。函数返回时空闲页数量与进入函数时相同，并已打印成功信息。
+- Case 1：`slub_alloc(0)` 返回 `NULL`，空闲页数量不变。`slub_free(NULL)` 后空闲页数量仍不变。
+- Case 2：对 16、32、64、128、256、512、1024、2048 字节各分配一个对象。每个地址非空，并按该尺寸对齐；在各自请求的字节范围内写入互不相同的内容后，读回仍然正确，且这些区域互不重叠。
+- Case 3：再分配一个 16 字节对象。它与 Case 2 中的 16 字节对象位于同一页。此时释放其中一个，空闲页数量不变；两个都释放后，这一页被归还，空闲页数量比两者都存在时多 1。Case 2 中其余尺寸的对象内容保持不变。
+- Case 4：16 字节与 32 字节各保留一个对象时，空闲页数量比两者都不存在时少 2。只释放 16 字节对象后少 1；再释放 32 字节对象后回到两者都不存在时的数量。
+- Case 5：先分配两个 16 字节对象，再释放其中一个。随后再分配一个 16 字节对象。新对象与仍存活的对象不重叠，且这次分配不减少空闲页数量。
+- Case 6：分配 `PGSIZE + 1` 字节。空闲页数量减少 2，这块区域可按请求的长度写入并读回。释放后空闲页数量增加 2。
+- Case 7：连续分配 `PGSIZE + 1` 字节，直到返回 `NULL`。此前成功的对象内容仍然可读，且这次失败不改变空闲页数量。释放全部成功的对象后，空闲页数量回到本情况开始时的值。
+- Requirements：断言只依据对象地址、对象内容和 `nr_free_pages()` 的变化，不依据某一种页分配算法选出的具体页号。
+````
+
 ### 2.3 2411622-张雨函
 
 #### 2.3.1 实现 Best-Fit 连续物理内存分配算法

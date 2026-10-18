@@ -251,69 +251,83 @@ static void page_init(void);  // kern/mm/pmm.c
 
 ## 五、测试与验证
 
-### 5.1 物理内存探测与页描述符初始化功能测试
+### 5.1 物理内存探测、页描述符初始化与 Best-Fit 分配器综合测试
 
 **负责人：** 2414007-王奕瑜
 
->需要等待 best-fit 实现后进行人工验证
+#### 5.1.1 测试目的
 
-**测试命令与结果：**
+`make grade`使用的测试文件`tools/test_lab2.c`同时覆盖了本实验的两项核心功能，因此本节是对它们的综合验证：
 
-1. 编译并运行内核，观察启动输出：
+- **Test 1（Page Init）：** 验证`page_init()`是否正确探测物理内存范围、建立`Page`描述符数组并划分出空闲区；
+- **Test 2（Best-Fit）：** 验证在该空闲区之上，Best-Fit 分配器的分配、释放与合并是否符合"选择最小的足够大空闲块"的策略。
 
-   ```bash
-   make qemu
-   ```
+同时通过`make qemu`观察完整的启动输出，人工核对内存探测结果与内核自检结果。
 
-   启动输出中与本功能相关的部分如下：
+#### 5.1.2 测试环境
 
-   ```text
-   DTB init completed
-   (THU.CST) os is loading ...
-   Special kernel symbols:
-     entry  0xffffffffc02000d6 (virtual)
-     etext  0xffffffffc020198e (virtual)
-     edata  0xffffffffc0206018 (virtual)
-     end    0xffffffffc0206078 (virtual)
-   Kernel executable memory footprint: 24KB
-   memory management: default_pmm_manager
-   physical memory map:
-     memory: 0x0000000008000000, [0x0000000080000000, 0x0000000087ffffff].
-   check_alloc_page() succeeded!
-   satp virtual address: 0xffffffffc0205000
-   satp physical address: 0x0000000080205000
-   ```
+- 运行环境：QEMU（`qemu-system-riscv64`）+ OpenSBI，默认 128MB 内存；
+- 分配器：`best_fit_pmm_manager`（`init_pmm_manager()`中选用）；
+- 代码状态：`page_init()`与 Best-Fit 均已实现，在完整仓库中直接构建。
 
-   > 截图位置 1：`make qemu` 的启动输出，需包含`Physical Memory from DTB`、`physical memory map`、`check_alloc_page() succeeded!`几行。
+#### 5.1.3 测试步骤与结果
 
-   ![make qemu 输出](./images/5.1_make_qemu.png)
+**步骤 1：编译并运行内核，观察启动输出**
 
-2. 运行本实验提供的评分测试：
+```bash
+make qemu
+```
 
-   ```bash
-   make grade
-   ```
+与本功能相关的输出如下（QEMU 通过`Ctrl+A` 再按`X`退出）：
 
-   与本功能相关的结果为：
+```text
+DTB init completed
+(THU.CST) os is loading ...
+Special kernel symbols:
+  entry  0xffffffffc02000d6 (virtual)
+  etext  0xffffffffc0201654 (virtual)
+  edata  0xffffffffc0205018 (virtual)
+  end    0xffffffffc0205078 (virtual)
+Kernel executable memory footprint: 20KB
+memory management: best_fit_pmm_manager
+physical memory map:
+  memory: 0x0000000008000000, [0x0000000080000000, 0x0000000087ffffff].
+check_alloc_page() succeeded!
+satp virtual address: 0xffffffffc0204000
+satp physical address: 0x0000000080204000
+```
 
-   ```text
-   -check page init:                          OK
-   ```
+![make qemu 输出](./images/5.1_make_qemu.png)
 
-   对应内核输出了`[Test 1] Page Init: PASS`。
+**步骤 2：运行评分测试**
 
-   > 截图位置 2：`make grade` 的输出，需包含`check page init: OK`一行。
+```bash
+make grade
+```
 
-   ![make grade 输出](./images/5.1_make_grade.png)
+该命令把测试文件注入内核后重新编译并运行，输出如下：
 
-> 说明：`make grade`的第二项`check best fit`属于 Best-Fit 任务，不在本节的测试范围内；上面的数值（如`end`、`satp`地址）来自一次实际运行，内核代码大小变化后会略有不同，这是正常的。
+```text
+  -check page init:                          OK
+  -check best fit:                           OK
+Total Score: 20/20
+```
 
-**结果分析：**
+![make grade 输出](./images/5.1_make_grade.png)
 
-- **内存范围探测正确。** `Physical Memory from DTB`与`physical memory map`两处输出一致：DRAM 起始地址为`0x80000000`，大小为`0x08000000`（128MB），末端为`0x87ffffff`，与 QEMU 默认配置相符。这说明`page_init()`通过`get_memory_base()`/`get_memory_size()`读到了`dtb_init()`保存的结果，并正确计算了范围末端`mem_base + mem_size - 1`。
-- **空闲区正确建立。** `check_alloc_page() succeeded!`说明`page_init()`通过`init_memmap()`交给`pmm_manager`的空闲区是自洽的：分配器的自检依赖空闲链表与`nr_free`，如果描述符没有初始化为保留状态、空闲区起点落入内核镜像或描述符数组，或者对齐处理有误，自检中的断言就会失败。
-- **布局符合预期。** 以这次运行为例，`end = 0xffffffffc0206078`，向上按页对齐后`pages`位于虚拟地址`0xffffffffc0207000`（物理地址`0x80207000`）。`npage - nbase = 0x88000 - 0x80000 = 32768`个页面，每个`struct Page`占 40 字节，描述符数组共 `0x140000` 字节（1280KB），其末尾为物理地址`0x80347000`，恰好已按页对齐，因此空闲区为`[0x80347000, 0x88000000)`，共 31929 页。内核镜像和描述符数组所在页面保持保留，没有进入空闲链表。
-- **测试覆盖了关键约束。** `[Test 1] Page Init: PASS`表示：`va_pa_offset`等于`PHYSICAL_MEMORY_OFFSET`、`npage`等于设备树内存末端的物理页号、`pages`页对齐并位于`end`之后、空闲页数大于 0 且不超过总页数、内核尾页和描述符数组所在页保持保留，以及`page2pa()`与`pa2page()`互逆，与`page_init()`的设计目标一一对应。
+#### 5.1.4 结果分析
+
+1. **内存范围探测正确。** `Physical Memory from DTB`与`physical memory map`两处输出一致：DRAM 起始地址为`0x80000000`，大小为`0x08000000`（128MB），末端为`0x87ffffff`，与 QEMU 默认配置相符。这说明`page_init()`通过`get_memory_base()`/`get_memory_size()`读到了`dtb_init()`保存的结果，并正确计算了范围末端。
+2. **内存布局与手工计算一致。** 以本次运行为例：
+   - `end = 0xffffffffc0205078`，向上按页对齐后`pages`位于虚拟地址`0xffffffffc0206000`，对应物理地址`0x80206000`；
+   - `npage - nbase = 0x88000 - 0x80000 = 32768`个页面，每个`struct Page`占 40 字节，描述符数组共`0x140000`字节（1280KB），末尾为物理地址`0x80346000`，已按页对齐；
+   - 因此空闲区为`[0x80346000, 0x88000000)`，共`0x7cba = 31930`页，约 124.7MB。
+   - 内核镜像和描述符数组所在页面保持保留，没有进入空闲链表。
+3. **Test 1 通过，说明初始化满足设计约束。** `[Test 1] Page Init: PASS`表示：`va_pa_offset`等于`PHYSICAL_MEMORY_OFFSET`、`npage`等于设备树内存末端的物理页号、`pages`页对齐并位于`end`之后、空闲页数大于 0 且不超过总页数、内核尾页和描述符数组所在页保持保留，以及`page2pa()`与`pa2page()`互逆。
+4. **Test 2 通过，说明 Best-Fit 在该空闲区上工作正常。** `memory management: best_fit_pmm_manager`表明当前使用的是 Best-Fit；`check_alloc_page() succeeded!`说明其内置自检（`basic_check()`与`best_fit_check()`）通过；`check best fit: OK`进一步验证了 Best-Fit 的选择策略。Test 2 依赖`page_init()`建立的描述符与空闲链表，它的通过也从侧面印证了初始化的正确性。
+5. **综合结论。** 两项评分均为 OK，总分 20/20，物理内存探测、页描述符初始化与 Best-Fit 分配器三者能够协同工作，本部分功能符合预期。
+
+> 注：地址和空闲页数等具体数值会随内核镜像大小变化，代码修改后重新运行会略有不同，属于正常现象。
 
 ---
 

@@ -9,6 +9,13 @@
 #include <dtb.h>
 #include <test_lab2.h>
 
+/**
+ * @brief Test 1: check the state left behind by page_init().
+ *
+ * Verifies va_pa_offset, the memory range reported by the device tree, and the
+ * layout of the Page descriptors and the free area. Prints one PASS or FAIL
+ * line with the first failing reason.
+ */
 void
 test_page_init(void)
 {
@@ -101,6 +108,12 @@ test_page_init(void)
     cprintf("[Test 1] Page Init: PASS\n");
 }
 
+/**
+ * @brief Test 2: check that Best-Fit is the active physical memory manager.
+ *
+ * Prints PASS if pmm_manager is best_fit_pmm_manager, otherwise FAIL with the
+ * name of the manager in use.
+ */
 void
 test_best_fit(void)
 {

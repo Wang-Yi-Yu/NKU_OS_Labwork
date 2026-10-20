@@ -39,10 +39,12 @@ void print_kerninfo(void) {
  *
  * Clears the BSS segment, reads the physical memory layout from the device tree
  * (dtb_init), initialises the console, prints the kernel info, initialises
- * physical memory management (pmm_init) and then idles forever.
+ * physical memory management (pmm_init), runs the SLUB allocator self test
+ * (slub_init, slub_check) and then idles forever.
  *
  * @note The BSS must be cleared before dtb_init(), because dtb_init() stores its
  *       result in BSS variables.
+ * @return never returns
  */
 int kern_init(void) {
     extern char edata[], end[];

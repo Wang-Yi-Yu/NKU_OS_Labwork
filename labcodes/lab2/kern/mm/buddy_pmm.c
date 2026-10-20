@@ -84,7 +84,7 @@ static unsigned int pages_to_order(size_t n) {
  * @brief Make a page the head of a free block of the given order and put it on the free list.
  * @param p     first page of the block
  * @param order block order
- * @note Does not touch ::buddy_area.nr_free.
+ * @note Does not touch `buddy_area.nr_free`.
  */
 static void block_insert(struct Page *p, unsigned int order) {
     p->property = order_pages(order);
@@ -95,7 +95,7 @@ static void block_insert(struct Page *p, unsigned int order) {
 /**
  * @brief Take a free block off its free list; its head page is no longer a free-block head.
  * @param p first page of the block
- * @note Does not touch ::buddy_area.nr_free.
+ * @note Does not touch `buddy_area.nr_free`.
  */
 static void block_remove(struct Page *p) {
     list_del(&p->page_link);
@@ -111,7 +111,7 @@ static void block_remove(struct Page *p) {
  * In every round the buddy `ppn ^ 2^order` is looked up. It can be merged only
  * if it lies inside the managed zone and is the head of a free block of exactly
  * the same order; the merged block starts at the lower of the two.
- * @note Does not touch ::buddy_area.nr_free.
+ * @note Does not touch `buddy_area.nr_free`.
  */
 static void block_free(struct Page *p, unsigned int order) {
     while (order < BUDDY_MAX_ORDER) {
@@ -265,6 +265,7 @@ static size_t buddy_nr_free_pages(void) {
 // The self test is in the second half of this file.
 static void buddy_check(void);
 
+/** @brief The Buddy System manager instance, selected by `make PMM=buddy` in init_pmm_manager() (pmm.c). */
 const struct pmm_manager buddy_pmm_manager = {
     .name = "buddy_pmm_manager",
     .init = buddy_init,
@@ -300,7 +301,7 @@ static size_t count_blocks(unsigned int order) {
  * is not reserved, Page::property equals 2^k, the page number is a multiple of
  * 2^k, the block lies inside the zone, and its buddy is not a free block of the
  * same order (otherwise the allocator failed to merge). Finally the block sizes
- * must add up to ::buddy_area.nr_free.
+ * must add up to `buddy_area.nr_free`.
  */
 static void verify_lists(void) {
     size_t total = 0;

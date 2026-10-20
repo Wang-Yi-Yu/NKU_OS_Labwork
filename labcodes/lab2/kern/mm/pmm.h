@@ -170,6 +170,7 @@ static inline uintptr_t page2pa(struct Page *page) {
 /**
  * @brief Read the reference count of a page.
  * @param page page descriptor
+ * @return current reference count
  */
 static inline int page_ref(struct Page *page) {
     return page->ref;
@@ -228,7 +229,9 @@ static inline void flush_tlb() {
     asm volatile("sfence.vm");
 }
 
-/** @brief Bottom / top of the boot kernel stack (KSTACKSIZE bytes), allocated in .data of entry.S. */
-extern char bootstack[], bootstacktop[];
+/** @brief Bottom of the boot kernel stack (KSTACKSIZE bytes), allocated in .data of entry.S. */
+extern char bootstack[];
+/** @brief Top of the boot kernel stack; the initial value of sp set by kern_entry. */
+extern char bootstacktop[];
 
 #endif /* !__KERN_MM_PMM_H__ */

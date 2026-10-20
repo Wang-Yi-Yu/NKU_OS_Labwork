@@ -22,35 +22,38 @@
  * the page allocator.
  */
 struct slab_hdr {
-    uint32_t magic;
-    uint32_t obj_size;
-    uint32_t free_cnt;
-    uint32_t capacity;
-    void *freelist;
-    struct slab_hdr *next;
+    uint32_t magic;    /**< Always ::SLUB_MAGIC for a slab page. */
+    uint32_t obj_size; /**< Size in bytes of every slot in this slab. */
+    uint32_t free_cnt; /**< Number of slots currently on the free list. */
+    uint32_t capacity; /**< Total number of slots in the page. */
+    void *freelist; /**< First free slot; each free slot stores the next one in its first word. */
+    struct slab_hdr *next; /**< Next slab of the same cache. */
 };
 
 /** @brief One power-of-two size class and the slab pages currently held for it. */
 struct kmem_cache {
-    size_t obj_size;
-    struct slab_hdr *slabs;
+    size_t obj_size;        /**< Slot size served by this cache, a power of two. */
+    struct slab_hdr *slabs; /**< Slab pages of this cache, newest first. */
 };
 
 /** @brief A multi-page object that is not carved into slots. */
 struct large_slot {
-    void *kva;
-    size_t npages;
-    int used;
+    void *kva;     /**< Kernel virtual address of the first page. */
+    size_t npages; /**< Number of pages of the object. */
+    int used;      /**< Non-zero if this table entry describes a live object. */
 };
 
-/** @brief In-page classes. 4096 cannot hold a header plus a 4096-byte object. */
+/** @brief In-page size classes, 16 to 2048 bytes. 4096 cannot hold a header plus a 4096-byte object. */
 static struct kmem_cache caches[] = {
     {16, NULL},  {32, NULL},  {64, NULL},   {128, NULL},
     {256, NULL}, {512, NULL}, {1024, NULL}, {2048, NULL},
 };
 
+/** @brief Capacity of the table that tracks live multi-page objects. */
 #define SLUB_MAX_LARGE 256
+/** @brief Table of live multi-page objects, needed because slub_free() is not told the size. */
 static struct large_slot larges[SLUB_MAX_LARGE];
+/** @brief Non-zero once slub_init() has run; makes a second call release what SLUB still holds. */
 static int slub_ready;
 
 /**
@@ -155,6 +158,10 @@ static void slub_release_all(void) {
     }
 }
 
+/**
+ * @brief Reset all caches and the multi-page table; no page is taken until the first allocation.
+ * @note A repeated call first returns every page still held by SLUB to the page allocator.
+ */
 void slub_init(void) {
     if (slub_ready) {
         slub_release_all();
@@ -194,6 +201,12 @@ static void *alloc_large(size_t size) {
     return slot->kva;
 }
 
+/**
+ * @brief Allocate an object of at least @p size bytes.
+ * @details Sizes up to 2048 bytes are rounded up to a power-of-two class and served from
+ * a slab page of that class (a new page is taken when every slab is full).
+ * Larger sizes get whole pages from alloc_pages() and are recorded in a table.
+ */
 void *slub_alloc(size_t size) {
     if (size == 0) {
         return NULL;
@@ -236,6 +249,14 @@ static int free_large(void *obj) {
     return 0;
 }
 
+/**
+ * @brief Free an object returned by slub_alloc().
+ * @details A multi-page object is looked up in the table and its pages are freed. For a
+ * slab object the slot goes back to its slab's free list; a slab that becomes
+ * completely free is unlinked and its page is returned to the page allocator.
+ * @warning Passing an address that did not come from slub_alloc(), or freeing an
+ *          object twice, is not detected.
+ */
 void slub_free(void *obj) {
     if (obj == NULL) {
         return;
@@ -303,6 +324,13 @@ static int ranges_overlap(void *a, size_t asize, void *b, size_t bsize) {
     return a0 < b0 + bsize && b0 < a0 + asize;
 }
 
+/**
+ * @brief Self test of SLUB: size classes, slot reuse, page return and multi-page objects.
+ *
+ * Every step compares nr_free_pages() with the expected value, so a leak or a
+ * premature free shows up as a failed assert. Prints "slub_check() succeeded"
+ * when all cases pass.
+ */
 void slub_check(void) {
     size_t base = nr_free_pages();
     size_t pages = base;

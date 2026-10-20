@@ -173,6 +173,7 @@ static void default_free_pages(struct Page *base, size_t n) {
 
 /**
  * @brief Return the total number of free pages.
+ * @return value of nr_free
  */
 static size_t default_nr_free_pages(void) {
     return nr_free;

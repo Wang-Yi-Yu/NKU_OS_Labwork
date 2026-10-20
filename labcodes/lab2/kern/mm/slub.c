@@ -324,12 +324,167 @@ static int ranges_overlap(void *a, size_t asize, void *b, size_t bsize) {
     return a0 < b0 + bsize && b0 < a0 + asize;
 }
 
+/** @brief Most objects of one class that check_multi_slab() holds at once: 2 pages worth plus one, of 16 bytes. */
+#define CHECK_MAX_OBJS (2 * (PGSIZE / 16) + 1)
+
+/** @brief Pointers held by check_multi_slab(); static to keep the kernel stack small. */
+static void *check_objs[CHECK_MAX_OBJS];
+
+/**
+ * @brief Fill every class with more than two slabs worth of objects and release them out of order.
+ *
+ * For each class it takes `2 * (PGSIZE / size) + 1` objects, which cannot fit in
+ * two pages, so slub_alloc() has to create further slabs while earlier ones are
+ * full. It then checks the number of pages used against the slot count of the
+ * class, that every object is aligned and distinct and keeps its own contents,
+ * and frees them evens first and odds last so that slabs become empty in the
+ * middle of the slab list. Every page must come back.
+ *
+ * @author Yiyu Wang(2414007)
+ */
+static void check_multi_slab(void) {
+    size_t base = nr_free_pages();
+    for (size_t c = 0; c < sizeof(check_sizes) / sizeof(check_sizes[0]); c++) {
+        size_t size = check_sizes[c];
+        size_t n = 2 * (PGSIZE / size) + 1;
+        size_t capacity = (PGSIZE - ROUNDUP(sizeof(struct slab_hdr), size)) / size;
+        assert(n <= CHECK_MAX_OBJS);
+
+        for (size_t i = 0; i < n; i++) {
+            check_objs[i] = slub_alloc(size);
+            assert(check_objs[i] != NULL);
+            assert((uintptr_t)check_objs[i] % size == 0);
+            check_pattern(check_objs[i], size, (unsigned char)(i % 251 + 1));
+        }
+        assert(base - nr_free_pages() == (n + capacity - 1) / capacity);
+        assert(base - nr_free_pages() >= 3);
+
+        for (size_t i = 0; i < n; i++) {
+            unsigned char *bytes = check_objs[i];
+            for (size_t k = 0; k < size; k++) {
+                assert(bytes[k] == (unsigned char)(i % 251 + 1));
+            }
+            for (size_t j = i + 1; j < n; j++) {
+                assert(check_objs[i] != check_objs[j]);
+            }
+        }
+        for (size_t i = 0; i < n; i += 2) {
+            slub_free(check_objs[i]);
+        }
+        for (size_t i = 1; i < n; i += 2) {
+            slub_free(check_objs[i]);
+        }
+        assert(nr_free_pages() == base);
+    }
+    cprintf("slub_check: multi-slab OK\n");
+}
+
+/**
+ * @brief Check the page counts of multi-page objects around the page-size boundaries.
+ *
+ * Sizes 2049 and 4096 need one page, 4097 and 8192 two, 8193 three. The page
+ * allocator may hand out more than requested (the Buddy System rounds 3 pages
+ * up to 4), so the pages taken are only required to be at least the pages
+ * needed, but all of them must come back when the object is freed, because
+ * slub_free() must pass the same page count that slub_alloc() asked for.
+ *
+ * @author Yiyu Wang(2414007)
+ */
+static void check_large_sizes(void) {
+    static const size_t sizes[] = {2049, 4096, 4097, 2 * PGSIZE, 2 * PGSIZE + 1};
+    static const size_t need[] = {1, 1, 2, 2, 3};
+    size_t base = nr_free_pages();
+    for (size_t i = 0; i < sizeof(sizes) / sizeof(sizes[0]); i++) {
+        void *obj = slub_alloc(sizes[i]);
+        assert(obj != NULL);
+        assert(obj_page(obj) == (uintptr_t)obj);
+        assert(base - nr_free_pages() >= need[i]);
+        check_pattern(obj, sizes[i], (unsigned char)(0x30 + i));
+        slub_free(obj);
+        assert(nr_free_pages() == base);
+    }
+
+    /* A large and a small object alive together must not disturb each other. */
+    void *big = slub_alloc(2 * PGSIZE + 1);
+    void *small = slub_alloc(48);
+    assert(big != NULL && small != NULL);
+    check_pattern(big, 2 * PGSIZE + 1, 0x77);
+    check_pattern(small, 48, 0x88);
+    slub_free(small);
+    check_pattern(big, 2 * PGSIZE + 1, 0x77);
+    slub_free(big);
+    assert(nr_free_pages() == base);
+    cprintf("slub_check: large sizes OK\n");
+}
+
+/**
+ * @brief Check the behaviour when the page allocator has no page left.
+ *
+ * Takes every free page from the page allocator (each page's first word links
+ * it to the next one), then requires small and multi-page requests to fail
+ * without changing any state. After one page is returned, a one-page request
+ * has to succeed again while a two-page request still fails. Finally all pages
+ * are given back.
+ *
+ * @author Yiyu Wang(2414007)
+ */
+static void check_page_exhaustion(void) {
+    size_t base = nr_free_pages();
+    struct Page *head = NULL;
+    size_t taken = 0;
+    for (;;) {
+        struct Page *page = alloc_pages(1);
+        if (page == NULL) {
+            break;
+        }
+        *(struct Page **)page_to_kva(page) = head;
+        head = page;
+        taken++;
+    }
+    assert(taken == base);
+    assert(nr_free_pages() == 0);
+
+    assert(slub_alloc(16) == NULL);
+    assert(slub_alloc(2048) == NULL);
+    assert(slub_alloc(PGSIZE) == NULL);
+    assert(slub_alloc(PGSIZE + 1) == NULL);
+    assert(nr_free_pages() == 0);
+
+    struct Page *page = head;
+    head = *(struct Page **)page_to_kva(page);
+    free_pages(page, 1);
+    assert(nr_free_pages() == 1);
+    assert(slub_alloc(PGSIZE + 1) == NULL);
+    void *obj = slub_alloc(16);
+    assert(obj != NULL);
+    assert(nr_free_pages() == 0);
+    slub_free(obj);
+    assert(nr_free_pages() == 1);
+    obj = slub_alloc(PGSIZE);
+    assert(obj != NULL);
+    assert(nr_free_pages() == 0);
+    slub_free(obj);
+    assert(nr_free_pages() == 1);
+
+    while (head != NULL) {
+        page = head;
+        head = *(struct Page **)page_to_kva(page);
+        free_pages(page, 1);
+    }
+    assert(nr_free_pages() == base);
+    cprintf("slub_check: page exhaustion OK\n");
+}
+
 /**
  * @brief Self test of SLUB: size classes, slot reuse, page return and multi-page objects.
  *
  * Every step compares nr_free_pages() with the expected value, so a leak or a
  * premature free shows up as a failed assert. Prints "slub_check() succeeded"
  * when all cases pass.
+ *
+ * @note The loop over multi-page objects near the end stops when the 256-entry
+ *       multi-page table is full, not when memory runs out; running out of
+ *       pages is covered separately by check_page_exhaustion().
  */
 void slub_check(void) {
     size_t base = nr_free_pages();
@@ -438,5 +593,9 @@ void slub_check(void) {
     }
     assert(nr_free_pages() == pages);
     assert(nr_free_pages() == base);
+
+    check_multi_slab();
+    check_large_sizes();
+    check_page_exhaustion();
     cprintf("slub_check() succeeded\n");
 }

@@ -674,107 +674,96 @@ slub_check() succeeded
 
 ## 五、测试与验证
 
-### 5.1 物理内存探测、页描述符初始化与 Best-Fit 分配器综合测试
+本实验的全部任务（物理内存探测与页描述符初始化、Best-Fit、Buddy System、SLUB）已经合入同一份代码。本节不区分各功能是在哪个阶段完成的，只在**最终代码**上，用仓库自带的命令验证所有功能能够协同工作。所有命令都在`labcodes/lab2`目录下执行，任何人拉取仓库后都可以按本节步骤复现。
 
-**负责人：** 2414007-王奕瑜
+### 5.1 测试方法
 
-#### 5.1.1 测试目的
+**环境：** QEMU 8.2（`qemu-system-riscv64`，OpenSBI v1.3），默认 128MB 内存；交叉编译器`riscv64-unknown-elf-gcc`。
 
-`make grade`使用的测试文件`tools/test_lab2.c`同时覆盖了本实验的两项核心功能，因此本节是对它们的综合验证：
+**判定方式：** 内核里的所有自检都使用`assert`，任何一项失败都会 panic，后面的输出不再出现。因此，**成功标志行出现在终端里，就说明它之前的所有检查都已经通过**。
 
-- **Test 1（Page Init）：** 验证`page_init()`是否正确探测物理内存范围、建立`Page`描述符数组并划分出空闲区；
-- **Test 2（Best-Fit）：** 验证在该空闲区之上，Best-Fit 分配器的分配、释放与合并是否符合"选择最小的足够大空闲块"的策略。
+**功能与验证手段对应：**
 
-同时通过`make qemu`观察完整的启动输出，人工核对内存探测结果与内核自检结果。
+| 功能                            | 验证手段                                            | 成功标志                                                                           | 所在小节 |
+| ------------------------------- | --------------------------------------------------- | ---------------------------------------------------------------------------------- | -------- |
+| 物理内存探测（设备树）          | 启动输出中的内存范围，与手工计算对照；评分 Test 1   | `Physical Memory from DTB`、`physical memory map`与预期一致；`check page init: OK` | 5.2、5.4 |
+| 页描述符初始化（`page_init()`） | 手工计算空闲区；评分 Test 1                         | `check page init: OK`                                                              | 5.2、5.4 |
+| Best-Fit 分配器                 | 内核内置自检`check_alloc_page()`；评分 Test 2       | `check_alloc_page() succeeded!`；`check best fit: OK`                              | 5.2、5.4 |
+| Buddy System 分配器             | 内核内置自检`buddy_check()`的 8 个场景；评分 Test 3 | 8 行`buddy_check: … OK`；`check buddy system: OK`                                  | 5.3、5.4 |
+| SLUB（在两种页分配器上）        | 启动时自动运行`slub_check()`（10 个用例）           | 3 行`slub_check: … OK`和`slub_check() succeeded`                                   | 5.2、5.3 |
+| 构建与代码规范                  | `-Wall -Werror`编译、`clang-format`、`Prettier`     | 无警告；`make format-check`通过                                                    | 5.5      |
 
-#### 5.1.2 测试环境
+### 5.2 测试一：默认内核（Best-Fit + SLUB）
 
-- 运行环境：QEMU（`qemu-system-riscv64`）+ OpenSBI，默认 128MB 内存；
-- 分配器：`best_fit_pmm_manager`（`init_pmm_manager()`中选用）；
-- 代码状态：`page_init()`与 Best-Fit 均已实现，在完整仓库中直接构建。
+默认内核使用 Best-Fit 作为物理内存管理器，同时覆盖设备树探测、`page_init()`、Best-Fit 和 SLUB。
 
-#### 5.1.3 测试步骤与结果
-
-**步骤 1：编译并运行内核，观察启动输出**
+**步骤：**
 
 ```bash
+make clean
 make qemu
 ```
 
-与本功能相关的输出如下（QEMU 通过`Ctrl+A` 再按`X`退出）：
+QEMU 启动后内核进入死循环，不会自己退出，看到`slub_check() succeeded`后按`Ctrl+A`再按`X`退出。
+
+**预期输出：**
 
 ```text
+DTB Init
+HartID: 0
+DTB Address: 0x87e00000
+Physical Memory from DTB:
+  Base: 0x0000000080000000
+  Size: 0x0000000008000000 (128 MB)
+  End:  0x0000000087ffffff
 DTB init completed
 (THU.CST) os is loading ...
 Special kernel symbols:
   entry  0xffffffffc02000d6 (virtual)
-  etext  0xffffffffc0201654 (virtual)
-  edata  0xffffffffc0205018 (virtual)
-  end    0xffffffffc0205078 (virtual)
-Kernel executable memory footprint: 20KB
+  etext  0xffffffffc020293c (virtual)
+  edata  0xffffffffc0207098 (virtual)
+  end    0xffffffffc0209904 (virtual)
+Kernel executable memory footprint: 39KB
 memory management: best_fit_pmm_manager
 physical memory map:
   memory: 0x0000000008000000, [0x0000000080000000, 0x0000000087ffffff].
 check_alloc_page() succeeded!
-satp virtual address: 0xffffffffc0204000
-satp physical address: 0x0000000080204000
+satp virtual address: 0xffffffffc0206000
+satp physical address: 0x0000000080206000
+slub_check: multi-slab OK
+slub_check: large sizes OK
+slub_check: page exhaustion OK
+slub_check() succeeded
 ```
 
-![make qemu 输出](./images/5.1_make_qemu.png)
+**截图 1：** 截取从`DTB Init`到`slub_check() succeeded`的完整终端输出（如一屏放不下，可以分两张），保存为`docs/images/5.2_qemu_best_fit.png`，放在这里：
 
-**步骤 2：运行评分测试**
+![make qemu（Best-Fit）输出](./images/5.2_qemu_best_fit.png)
 
-```bash
-make grade
-```
+**结果分析：**
 
-该命令把测试文件注入内核后重新编译并运行，输出如下：
+1. **内存范围探测正确。** 设备树给出的`Base = 0x80000000`、`Size = 128 MB`、`End = 0x87ffffff`，与`physical memory map`一行完全一致，也和 QEMU 默认配置相符。说明`page_init()`通过`get_memory_base()`/`get_memory_size()`读到了`dtb_init()`保存的结果。
+2. **内存布局与手工计算一致。** 以本次输出为例：
+   - `end = 0xffffffffc0209904`，向上按页对齐得到`pages = 0xffffffffc020a000`，对应物理地址`0x8020a000`；
+   - 页数`npage - nbase = 0x88000 - 0x80000 = 32768`，每个`struct Page`占 40 字节，描述符数组共`0x140000`字节（1280KB），末尾物理地址为`0x8034a000`，已按页对齐；
+   - 因此空闲区为`[0x8034a000, 0x88000000)`，共`0x7cb6 = 31926`页，约 124.7MB；OpenSBI、内核镜像和描述符数组所在的页面保持保留，没有进入空闲链表。
+3. **Best-Fit 工作正常。** `memory management: best_fit_pmm_manager`说明当前用的是 Best-Fit，`check_alloc_page() succeeded!`说明它自带的`basic_check()`和`best_fit_check()`全部通过。这个自检运行在`page_init()`建立的空闲区上，所以也间接证明了初始化的正确。
+4. **SLUB 工作正常。** `slub_check()`是在`pmm_init()`之后自动运行的，先依次检查 0 字节与`NULL`、8 个尺寸类的对齐与互不重叠、同页对象共用与整页归还、槽的复用、大对象和大对象表满（Case 1–7，全部通过后才会打印最后一行），再打印 3 行补充用例的结果：多 slab（Case 8）、大对象页数边界（Case 9）、页分配器耗尽（Case 10）。最后每个用例都核对了`nr_free_pages()`，说明没有泄漏页。
 
-```text
-  -check page init:                          OK
-  -check best fit:                           OK
-Total Score: 20/20
-```
+### 5.3 测试二：Buddy System 内核（Buddy System + SLUB）
 
-![make grade 输出](./images/5.1_make_grade.png)
+用`PMM=buddy`重新构建内核，让`init_pmm_manager()`选用`buddy_pmm_manager`。这一步同时验证 Buddy System 本身，以及 SLUB 换用另一种页分配器后依然正确。
 
-#### 5.1.4 结果分析
-
-1. **内存范围探测正确。** `Physical Memory from DTB`与`physical memory map`两处输出一致：DRAM 起始地址为`0x80000000`，大小为`0x08000000`（128MB），末端为`0x87ffffff`，与 QEMU 默认配置相符。这说明`page_init()`通过`get_memory_base()`/`get_memory_size()`读到了`dtb_init()`保存的结果，并正确计算了范围末端。
-2. **内存布局与手工计算一致。** 以本次运行为例：
-   - `end = 0xffffffffc0205078`，向上按页对齐后`pages`位于虚拟地址`0xffffffffc0206000`，对应物理地址`0x80206000`；
-   - `npage - nbase = 0x88000 - 0x80000 = 32768`个页面，每个`struct Page`占 40 字节，描述符数组共`0x140000`字节（1280KB），末尾为物理地址`0x80346000`，已按页对齐；
-   - 因此空闲区为`[0x80346000, 0x88000000)`，共`0x7cba = 31930`页，约 124.7MB。
-   - 内核镜像和描述符数组所在页面保持保留，没有进入空闲链表。
-3. **Test 1 通过，说明初始化满足设计约束。** `[Test 1] Page Init: PASS`表示：`va_pa_offset`等于`PHYSICAL_MEMORY_OFFSET`、`npage`等于设备树内存末端的物理页号、`pages`页对齐并位于`end`之后、空闲页数大于 0 且不超过总页数、内核尾页和描述符数组所在页保持保留，以及`page2pa()`与`pa2page()`互逆。
-4. **Test 2 通过，说明 Best-Fit 在该空闲区上工作正常。** `memory management: best_fit_pmm_manager`表明当前使用的是 Best-Fit；`check_alloc_page() succeeded!`说明其内置自检（`basic_check()`与`best_fit_check()`）通过；`check best fit: OK`进一步验证了 Best-Fit 的选择策略。Test 2 依赖`page_init()`建立的描述符与空闲链表，它的通过也从侧面印证了初始化的正确性。
-5. **综合结论。** 两项评分均为 OK，总分 20/20，物理内存探测、页描述符初始化与 Best-Fit 分配器三者能够协同工作，本部分功能符合预期。
-
-> 注：地址和空闲页数等具体数值会随内核镜像大小变化，代码修改后重新运行会略有不同，属于正常现象。
-
----
-
-### 5.2 伙伴系统测试
-
-**负责人：** 2414007-王奕瑜
-
-#### 5.2.1 测试目的
-
-验证伙伴系统分配器在真实内核中的正确性，包括两方面：
-
-- 把`buddy_pmm_manager`作为内核的物理内存管理器启动，观察它自带的自检`buddy_check()`各场景是否通过；
-- 通过`make grade`中新增的`[Test 3]`，验证在默认 Best-Fit 的内核中也能对伙伴系统做自动化评分，且不影响`[Test 1]`、`[Test 2]`。
-
-#### 5.2.2 测试步骤与结果
-
-**步骤 1：以伙伴系统为管理器启动内核**
+**步骤：**
 
 ```bash
 make clean
 make PMM=buddy qemu
 ```
 
-`PMM=buddy`让`Makefile`定义宏`PMM_BUDDY`，`init_pmm_manager()`据此选用`buddy_pmm_manager`。由于目标文件不跟踪编译选项，切换前需要先`make clean`。输出如下（QEMU 通过`Ctrl+A` 再按`X`退出）：
+必须先`make clean`：Makefile 不跟踪编译选项，不清理会沿用上一次的目标文件。
+
+**预期输出（从`memory management`开始）：**
 
 ```text
 memory management: buddy_pmm_manager
@@ -789,22 +778,40 @@ buddy_check: fragmentation OK
 buddy_check: random stress OK
 buddy_check: zone boundary OK
 check_alloc_page() succeeded!
-satp virtual address: 0xffffffffc0206000
-satp physical address: 0x0000000080206000
+satp virtual address: 0xffffffffc0207000
+satp physical address: 0x0000000080207000
+slub_check: multi-slab OK
+slub_check: large sizes OK
+slub_check: page exhaustion OK
+slub_check() succeeded
 ```
 
-**截图指引：** 截取从`memory management: buddy_pmm_manager`到`satp physical address`的这一段终端输出，保存为`docs/images/5.2_make_qemu_buddy.png`。
+**截图 2：** 截取从`memory management: buddy_pmm_manager`到`slub_check() succeeded`的终端输出，保存为`docs/images/5.3_qemu_buddy.png`，放在这里：
 
-![make PMM=buddy qemu 输出](./images/5.2_make_qemu_buddy.png)
+![make PMM=buddy qemu 输出](./images/5.3_qemu_buddy.png)
 
-**步骤 2：运行评分测试**
+**结果分析：**
+
+1. **Buddy System 可以作为真实的物理内存管理器运行。** `memory management: buddy_pmm_manager`说明`PMM_BUDDY`接入生效，内核继续正常启动。
+2. **8 个场景逐项通过。** 8 行`buddy_check`依次对应：初始布局、分裂、合并、取整与对齐、耗尽、外部碎片、随机压力、区间边界。
+3. **空闲区的切块符合设计。** 本次内核里空闲区起点为物理页号`0x8034b`（描述符数组比 Best-Fit 内核晚一页结束，因为 Buddy 内核更大），共 31925 页。起点不是 2 的幂次对齐，`init_memmap`贪心地把它切成 1、4、16、32、128、1024、2048、4096、8192、16384 页共 10 个自然对齐的块，总和恰为 31925，没有浪费一页。
+4. **SLUB 在 Buddy System 上同样通过。** 4 行`slub_check`的输出与 5.2 相同。其中 Case 9 特别针对 Buddy 的取整（3 页会占 4 页），要求归还时页数一致，这一项通过，说明 SLUB 登记的页数与页分配器的取整行为配合正确。
+5. **两种内核的数值略有不同属正常现象。** Buddy 内核代码更大（含`buddy_check`），`end`、`pages`和空闲页数都随之变化，所以与 5.2 的数值不同。
+
+> 测试完成后如要回到默认的 Best-Fit 内核，先`make clean`，再用不带`PMM`的命令构建。
+
+### 5.4 测试三：自动评分
+
+`make grade`把工作区复制到`/tmp/lab2_grade`，注入`tools/test_lab2.c`中的三个评分测试，在 QEMU 中运行，不改动工作区的源码。
+
+**步骤：**
 
 ```bash
 make clean
 make grade
 ```
 
-输出如下：
+**预期输出：**
 
 ```text
   -check page init:                          OK
@@ -813,21 +820,55 @@ make grade
 Total Score: 30/30
 ```
 
-**截图指引：** 截取上述三行`OK`和`Total Score`所在的终端输出，保存为`docs/images/5.2_make_grade.png`（5.1 节记录的是任务一、二完成时只有两项检查、20/20 的结果，此处是加入伙伴系统后的结果）。
+**截图 3：** 截取上面三行`OK`和`Total Score`所在的终端输出，保存为`docs/images/5.4_make_grade.png`，放在这里：
 
-![make grade 输出](./images/5.2_make_grade.png)
+![make grade 输出](./images/5.4_make_grade.png)
 
-测试完成后，如要回到默认的 Best-Fit 内核，再执行一次`make clean`并用不带`PMM`的命令构建即可。
+**结果分析：**
 
-#### 5.2.3 结果分析
+1. **Test 1（Page Init）通过：** `va_pa_offset`等于`PHYSICAL_MEMORY_OFFSET`，`npage`等于设备树内存末端的物理页号，`pages`页对齐并位于`end`之后，空闲页数大于 0 且不超过总页数，内核尾页和描述符数组所在页保持保留，`page2pa()`与`pa2page()`互逆。
+2. **Test 2（Best-Fit）通过：** 评分内核默认使用 Best-Fit，`pmm_manager`指向`best_fit_pmm_manager`。
+3. **Test 3（Buddy System）通过：** 这个测试在默认的 Best-Fit 内核里，从 Best-Fit 取出 256 页交给 Buddy System 跑完自检再归还，并恢复`pmm_manager`，所以不影响 Test 1、Test 2。这样一次评分就能覆盖三项功能。
+4. **评分不包含 SLUB。** SLUB 没有评分测试，它的验证来自 5.2、5.3 中启动时自动运行的`slub_check()`。
 
-1. **伙伴系统可以作为真实的物理内存管理器运行。** 启动信息`memory management: buddy_pmm_manager`说明`PMM_BUDDY`接入生效；`page_init()`建立的空闲区被`buddy_init_memmap`正确接收并切成自然对齐的块，之后`check_alloc_page() succeeded!`说明自检全部通过，内核继续正常启动并打印页表地址。
-2. **各场景逐项通过。** 8 行`buddy_check`输出对应 8 个场景：初始布局、分裂、合并、取整与对齐、耗尽、外部碎片、随机压力、区间边界。任何一个断言失败，内核会立即 panic，后面的输出和`check_alloc_page() succeeded!`都不会出现，因此这些行本身就是通过的证据。
-3. **自检不改变真实内存。** `buddy_check()`在一个临时测试区上运行，结束时还原了状态，所以之后的启动流程不受影响，这一点也由自检最后断言"空闲页数与调用前一致"保证。
-4. **`make grade`为 30/30。** 新增的`[Test 3]`在默认 Best-Fit 内核上通过：它从 Best-Fit 取出 256 页交给伙伴系统，跑完自检再归还；`[Test 1]`、`[Test 2]`依然为`OK`，说明伙伴系统的接入没有破坏任务一、二的结果，`pmm_manager`在测试结束后被正确恢复为 Best-Fit。
-5. **测试有效性。** 对分配器植入 9 类典型错误后，`[Test 3]`都会变为`WRONG`（见 4.4.3），说明这里的`OK`并不是"只要不崩溃就通过"。
+### 5.5 测试四：构建与代码规范
 
-> 注：`satp`地址等数值随内核镜像大小而变化，伙伴系统版本的内核比 Best-Fit 版本更大（包含自检代码），所以与 5.1 节的数值略有不同，属于正常现象。
+**步骤：**
+
+```bash
+make clean
+make
+make format-check
+```
+
+`make`使用`-Wall -Werror`，任何警告都会使构建失败，所以构建成功（最后一行为`riscv64-unknown-elf-objcopy … bin/ucore.img`）即说明无警告。`make format-check`只检查不修改文件，预期输出包含`clang-format: OK`和`All matched files use Prettier code style!`。
+
+**截图 4（可选）：** 截取`make format-check`的输出，保存为`docs/images/5.5_format_check.png`，放在这里：
+
+![make format-check 输出](./images/5.5_format_check.png)
+
+### 5.6 测试的有效性
+
+上面的 OK 不是"只要不崩溃就通过"：
+
+- **Buddy System：** 植入 9 类典型错误（伙伴地址、不合并、分裂保留错误的一半、请求不取整、计数、区间检查、阶比较、标志清除、初始化对齐），评分 Test 3 都会变成`WRONG`，详见 4.4.3。
+- **SLUB：** 第二次迭代（见 4.6.3.3）植入的两个错误均被补充后的自检发现，其中一个原自检无法发现。同时发现并补上了原自检的两个盲区（未填满 slab、页分配器耗尽）。
+- **局限：** SLUB 的自检不在`make grade`里，也没有像 Buddy System 那样做完整的错误植入验证，只验证了上述两项。
+
+### 5.7 结论
+
+| 任务                                   | 验证结果                                                |
+| -------------------------------------- | ------------------------------------------------------- |
+| 物理内存探测与页描述符初始化           | 通过：范围与手工计算一致，Test 1 通过                   |
+| First-Fit 理解（思考题）               | 无需运行测试，见 4.2                                    |
+| Best-Fit 分配器                        | 通过：`check_alloc_page()` 与 Test 2                    |
+| Buddy System 分配器                    | 通过：8 个`buddy_check`场景与 Test 3                    |
+| SLUB（Best-Fit、Buddy 两种页分配器上） | 通过：10 个用例，两种内核都输出`slub_check() succeeded` |
+| 综合评分                               | `make grade`为 30/30                                    |
+
+全部功能在最终代码上协同工作，实验任务完成。
+
+> 注：地址和空闲页数等具体数值会随内核镜像大小变化，代码改动后重新运行会略有不同，属正常现象。
 
 ---
 

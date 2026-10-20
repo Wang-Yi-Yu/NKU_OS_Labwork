@@ -19,7 +19,7 @@ void slub_init(void);
 /**
  * @brief Allocate an object of at least @p size bytes.
  * @param size requested size in bytes; 0 fails
- * @return kernel virtual address of the object, or NULL if @p size is 0 or memory is exhausted
+ * @return kernel virtual address of the object, or NULL if @p size is 0, too large, or memory is exhausted
  * @author 鲁昕宁(2414015)
  */
 void *slub_alloc(size_t size);

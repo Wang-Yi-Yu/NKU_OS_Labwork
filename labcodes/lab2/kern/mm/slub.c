@@ -176,10 +176,14 @@ void slub_init(void) {
 /**
  * @brief Allocate a multi-page object and remember its length for slub_free().
  * @param size requested bytes, greater than the largest in-page class
- * @return start address, or NULL if no pages or no tracking slot remain
+ * @return start address, or NULL if @p size is too large, or no pages or no tracking slot remain
  * @author 鲁昕宁(2414015)
  */
 static void *alloc_large(size_t size) {
+    // Rounding up would wrap around to 0 for sizes within one page of SIZE_MAX.
+    if (size > ~(size_t)0 - (PGSIZE - 1)) {
+        return NULL;
+    }
     size_t npages = ROUNDUP(size, PGSIZE) / PGSIZE;
     struct large_slot *slot = NULL;
     for (size_t i = 0; i < SLUB_MAX_LARGE; i++) {
@@ -254,8 +258,9 @@ static int free_large(void *obj) {
  * @details A multi-page object is looked up in the table and its pages are freed. For a
  * slab object the slot goes back to its slab's free list; a slab that becomes
  * completely free is unlinked and its page is returned to the page allocator.
- * @warning Passing an address that did not come from slub_alloc(), or freeing an
- *          object twice, is not detected.
+ * @warning An address that did not come from slub_alloc() is only caught when its
+ *          page does not start with ::SLUB_MAGIC (the assert fails). Freeing an object
+ *          twice is not reliably detected.
  */
 void slub_free(void *obj) {
     if (obj == NULL) {
@@ -265,6 +270,7 @@ void slub_free(void *obj) {
         return;
     }
     struct slab_hdr *hdr = (struct slab_hdr *)((uintptr_t)obj & ~(uintptr_t)(PGSIZE - 1));
+    assert(hdr->magic == SLUB_MAGIC);
     struct kmem_cache *cache = cache_for(hdr->obj_size);
     *(void **)obj = hdr->freelist;
     hdr->freelist = obj;
@@ -415,6 +421,33 @@ static void check_large_sizes(void) {
     slub_free(big);
     assert(nr_free_pages() == base);
     cprintf("slub_check: large sizes OK\n");
+}
+
+/**
+ * @brief Check that requests too large to be served fail without side effects.
+ *
+ * The sizes are chosen around the point where rounding the size up to a whole
+ * number of pages would wrap around to a small value (or 0). Each request must
+ * return NULL, leave the free page count unchanged and not corrupt the
+ * multi-page table.
+ *
+ * @author Yiyu Wang(2414007)
+ */
+static void check_huge_requests(void) {
+    static const size_t sizes[] = {
+        ~(size_t)0,      ~(size_t)0 - 1,  ~(size_t)0 - PGSIZE + 1, ~(size_t)0 - PGSIZE + 2,
+        (size_t)1 << 63, (size_t)1 << 40,
+    };
+    size_t base = nr_free_pages();
+    for (size_t i = 0; i < sizeof(sizes) / sizeof(sizes[0]); i++) {
+        assert(slub_alloc(sizes[i]) == NULL);
+        assert(nr_free_pages() == base);
+    }
+    void *obj = slub_alloc(PGSIZE + 1);
+    assert(obj != NULL);
+    slub_free(obj);
+    assert(nr_free_pages() == base);
+    cprintf("slub_check: huge requests OK\n");
 }
 
 /**
@@ -596,6 +629,7 @@ void slub_check(void) {
 
     check_multi_slab();
     check_large_sizes();
+    check_huge_requests();
     check_page_exhaustion();
     cprintf("slub_check() succeeded\n");
 }

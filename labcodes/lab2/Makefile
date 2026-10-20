@@ -23,6 +23,12 @@ endif
 # delete target files if there is an error (or make is interrupted)
 .DELETE_ON_ERROR:
 
+# PMM=buddy builds the kernel with the Buddy System allocator instead of Best-Fit
+# (run `make clean` first when switching, the object files do not track DEFS).
+ifeq ($(PMM),buddy)
+DEFS	+= -DPMM_BUDDY
+endif
+
 # define compiler and flags
 HOSTCC		:= gcc
 HOSTCFLAGS	:= -Wall -O2

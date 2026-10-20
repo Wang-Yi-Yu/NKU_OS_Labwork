@@ -242,5 +242,9 @@ pts=10
 quick_check 'check best fit'                 \
     '[Test 2] Best-Fit: PASS'
 
+pts=10
+quick_check 'check buddy system'             \
+    '[Test 3] Buddy System: PASS'
+
 ## print final-score
 show_final

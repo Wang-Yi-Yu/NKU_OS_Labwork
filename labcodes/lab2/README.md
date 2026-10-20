@@ -15,15 +15,16 @@
 
 在本目录下执行：
 
-| 命令                | 作用                                                        |
-| ------------------- | ----------------------------------------------------------- |
-| `make`              | 编译，生成 `bin/kernel` 与 `bin/ucore.img`                  |
-| `make qemu`         | 编译并在 QEMU 中运行（退出：`Ctrl-A` 然后 `X`）             |
-| `make debug`        | 以 `-s -S` 启动 QEMU 等待 GDB；另开终端执行 `make gdb` 连接 |
-| `make grade`        | 在 `/tmp` 的拷贝中注入测试并评分（不会改动工作区源码）      |
-| `make format`       | 格式化全部 C/头文件（clang-format）与 Markdown（Prettier）  |
-| `make format-check` | 只检查格式，不修改文件（提交前自检用）                      |
-| `make clean`        | 删除 `bin/`、`obj/` 等编译产物                              |
+| 命令                  | 作用                                                            |
+| --------------------- | --------------------------------------------------------------- |
+| `make`                | 编译，生成 `bin/kernel` 与 `bin/ucore.img`                      |
+| `make qemu`           | 编译并在 QEMU 中运行（退出：`Ctrl-A` 然后 `X`）                 |
+| `make PMM=buddy qemu` | 以 Buddy System 作为物理内存管理器运行（切换前先 `make clean`） |
+| `make debug`          | 以 `-s -S` 启动 QEMU 等待 GDB；另开终端执行 `make gdb` 连接     |
+| `make grade`          | 在 `/tmp` 的拷贝中注入测试并评分（不会改动工作区源码）          |
+| `make format`         | 格式化全部 C/头文件（clang-format）与 Markdown（Prettier）      |
+| `make format-check`   | 只检查格式，不修改文件（提交前自检用）                          |
+| `make clean`          | 删除 `bin/`、`obj/` 等编译产物                                  |
 
 ## 2. 目录结构
 
@@ -59,7 +60,8 @@
 │       ├── mmu.h            # Sv39 页大小、页号划分、PTE 标志位
 │       ├── pmm.[ch]         # pmm_manager 接口、alloc/free_pages、page_init、pmm_init
 │       ├── default_pmm.[ch] # First-Fit 分配器（官方实现，作为参考）
-│       └── best_fit_pmm.[ch]# Best-Fit 分配器（练习 2，待实现）
+│       ├── best_fit_pmm.[ch]# Best-Fit 分配器（练习 2，待实现）
+│       └── buddy_pmm.[ch]   # Buddy System 分配器（练习 3，含自检 buddy_check）
 ├── libs/                    # 内核通用库
 │   ├── defs.h               # 基础类型、ROUNDUP/ROUNDDOWN、to_struct
 │   ├── list.h               # 侵入式双向链表
@@ -71,7 +73,7 @@
     ├── function.mk          # Makefile 辅助函数
     ├── grade.sh             # 评分脚本（make grade 调用）
     ├── inject.py            # 评分时向临时拷贝注入测试代码
-    ├── test_lab2.[ch]       # 评分用测试（page_init、Best-Fit）
+    ├── test_lab2.[ch]       # 评分用测试（page_init、Best-Fit、Buddy System）
     ├── gdbinit              # GDB 初始命令
     └── boot.ld  kernel_nopage.ld   # lab1 遗留脚本，当前 Makefile 未使用
 ```

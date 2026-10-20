@@ -166,6 +166,6 @@ write_text(makefile, make_text)
 insert_include(pmm, "test_lab2.h", "pmm.h")
 
 # Inject tests at the end of pmm_init
-insert_at_function_end(pmm, "pmm_init", "test_page_init();\ntest_best_fit();")
+insert_at_function_end(pmm, "pmm_init", "test_page_init();\ntest_best_fit();\ntest_buddy_system();")
 
 print("lab2 injection complete")

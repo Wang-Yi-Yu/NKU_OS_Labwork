@@ -15,6 +15,7 @@
  */
 #include <default_pmm.h>
 #include <best_fit_pmm.h>
+#include <buddy_pmm.h>
 #include <defs.h>
 #include <error.h>
 #include <memlayout.h>
@@ -51,9 +52,17 @@ static void check_alloc_page(void);
  * The allocation algorithm is switched by assigning a different instance to
  * ::pmm_manager (e.g. &default_pmm_manager or &best_fit_pmm_manager). The
  * manager's name is then printed and its init method called.
+ *
+ * Best-Fit is the default. Building with `make PMM=buddy` defines PMM_BUDDY
+ * and selects the Buddy System manager instead.
  */
 static void init_pmm_manager(void) {
+#ifdef PMM_BUDDY
+    //lab2 function3 2414007
+    pmm_manager = &buddy_pmm_manager;
+#else
     pmm_manager = &best_fit_pmm_manager;
+#endif
     cprintf("memory management: %s\n", pmm_manager->name);
     pmm_manager->init();
 }

@@ -3,6 +3,7 @@
 #include <string.h>
 #include <pmm.h>
 #include <best_fit_pmm.h>
+#include <buddy_pmm.h>
 #include <memlayout.h>
 #include <mmu.h>
 #include <dtb.h>
@@ -108,4 +109,63 @@ test_best_fit(void)
         return;
     }
     cprintf("[Test 2] Best-Fit: PASS\n");
+}
+
+/**
+ * @brief Test 3: run the Buddy System self test next to the active manager.
+ * @author Yiyu Wang(2414007)
+ *
+ * Takes a region of 256 pages from the active manager, lets the Buddy System
+ * manage it, runs the manager's self test (an assertion failure stops the
+ * kernel before the PASS line is printed) and gives the region back. The
+ * active manager is restored afterwards, so Test 2 and the rest of the kernel
+ * are not affected.
+ */
+void
+test_buddy_system(void)
+{
+    const size_t n = 256;
+    const struct pmm_manager *active = pmm_manager;
+
+    if (active == &buddy_pmm_manager) {
+        /* built with PMM=buddy: the self test already ran in check_alloc_page() */
+        buddy_pmm_manager.check();
+        cprintf("[Test 3] Buddy System: PASS\n");
+        return;
+    }
+
+    struct Page *region = alloc_pages(n);
+    if (region == NULL) {
+        cprintf("[Test 3] Buddy System: FAIL (no region)\n");
+        return;
+    }
+    for (size_t i = 0; i < n; i++) {
+        SetPageReserved(region + i);
+    }
+
+    pmm_manager = &buddy_pmm_manager;
+    buddy_pmm_manager.init();
+    buddy_pmm_manager.init_memmap(region, n);
+    if (nr_free_pages() != n) {
+        pmm_manager = active;
+        cprintf("[Test 3] Buddy System: FAIL (nr_free=%lu)\n",
+                (unsigned long)nr_free_pages());
+        return;
+    }
+    buddy_pmm_manager.check();
+    if (nr_free_pages() != n) {
+        pmm_manager = active;
+        cprintf("[Test 3] Buddy System: FAIL (check changed nr_free)\n");
+        return;
+    }
+
+    /* hand the region back to the active manager as freshly allocated pages */
+    pmm_manager = active;
+    for (size_t i = 0; i < n; i++) {
+        region[i].flags = 0;
+        region[i].property = 0;
+        set_page_ref(region + i, 0);
+    }
+    free_pages(region, n);
+    cprintf("[Test 3] Buddy System: PASS\n");
 }

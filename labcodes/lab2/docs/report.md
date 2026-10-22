@@ -744,9 +744,9 @@ slub_check: page exhaustion OK
 slub_check() succeeded
 ```
 
-**截图 1：** 截取从`DTB Init`到`slub_check() succeeded`的完整终端输出（如一屏放不下，可以分两张），保存为`docs/images/5.2_qemu_best_fit.png`，放在这里：
+![make qemu（Best-Fit）输出](./images/5.2_qemu_best_fit-1.png)
 
-![make qemu（Best-Fit）输出](./images/5.2_qemu_best_fit.png)
+![make qemu（Best-Fit）输出](./images/5.2_qemu_best_fit-2.png)
 
 **结果分析：**
 
@@ -795,8 +795,6 @@ slub_check: page exhaustion OK
 slub_check() succeeded
 ```
 
-**截图 2：** 截取从`memory management: buddy_pmm_manager`到`slub_check() succeeded`的终端输出，保存为`docs/images/5.3_qemu_buddy.png`，放在这里：
-
 ![make PMM=buddy qemu 输出](./images/5.3_qemu_buddy.png)
 
 **结果分析：**
@@ -806,8 +804,6 @@ slub_check() succeeded
 3. **空闲区的切块符合设计。** 本次内核里空闲区起点为物理页号`0x8034b`（描述符数组比 Best-Fit 内核晚一页结束，因为 Buddy 内核更大），共 31925 页。起点不是 2 的幂次对齐，`init_memmap`贪心地把它切成 1、4、16、32、128、1024、2048、4096、8192、16384 页共 10 个自然对齐的块，总和恰为 31925，没有浪费一页。
 4. **SLUB 在 Buddy System 上同样通过。** 4 行`slub_check: … OK`的输出与 5.2 相同。其中 Case 9 特别针对 Buddy 的取整（3 页会占 4 页），要求归还时页数一致，这一项通过，说明 SLUB 登记的页数与页分配器的取整行为配合正确。
 5. **两种内核的数值略有不同属正常现象。** Buddy 内核代码更大（含`buddy_check`），`end`、`pages`和空闲页数都随之变化，所以与 5.2 的数值不同。
-
-> 测试完成后如要回到默认的 Best-Fit 内核，先`make clean`，再用不带`PMM`的命令构建。
 
 ### 5.4 测试三：自动评分
 
@@ -829,8 +825,6 @@ make grade
 Total Score: 30/30
 ```
 
-**截图 3：** 截取上面三行`OK`和`Total Score`所在的终端输出，保存为`docs/images/5.4_make_grade.png`，放在这里：
-
 ![make grade 输出](./images/5.4_make_grade.png)
 
 **结果分析：**
@@ -840,31 +834,7 @@ Total Score: 30/30
 3. **Test 3（Buddy System）通过：** 这个测试在默认的 Best-Fit 内核里，从 Best-Fit 取出 256 页交给 Buddy System 跑完自检再归还，并恢复`pmm_manager`，所以不影响 Test 1、Test 2。这样一次评分就能覆盖三项功能。
 4. **评分不包含 SLUB。** SLUB 没有评分测试，它的验证来自 5.2、5.3 中启动时自动运行的`slub_check()`。
 
-### 5.5 测试四：构建与代码规范
-
-**步骤：**
-
-```bash
-make clean
-make
-make format-check
-```
-
-`make`使用`-Wall -Werror`，任何警告都会使构建失败，所以构建成功（最后一行为`riscv64-unknown-elf-objcopy … bin/ucore.img`）即说明无警告。`make format-check`只检查不修改文件，预期输出包含`clang-format: OK`和`All matched files use Prettier code style!`。
-
-**截图 4（可选）：** 截取`make format-check`的输出，保存为`docs/images/5.5_format_check.png`，放在这里：
-
-![make format-check 输出](./images/5.5_format_check.png)
-
-### 5.6 测试的有效性
-
-上面的 OK 不是"只要不崩溃就通过"：
-
-- **Buddy System：** 植入 9 类典型错误（伙伴地址、不合并、分裂保留错误的一半、请求不取整、计数、区间检查、阶比较、标志清除、初始化对齐），评分 Test 3 都会变成`WRONG`，详见 4.4.3。
-- **SLUB：** 第二次迭代（见 4.6.3.3）植入的两个错误均被补充后的自检发现，其中一个原自检无法发现。同时补上了原自检的两个盲区（未填满 slab、页分配器耗尽），并用 Case 11 复现、修复了超大请求导致的 panic，用`SLUB_MAGIC`断言拦住了野指针释放。
-- **局限：** SLUB 的自检不在`make grade`里，也没有像 Buddy System 那样做完整的错误植入验证，只验证了上述两项。
-
-### 5.7 结论
+### 5.4 结论
 
 | 任务                                   | 验证结果                                                |
 | -------------------------------------- | ------------------------------------------------------- |
@@ -876,8 +846,6 @@ make format-check
 | 综合评分                               | `make grade`为 30/30                                    |
 
 全部功能在最终代码上协同工作，实验任务完成。
-
-> 注：地址和空闲页数等具体数值会随内核镜像大小变化，代码改动后重新运行会略有不同，属正常现象。
 
 ---
 

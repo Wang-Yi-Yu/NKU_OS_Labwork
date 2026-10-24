@@ -36,11 +36,18 @@ struct kmem_cache {
     struct slab_hdr *slabs; /**< Slab pages of this cache, newest first. */
 };
 
-/** @brief A multi-page object that is not carved into slots. */
-struct large_slot {
-    void *kva;     /**< Kernel virtual address of the first page. */
-    size_t npages; /**< Number of pages of the object. */
-    int used;      /**< Non-zero if this table entry describes a live object. */
+/**
+ * @brief Descriptor of a live multi-page object.
+ *
+ * slub_free() is not told the size, so the page count of every multi-page object is
+ * recorded here and found again through the object address (a hash table keyed by page).
+ * The same `next` link chains the descriptors of one hash bucket and, while a descriptor
+ * is unused, the free list of the static pool.
+ */
+struct large_obj {
+    struct large_obj *next; /**< Next descriptor in the bucket, or next unused static descriptor. */
+    void *kva;              /**< Kernel virtual address of the first page. */
+    size_t npages;          /**< Number of pages of the object, as passed to alloc_pages(). */
 };
 
 /** @brief In-page size classes, 16 to 2048 bytes. 4096 cannot hold a header plus a 4096-byte object. */
@@ -49,10 +56,23 @@ static struct kmem_cache caches[] = {
     {256, NULL}, {512, NULL}, {1024, NULL}, {2048, NULL},
 };
 
-/** @brief Capacity of the table that tracks live multi-page objects. */
-#define SLUB_MAX_LARGE 256
-/** @brief Table of live multi-page objects, needed because slub_free() is not told the size. */
-static struct large_slot larges[SLUB_MAX_LARGE];
+/** @brief Number of hash buckets for live multi-page objects; only affects speed, not capacity. */
+#define SLUB_LARGE_BUCKETS 128
+/**
+ * @brief Number of descriptors kept in static memory.
+ *
+ * While at most this many multi-page objects are alive, tracking them costs no page, so a
+ * one-page request needs exactly one page. Beyond that descriptors come from the 32-byte
+ * size class, which costs about one page per 127 objects. There is no upper limit other than
+ * the memory of the page allocator.
+ */
+#define SLUB_LARGE_INLINE 64
+/** @brief Live multi-page objects, hashed by the page number of their address. */
+static struct large_obj *large_hash[SLUB_LARGE_BUCKETS];
+/** @brief Static descriptor pool, used before falling back to the size class. */
+static struct large_obj large_inline[SLUB_LARGE_INLINE];
+/** @brief Unused descriptors of ::large_inline. */
+static struct large_obj *large_inline_free;
 /** @brief Non-zero once slub_init() has run; makes a second call release what SLUB still holds. */
 static int slub_ready;
 
@@ -92,6 +112,16 @@ static struct kmem_cache *cache_for(size_t size) {
 }
 
 /**
+ * @brief Offset of the first slot in a slab page: the header size rounded up to the slot size.
+ * @param obj_size power-of-two object size
+ * @return byte offset of slot 0, so every slot is aligned to its own size
+ * @author Yiyu Wang(2414007)
+ */
+static size_t slab_start(size_t obj_size) {
+    return ROUNDUP(sizeof(struct slab_hdr), obj_size);
+}
+
+/**
  * @brief Cut a freshly allocated page into free slots of @p obj_size.
  * @param obj_size power-of-two object size
  * @return slab header, or NULL if the page allocator cannot supply a page
@@ -103,7 +133,7 @@ static struct slab_hdr *slab_create(size_t obj_size) {
         return NULL;
     }
     struct slab_hdr *hdr = page_to_kva(page);
-    size_t start = ROUNDUP(sizeof(struct slab_hdr), obj_size);
+    size_t start = slab_start(obj_size);
     size_t capacity = (PGSIZE - start) / obj_size;
     char *base = (char *)hdr + start;
     void *next = NULL;
@@ -136,30 +166,30 @@ static void *slab_pop(struct slab_hdr *hdr) {
 
 /**
  * @brief Release every slab page and multi-page object still held by SLUB.
+ * @note The multi-page objects go first, because their overflow descriptors live in slab pages.
  * @author 鲁昕宁(2414015)
  */
 static void slub_release_all(void) {
+    for (size_t i = 0; i < SLUB_LARGE_BUCKETS; i++) {
+        for (struct large_obj *desc = large_hash[i]; desc != NULL; desc = desc->next) {
+            free_pages(kva_to_page(desc->kva), desc->npages);
+        }
+        large_hash[i] = NULL;
+    }
     for (size_t i = 0; i < sizeof(caches) / sizeof(caches[0]); i++) {
         struct slab_hdr *hdr = caches[i].slabs;
         caches[i].slabs = NULL;
         while (hdr != NULL) {
             struct slab_hdr *next = hdr->next;
+            hdr->magic = 0;
             free_pages(kva_to_page(hdr), 1);
             hdr = next;
-        }
-    }
-    for (size_t i = 0; i < SLUB_MAX_LARGE; i++) {
-        if (larges[i].used) {
-            free_pages(kva_to_page(larges[i].kva), larges[i].npages);
-            larges[i].used = 0;
-            larges[i].kva = NULL;
-            larges[i].npages = 0;
         }
     }
 }
 
 /**
- * @brief Reset all caches and the multi-page table; no page is taken until the first allocation.
+ * @brief Reset all caches and the multi-page bookkeeping; no page is taken until the first allocation.
  * @note A repeated call first returns every page still held by SLUB to the page allocator.
  */
 void slub_init(void) {
@@ -169,14 +199,57 @@ void slub_init(void) {
     for (size_t i = 0; i < sizeof(caches) / sizeof(caches[0]); i++) {
         caches[i].slabs = NULL;
     }
-    memset(larges, 0, sizeof(larges));
+    memset(large_hash, 0, sizeof(large_hash));
+    large_inline_free = NULL;
+    for (size_t i = SLUB_LARGE_INLINE; i > 0; i--) {
+        large_inline[i - 1].next = large_inline_free;
+        large_inline_free = &large_inline[i - 1];
+    }
     slub_ready = 1;
+}
+
+/**
+ * @brief Hash bucket of a multi-page object.
+ * @param kva page-aligned address of the object
+ * @return index into ::large_hash
+ * @author Yiyu Wang(2414007)
+ */
+static size_t large_bucket(void *kva) {
+    return ((uintptr_t)kva >> PGSHIFT) % SLUB_LARGE_BUCKETS;
+}
+
+/**
+ * @brief Get a descriptor for a multi-page object: from the static pool, else from the 32-byte class.
+ * @return an unused descriptor, or NULL if the page allocator cannot supply a slab page
+ * @author Yiyu Wang(2414007)
+ */
+static struct large_obj *large_desc_get(void) {
+    struct large_obj *desc = large_inline_free;
+    if (desc != NULL) {
+        large_inline_free = desc->next;
+        return desc;
+    }
+    return slub_alloc(sizeof(struct large_obj));
+}
+
+/**
+ * @brief Give a descriptor back to where large_desc_get() took it from.
+ * @param desc descriptor that is no longer linked into ::large_hash
+ * @author Yiyu Wang(2414007)
+ */
+static void large_desc_put(struct large_obj *desc) {
+    if (desc >= large_inline && desc < large_inline + SLUB_LARGE_INLINE) {
+        desc->next = large_inline_free;
+        large_inline_free = desc;
+    } else {
+        slub_free(desc);
+    }
 }
 
 /**
  * @brief Allocate a multi-page object and remember its length for slub_free().
  * @param size requested bytes, greater than the largest in-page class
- * @return start address, or NULL if @p size is too large, or no pages or no tracking slot remain
+ * @return start address, or NULL if @p size is too large or the page allocator has no memory left
  * @author 鲁昕宁(2414015)
  */
 static void *alloc_large(size_t size) {
@@ -185,31 +258,28 @@ static void *alloc_large(size_t size) {
         return NULL;
     }
     size_t npages = ROUNDUP(size, PGSIZE) / PGSIZE;
-    struct large_slot *slot = NULL;
-    for (size_t i = 0; i < SLUB_MAX_LARGE; i++) {
-        if (!larges[i].used) {
-            slot = &larges[i];
-            break;
-        }
-    }
-    if (slot == NULL) {
-        return NULL;
-    }
     struct Page *page = alloc_pages(npages);
     if (page == NULL) {
         return NULL;
     }
-    slot->kva = page_to_kva(page);
-    slot->npages = npages;
-    slot->used = 1;
-    return slot->kva;
+    struct large_obj *desc = large_desc_get();
+    if (desc == NULL) {
+        free_pages(page, npages);
+        return NULL;
+    }
+    desc->kva = page_to_kva(page);
+    desc->npages = npages;
+    size_t bucket = large_bucket(desc->kva);
+    desc->next = large_hash[bucket];
+    large_hash[bucket] = desc;
+    return desc->kva;
 }
 
 /**
  * @brief Allocate an object of at least @p size bytes.
  * @details Sizes up to 2048 bytes are rounded up to a power-of-two class and served from
  * a slab page of that class (a new page is taken when every slab is full).
- * Larger sizes get whole pages from alloc_pages() and are recorded in a table.
+ * Larger sizes get whole pages from alloc_pages() and are recorded in a hash table.
  */
 void *slub_alloc(size_t size) {
     if (size == 0) {
@@ -235,42 +305,46 @@ void *slub_alloc(size_t size) {
 }
 
 /**
- * @brief Free a multi-page object if @p obj is one; otherwise report that it is not.
- * @param obj address passed to slub_free()
- * @return 1 if a multi-page object was released, 0 if @p obj is not in the large table
+ * @brief Free a multi-page object.
+ * @param obj page-aligned address passed to slub_free(); must be a live multi-page object
  * @author 鲁昕宁(2414015)
  */
-static int free_large(void *obj) {
-    for (size_t i = 0; i < SLUB_MAX_LARGE; i++) {
-        if (larges[i].used && larges[i].kva == obj) {
-            free_pages(kva_to_page(obj), larges[i].npages);
-            larges[i].used = 0;
-            larges[i].kva = NULL;
-            larges[i].npages = 0;
-            return 1;
-        }
+static void free_large(void *obj) {
+    struct large_obj **pp = &large_hash[large_bucket(obj)];
+    while (*pp != NULL && (*pp)->kva != obj) {
+        pp = &(*pp)->next;
     }
-    return 0;
+    assert(*pp != NULL);
+    struct large_obj *desc = *pp;
+    *pp = desc->next;
+    free_pages(kva_to_page(obj), desc->npages);
+    large_desc_put(desc);
 }
 
 /**
  * @brief Free an object returned by slub_alloc().
- * @details A multi-page object is looked up in the table and its pages are freed. For a
- * slab object the slot goes back to its slab's free list; a slab that becomes
- * completely free is unlinked and its page is returned to the page allocator.
- * @warning An address that did not come from slub_alloc() is only caught when its
- *          page does not start with ::SLUB_MAGIC (the assert fails). Freeing an object
- *          twice is not reliably detected.
+ * @details Slots of a slab never start at a page boundary (the header is there), while a
+ * multi-page object always does. So a page-aligned address is looked up in the multi-page
+ * hash table and its pages are freed; any other address goes back to the free list of its
+ * slab, and a slab that becomes completely free is unlinked and its page is returned to
+ * the page allocator.
+ * @warning An address that was not returned by slub_alloc() is caught by an assert: a
+ *          page-aligned one must be a live multi-page object, any other one must lie on a
+ *          slot of a page that starts with ::SLUB_MAGIC. Freeing a multi-page object twice
+ *          is caught, freeing a slab slot twice is not reliably detected.
  */
 void slub_free(void *obj) {
     if (obj == NULL) {
         return;
     }
-    if (free_large(obj)) {
+    if (((uintptr_t)obj & (PGSIZE - 1)) == 0) {
+        free_large(obj);
         return;
     }
     struct slab_hdr *hdr = (struct slab_hdr *)((uintptr_t)obj & ~(uintptr_t)(PGSIZE - 1));
     assert(hdr->magic == SLUB_MAGIC);
+    size_t offset = (uintptr_t)obj - (uintptr_t)hdr;
+    assert(offset >= slab_start(hdr->obj_size) && offset % hdr->obj_size == 0);
     struct kmem_cache *cache = cache_for(hdr->obj_size);
     *(void **)obj = hdr->freelist;
     hdr->freelist = obj;
@@ -281,6 +355,7 @@ void slub_free(void *obj) {
             pp = &(*pp)->next;
         }
         *pp = hdr->next;
+        hdr->magic = 0;
         free_pages(kva_to_page(hdr), 1);
     }
 }
@@ -328,6 +403,60 @@ static int ranges_overlap(void *a, size_t asize, void *b, size_t bsize) {
     uintptr_t a0 = (uintptr_t)a;
     uintptr_t b0 = (uintptr_t)b;
     return a0 < b0 + bsize && b0 < a0 + asize;
+}
+
+/**
+ * @brief Pages the page allocator really consumes for an n-page request.
+ *
+ * The Buddy System rounds the request up to a power of two (3 pages cost 4), First-Fit and
+ * Best-Fit do not. Measuring it keeps the page-count assertions exact for every page
+ * allocator without naming one.
+ *
+ * @param n number of pages
+ * @return drop of nr_free_pages() caused by alloc_pages(n); the pages are given back before returning
+ * @author Yiyu Wang(2414007)
+ */
+static size_t page_cost(size_t n) {
+    size_t before = nr_free_pages();
+    struct Page *page = alloc_pages(n);
+    assert(page != NULL);
+    size_t cost = before - nr_free_pages();
+    free_pages(page, n);
+    assert(nr_free_pages() == before);
+    return cost;
+}
+
+/**
+ * @brief Take single pages from the page allocator until only @p keep pages are left.
+ *
+ * Every taken page stores the pointer to the previously taken one in its first word.
+ *
+ * @param keep number of free pages that must remain
+ * @return the most recently taken page, or NULL if nothing was taken
+ * @author Yiyu Wang(2414007)
+ */
+static struct Page *hog_pages(size_t keep) {
+    struct Page *head = NULL;
+    while (nr_free_pages() > keep) {
+        struct Page *page = alloc_pages(1);
+        assert(page != NULL);
+        *(struct Page **)page_to_kva(page) = head;
+        head = page;
+    }
+    return head;
+}
+
+/**
+ * @brief Give back all pages taken by hog_pages().
+ * @param head value returned by hog_pages()
+ * @author Yiyu Wang(2414007)
+ */
+static void unhog_pages(struct Page *head) {
+    while (head != NULL) {
+        struct Page *page = head;
+        head = *(struct Page **)page_to_kva(page);
+        free_pages(page, 1);
+    }
 }
 
 /** @brief Most objects of one class that check_multi_slab() holds at once: 2 pages worth plus one, of 16 bytes. */
@@ -390,8 +519,9 @@ static void check_multi_slab(void) {
  *
  * Sizes 2049 and 4096 need one page, 4097 and 8192 two, 8193 three. The page
  * allocator may hand out more than requested (the Buddy System rounds 3 pages
- * up to 4), so the pages taken are only required to be at least the pages
- * needed, but all of them must come back when the object is freed, because
+ * up to 4), so the pages taken must equal what page_cost() measures for the
+ * needed page count: not less, and not more because SLUB asked for too many
+ * pages. All of them must come back when the object is freed, because
  * slub_free() must pass the same page count that slub_alloc() asked for.
  *
  * @author Yiyu Wang(2414007)
@@ -404,7 +534,7 @@ static void check_large_sizes(void) {
         void *obj = slub_alloc(sizes[i]);
         assert(obj != NULL);
         assert(obj_page(obj) == (uintptr_t)obj);
-        assert(base - nr_free_pages() >= need[i]);
+        assert(base - nr_free_pages() == page_cost(need[i]));
         check_pattern(obj, sizes[i], (unsigned char)(0x30 + i));
         slub_free(obj);
         assert(nr_free_pages() == base);
@@ -453,29 +583,18 @@ static void check_huge_requests(void) {
 /**
  * @brief Check the behaviour when the page allocator has no page left.
  *
- * Takes every free page from the page allocator (each page's first word links
- * it to the next one), then requires small and multi-page requests to fail
- * without changing any state. After one page is returned, a one-page request
- * has to succeed again while a two-page request still fails. Finally all pages
- * are given back.
+ * Takes every free page from the page allocator, then requires small and
+ * multi-page requests to fail without changing any state. After one page is
+ * returned, a one-page request has to succeed again while a two-page request
+ * still fails. Finally all pages are given back.
  *
  * @author Yiyu Wang(2414007)
  */
 static void check_page_exhaustion(void) {
     size_t base = nr_free_pages();
-    struct Page *head = NULL;
-    size_t taken = 0;
-    for (;;) {
-        struct Page *page = alloc_pages(1);
-        if (page == NULL) {
-            break;
-        }
-        *(struct Page **)page_to_kva(page) = head;
-        head = page;
-        taken++;
-    }
-    assert(taken == base);
+    struct Page *head = hog_pages(0);
     assert(nr_free_pages() == 0);
+    assert(alloc_pages(1) == NULL);
 
     assert(slub_alloc(16) == NULL);
     assert(slub_alloc(2048) == NULL);
@@ -499,13 +618,115 @@ static void check_page_exhaustion(void) {
     slub_free(obj);
     assert(nr_free_pages() == 1);
 
-    while (head != NULL) {
-        page = head;
-        head = *(struct Page **)page_to_kva(page);
-        free_pages(page, 1);
-    }
+    unhog_pages(head);
     assert(nr_free_pages() == base);
     cprintf("slub_check: page exhaustion OK\n");
+}
+
+/** @brief Number of live multi-page objects in check_many_large(): more than the old 256-entry table and the static pool. */
+#define CHECK_MANY_LARGE 300
+
+/**
+ * @brief Check that the number of live multi-page objects is not limited by a table size.
+ *
+ * Holds CHECK_MANY_LARGE one-page objects at once, more than ::SLUB_LARGE_INLINE
+ * descriptors of the static pool (and more than the 256 entries of the table
+ * that earlier versions had). The first ::SLUB_LARGE_INLINE objects must cost
+ * exactly their own pages; every further descriptor comes from the 32-byte size
+ * class and adds one slab page per `capacity` descriptors. Contents and
+ * addresses must stay intact, and freeing in a scrambled order must return
+ * every page, including the descriptor slabs.
+ *
+ * @author Yiyu Wang(2414007)
+ */
+static void check_many_large(void) {
+    size_t base = nr_free_pages();
+    size_t desc_size = cache_for(sizeof(struct large_obj))->obj_size;
+    size_t desc_capacity = (PGSIZE - slab_start(desc_size)) / desc_size;
+    size_t per_obj = page_cost(1);
+    assert(CHECK_MANY_LARGE <= CHECK_MAX_OBJS && CHECK_MANY_LARGE > 256);
+    assert(CHECK_MANY_LARGE > SLUB_LARGE_INLINE);
+
+    for (size_t i = 0; i < SLUB_LARGE_INLINE; i++) {
+        check_objs[i] = slub_alloc(PGSIZE);
+        assert(check_objs[i] != NULL);
+        assert(obj_page(check_objs[i]) == (uintptr_t)check_objs[i]);
+        check_pattern(check_objs[i], PGSIZE, (unsigned char)(i % 251 + 1));
+    }
+    assert(base - nr_free_pages() == SLUB_LARGE_INLINE * per_obj);
+
+    for (size_t i = SLUB_LARGE_INLINE; i < CHECK_MANY_LARGE; i++) {
+        check_objs[i] = slub_alloc(PGSIZE);
+        assert(check_objs[i] != NULL);
+        assert(obj_page(check_objs[i]) == (uintptr_t)check_objs[i]);
+        check_pattern(check_objs[i], PGSIZE, (unsigned char)(i % 251 + 1));
+    }
+    size_t overflow = CHECK_MANY_LARGE - SLUB_LARGE_INLINE;
+    assert(base - nr_free_pages() ==
+           CHECK_MANY_LARGE * per_obj + (overflow + desc_capacity - 1) / desc_capacity);
+
+    for (size_t i = 0; i < CHECK_MANY_LARGE; i++) {
+        unsigned char *bytes = check_objs[i];
+        for (size_t k = 0; k < PGSIZE; k++) {
+            assert(bytes[k] == (unsigned char)(i % 251 + 1));
+        }
+        for (size_t j = i + 1; j < CHECK_MANY_LARGE; j++) {
+            assert(check_objs[i] != check_objs[j]);
+        }
+    }
+    for (size_t i = 0; i < CHECK_MANY_LARGE; i += 3) {
+        slub_free(check_objs[i]);
+    }
+    for (size_t i = 1; i < CHECK_MANY_LARGE; i += 3) {
+        slub_free(check_objs[i]);
+    }
+    for (size_t i = 2; i < CHECK_MANY_LARGE; i += 3) {
+        slub_free(check_objs[i]);
+    }
+    assert(nr_free_pages() == base);
+    cprintf("slub_check: many large objects OK\n");
+}
+
+/**
+ * @brief Check that a failing descriptor allocation gives the pages of a multi-page object back.
+ *
+ * With the static pool used up, a multi-page object needs a descriptor from the
+ * 32-byte class, i.e. one more page. When exactly one page is left, the object's
+ * own page can be taken but the descriptor cannot, so slub_alloc() has to return
+ * NULL and undo the first step. A freed object must also hand its descriptor back
+ * so that the static pool can be used again.
+ *
+ * @author Yiyu Wang(2414007)
+ */
+static void check_large_rollback(void) {
+    size_t base = nr_free_pages();
+    for (size_t i = 0; i < SLUB_LARGE_INLINE; i++) {
+        check_objs[i] = slub_alloc(PGSIZE);
+        assert(check_objs[i] != NULL);
+    }
+    size_t used = base - nr_free_pages();
+
+    struct Page *head = hog_pages(1);
+    assert(nr_free_pages() == 1);
+    assert(slub_alloc(PGSIZE) == NULL);
+    assert(nr_free_pages() == 1);
+    assert(slub_alloc(2 * PGSIZE) == NULL);
+    assert(nr_free_pages() == 1);
+
+    // Returning one object frees its descriptor to the static pool: a one-page object needs one page again.
+    slub_free(check_objs[0]);
+    assert(nr_free_pages() == 1 + page_cost(1));
+    check_objs[0] = slub_alloc(PGSIZE);
+    assert(check_objs[0] != NULL);
+    assert(nr_free_pages() == 1);
+
+    unhog_pages(head);
+    assert(base - nr_free_pages() == used);
+    for (size_t i = 0; i < SLUB_LARGE_INLINE; i++) {
+        slub_free(check_objs[i]);
+    }
+    assert(nr_free_pages() == base);
+    cprintf("slub_check: descriptor rollback OK\n");
 }
 
 /**
@@ -515,9 +736,9 @@ static void check_page_exhaustion(void) {
  * premature free shows up as a failed assert. Prints "slub_check() succeeded"
  * when all cases pass.
  *
- * @note The loop over multi-page objects near the end stops when the 256-entry
- *       multi-page table is full, not when memory runs out; running out of
- *       pages is covered separately by check_page_exhaustion().
+ * @note The loop over multi-page objects near the end stops when the page allocator runs
+ *       out of pages, not at a fixed count; the exact exhaustion cases are in
+ *       check_page_exhaustion().
  */
 void slub_check(void) {
     size_t base = nr_free_pages();
@@ -631,5 +852,7 @@ void slub_check(void) {
     check_large_sizes();
     check_huge_requests();
     check_page_exhaustion();
+    check_many_large();
+    check_large_rollback();
     cprintf("slub_check() succeeded\n");
 }

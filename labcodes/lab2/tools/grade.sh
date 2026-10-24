@@ -246,5 +246,13 @@ pts=10
 quick_check 'check buddy system'             \
     '[Test 3] Buddy System: PASS'
 
+pts=10
+quick_check 'check slub'                     \
+    '[Test 4] SLUB: PASS'
+
+pts=10
+quick_check 'check slub on buddy system'     \
+    '[Test 5] SLUB on Buddy System: PASS'
+
 ## print final-score
 show_final

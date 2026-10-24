@@ -185,7 +185,7 @@ void pmm_init(void) {
     // So a framework of physical memory manager (struct pmm_manager)is defined in pmm.h
     // First we should init a physical memory manager(pmm) based on the framework.
     // Then pmm can alloc/free the physical memory.
-    // Now the first_fit/best_fit/worst_fit/buddy_system pmm are available.
+    // Now the first_fit/best_fit/buddy_system pmm are available.
     init_pmm_manager();
 
     // detect physical memory space, reserve already used memory,

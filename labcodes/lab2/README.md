@@ -57,10 +57,12 @@ make grade
   -check page init:                          OK
   -check best fit:                           OK
   -check buddy system:                       OK
-Total Score: 30/30
+  -check slub:                               OK
+  -check slub on buddy system:               OK
+Total Score: 50/50
 ```
 
-评分脚本**不包含 SLUB**，SLUB 的验证看 2.1 中启动时的 `slub_check() succeeded`。
+Test 4 在默认的 Best-Fit 上运行 `slub_check()`；Test 5 借出 1024 页给 Buddy System，在其上再运行一遍，所以不需要 `make PMM=buddy` 就能覆盖 SLUB 在两种页分配器上的表现。启动时（2.1）仍会自动运行一次 `slub_check()`。
 
 ### 2.3 格式与注释检查
 

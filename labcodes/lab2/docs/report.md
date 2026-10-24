@@ -622,9 +622,11 @@ void slub_free(void *obj);
 - Case 6：分配 `PGSIZE + 1` 字节。空闲页数量减少 2，这块区域可按请求的长度写入并读回。释放后空闲页数量增加 2。
 - Case 7：连续分配 `PGSIZE + 1` 字节，直到返回 `NULL`。此前成功的对象内容仍然可读，且这次失败不改变空闲页数量。释放全部成功的对象后，空闲页数量回到本情况开始时的值。
 - Case 8（第二次迭代补充，多 slab）：对每个尺寸类各分配`2 × (4096 / 尺寸) + 1`个对象，数量超过两页能容纳的槽数，迫使 SLUB 在前面的 slab 已满时继续新建 slab。断言占用页数恰好等于`⌈对象数 / 每页槽数⌉`且不少于 3，每个地址按尺寸对齐、互不相同，内容互不干扰。随后先释放下标为偶数的对象、再释放奇数的，使空 slab 出现在 slab 链表中间而不是表头，最后空闲页数量回到初值。
-- Case 9（第二次迭代补充，大对象边界）：请求 2049、4096 字节占 1 页，4097、8192 字节占 2 页，8193 字节占 3 页。占用页数不少于所需页数（Buddy System 会把 3 页向上取整为 4 页），释放后空闲页数量必须回到初值。大对象和小对象同时存活时互不影响。
+- Case 9（第二次迭代补充，大对象边界）：请求 2049、4096 字节占 1 页，4097、8192 字节占 2 页，8193 字节占 3 页。占用页数必须等于页分配器对所需页数的实际消耗：用`alloc_pages(n)`前后`nr_free_pages()`的差值实测（Buddy System 会把 3 页向上取整为 4 页，Best-Fit 不会），释放后空闲页数量必须回到初值。大对象和小对象同时存活时互不影响。
 - Case 10（第二次迭代补充，页分配器耗尽）：把页分配器的空闲页全部取走，使`nr_free_pages()`为 0。此时 16、2048、`PGSIZE`和`PGSIZE + 1`字节的请求都必须返回`NULL`且不改变状态。还回 1 页后，`PGSIZE + 1`字节（需要 2 页）仍失败，16 字节和`PGSIZE`字节（各需要 1 页）成功；最后把所有页还回，空闲页数量回到初值。
 - Case 11（第二次迭代之后的修复，超大请求）：请求`SIZE_MAX`、`SIZE_MAX - 1`、`SIZE_MAX - PGSIZE + 1`、`SIZE_MAX - PGSIZE + 2`、2^63 和 2^40 字节，都必须返回`NULL`，空闲页数量不变，之后正常的大对象分配和释放不受影响。
+- Case 12（第三次迭代补充，大对象数量）：同时保留 300 个一页的大对象（`slub_alloc(PGSIZE)`），数量超过旧版 256 项的表，也超过静态描述符池的 64 个。前 64 个对象恰好只占自己的页，不额外占页；之后每 127 个对象多占一页（描述符所在的 slab）。每个地址页对齐、互不相同，写入的内容保持不变。按 3 个一组错开的顺序释放后，空闲页数量回到初值。
+- Case 13（第三次迭代补充，描述符分配失败的回滚）：先让 64 个静态描述符全部被占用，再把页分配器的空闲页取走到只剩 1 页。此时`slub_alloc(PGSIZE)`能拿到对象本身的那一页，但拿不到描述符（需要再一页），必须返回`NULL`并把刚拿到的页还回去，空闲页数仍为 1；释放一个大对象后描述符回到静态池，一页的请求又能成功。最后空闲页数量回到初值。
 
 ##### 4.6.3.2 第一次迭代：在 Best-Fit 基础上实现 SLUB
 
@@ -648,7 +650,7 @@ void slub_free(void *obj);
 2. **审查原自检的覆盖范围，发现两个盲区：**
    - Case 7 本意是"一直分配到返回`NULL`"，但实际运行时循环在第 256 个大对象就结束了，此时还剩约 31400 个空闲页。停下来的原因是`larges[]`表只有 256 项、表满即返回`NULL`，而不是页分配器没有页了。所以"页分配器给不出页时 SLUB 的行为"从未被检验。
    - Case 2–5 中每个尺寸类最多同时存活 2 个对象，从未填满一个 slab。"slab 已满要新建第二个 slab"和"从 slab 链表中间摘掉空 slab"这两条路径没有被检验。
-3. **结合 Buddy System 的特点补充三个用例**（Case 8–10，用例内容见 4.6.3.1；后面发现超大请求问题后又补了 Case 11）。其中 Case 9 针对 Buddy System 的取整行为：请求 8193 字节需要 3 页，Buddy 实际占 4 页，要求`free_pages()`传回的页数与`alloc_pages()`取得的一致，才能让空闲页数回到初值；SLUB 在登记表里记录页数，正是为了满足这一点。新用例没有写死"恰好占 N 页"，而是写成"不少于 N 页且能完全归还"，因此在 Best-Fit 和 Buddy 两种页分配器上都成立。
+3. **结合 Buddy System 的特点补充三个用例**（Case 8–10，用例内容见 4.6.3.1；后面发现超大请求问题后又补了 Case 11）。其中 Case 9 针对 Buddy System 的取整行为：请求 8193 字节需要 3 页，Buddy 实际占 4 页，要求`free_pages()`传回的页数与`alloc_pages()`取得的一致，才能让空闲页数回到初值；SLUB 在登记表里记录页数，正是为了满足这一点。新用例没有写死"恰好占 N 页"，而是写成"不少于 N 页且能完全归还"，因此在 Best-Fit 和 Buddy 两种页分配器上都成立（第三次迭代把它进一步改成了实测值，见 4.6.3.4）。
 4. **用植入错误验证新用例确实有效。**
 
 | 植入的错误                                                      | 原自检（Case 1–7）                       | 补充后的自检                                                                   |
@@ -679,6 +681,59 @@ slub_check() succeeded
 
 **结论：** 假设成立：SLUB 在 Best-Fit 和 Buddy System 上都能正确工作，无需针对页分配器做任何修改。除补上测试盲区外，发现并修复了上述两处问题。仍然没有处理的是重复释放：同一个对象释放两次不能被可靠地检测到。
 
+##### 4.6.3.4 第三次迭代：取消大对象表的容量上限，并把 SLUB 自检接入评分
+
+**负责人：** 2414007-王奕瑜
+
+**目标：** 复核设计报告中记录的几处遗留问题，处理仍然存在的，并把 SLUB 的验证从"启动时顺带运行"变成`make grade`里的正式检查项。
+
+**逐项复核：**
+
+| 遗留问题                                 | 复核结果                                                                                                      | 本轮处理                                                     |
+| ---------------------------------------- | ------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------ |
+| 大对象表固定 256 项                      | 仍然存在：同时存活 256 个大对象后，再申请就返回`NULL`，而内存还很充裕                                         | 取消上限（见下）                                             |
+| 自检的页数断言与 Buddy System 的取整耦合 | SLUB 本身没有问题（`alloc_pages(n)`与`free_pages(p, n)`成对），问题只在测试：第二次迭代把断言放宽成了"不少于" | 改为实测页分配器的实际消耗，断言恢复为精确相等               |
+| `SLUB_MAGIC`只写不查                     | 已在第二次迭代修复，复核代码中`slub_free()`仍有该断言                                                         | 保留；另外在槽地址上加对齐与范围检查，释放 slab 页时清除魔数 |
+| 超大请求使`ROUNDUP`回绕                  | 已在第二次迭代修复，`alloc_large()`仍先判断`size > SIZE_MAX - (PGSIZE - 1)`                                   | 保留，Case 11 继续覆盖                                       |
+| SLUB 自检没有进入`make grade`            | 仍然存在：评分只有 Test 1–3                                                                                   | 新增 Test 4、Test 5（见下）                                  |
+
+**1. 取消大对象表的容量上限。** 旧版用`larges[256]`登记每个大对象的页数，因为`slub_free()`不带大小。这个 256 没有可以论证的依据：同时存活的大对象个数最多等于物理页数，在 128MB 内存下是 32768，并且随`-m`参数变化；按上界开静态表要约 768KB，也不通用。所以不换一个"更合适的固定值"，而是让数量只受内存限制：
+
+- 每个大对象对应一个描述符`struct large_obj {next, kva, npages}`，挂在按页号哈希的 128 个桶里（桶数只影响速度，不影响容量）。
+- 描述符优先取自 64 个静态描述符，不占页；用完后改从 SLUB 自己的 32 字节尺寸类里分配，大约每 127 个大对象多占一页。
+- 保留静态池是为了不改变既有约定：一页的请求只需要一页。如果描述符一律从尺寸类分配，页分配器只剩 1 页时，`slub_alloc(PGSIZE)`会因为描述符要再占一页而失败，与 Case 10 矛盾。
+- 分配顺序是先取对象的页，再取描述符；描述符取不到时把页还回去，保证失败不改变状态（Case 13）。
+
+**2. 小对象释放不再扫表。** 旧版每次`slub_free()`都先把 256 项表扫一遍。slab 里的槽地址一定不是页对齐的（页首是`slab_hdr`），而大对象的首地址一定页对齐，所以直接看地址低 12 位就能区分，小对象释放变成 O(1)。页对齐的地址必须是仍存活的大对象，否则`assert`失败，这也让大对象的重复释放能被检测到。
+
+**3. 页数断言改为实测。** 新增`page_cost(n)`：调用一次`alloc_pages(n)`，记录`nr_free_pages()`的下降量后再释放。Case 9 用它给出每种大小应占的页数，Best-Fit 下 3 页就是 3，Buddy 下是 4，不必在测试里判断页分配器是哪一种。
+
+**4. 新增用例**：Case 12（300 个大对象）和 Case 13（描述符分配失败回滚），内容见 4.6.3.1。页分配器耗尽的取页逻辑抽成了`hog_pages()`/`unhog_pages()`，Case 10 和 Case 13 共用。
+
+**5. 接入`make grade`。** `tools/test_lab2.c`新增两项，由`inject.py`注入到`pmm_init()`末尾，`grade.sh`各检查一行输出（各 10 分）：
+
+- Test 4：在当前页分配器（Best-Fit）上`slub_init()`并运行`slub_check()`，并核对结束后空闲页数没有变化。
+- Test 5：从 Best-Fit 借出 1024 页交给 Buddy System，在它上面重新初始化并运行`slub_check()`，然后恢复`pmm_manager`并归还这 1024 页。借出 1024 页是因为 Case 12 需要 300 多页。这样一次`make grade`就覆盖了 SLUB 在两种页分配器上的表现，不必另外`make PMM=buddy`。
+
+借出区域的逻辑与 Test 3 相同，抽成了`run_on_buddy_region()`，Test 3 和 Test 5 共用。
+
+**6. 用植入错误验证新用例。**
+
+| 植入的错误                                         | 结果                                                                                                          |
+| -------------------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
+| 描述符分配失败时不把对象的页还回去                 | 内核在 Case 13 的`assert(nr_free_pages() == 1)`处 panic（此前 Case 1–12 全部通过，该错误只有 Case 13 能发现） |
+| `free_large()`释放后不归还描述符                   | 内核在`slub_check()`中大对象循环结束后的`assert(nr_free_pages() == pages)`处 panic                            |
+| `free_large()`摘链表时把整个桶清空（`*pp = NULL`） | 内核在`free_large()`的`assert(*pp != NULL)`处 panic                                                           |
+| 上述第一个错误，用`make grade`                     | Test 4、Test 5 均为`WRONG`，总分 30/50                                                                        |
+
+**测试结果：**
+
+- ✅ `make qemu`（Best-Fit）输出 6 行`slub_check: … OK`和`slub_check() succeeded`
+- ✅ `make PMM=buddy qemu`（Buddy System）输出相同的 6 行
+- ✅ `make grade`为 50/50（Test 1–5 全部通过）
+
+**结论：** 大对象的数量不再有人为上限，旧版`larges[]`的 256 项限制已经去掉。SLUB 的对象级逻辑仍然不依赖页分配器的种类，页数断言也不再依赖某一种页分配器的取整方式。仍然没有处理的是 slab 槽的重复释放。
+
 ## 五、测试与验证
 
 本实验的全部任务（物理内存探测与页描述符初始化、Best-Fit、Buddy System、SLUB）已经合入同一份代码。本节不区分各功能是在哪个阶段完成的，只在**最终代码**上，用仓库自带的命令验证所有功能能够协同工作。所有命令都在`labcodes/lab2`目录下执行，任何人拉取仓库后都可以按本节步骤复现。
@@ -691,14 +746,14 @@ slub_check() succeeded
 
 **功能与验证手段对应：**
 
-| 功能                            | 验证手段                                            | 成功标志                                                                           | 所在小节 |
-| ------------------------------- | --------------------------------------------------- | ---------------------------------------------------------------------------------- | -------- |
-| 物理内存探测（设备树）          | 启动输出中的内存范围，与手工计算对照；评分 Test 1   | `Physical Memory from DTB`、`physical memory map`与预期一致；`check page init: OK` | 5.2、5.4 |
-| 页描述符初始化（`page_init()`） | 手工计算空闲区；评分 Test 1                         | `check page init: OK`                                                              | 5.2、5.4 |
-| Best-Fit 分配器                 | 内核内置自检`check_alloc_page()`；评分 Test 2       | `check_alloc_page() succeeded!`；`check best fit: OK`                              | 5.2、5.4 |
-| Buddy System 分配器             | 内核内置自检`buddy_check()`的 8 个场景；评分 Test 3 | 8 行`buddy_check: … OK`；`check buddy system: OK`                                  | 5.3、5.4 |
-| SLUB（在两种页分配器上）        | 启动时自动运行`slub_check()`（11 个用例）           | 4 行`slub_check: … OK`和`slub_check() succeeded`                                   | 5.2、5.3 |
-| 构建与代码规范                  | `-Wall -Werror`编译、`clang-format`、`Prettier`     | 无警告；`make format-check`通过                                                    | 5.5      |
+| 功能                            | 验证手段                                                       | 成功标志                                                                                             | 所在小节      |
+| ------------------------------- | -------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- | ------------- |
+| 物理内存探测（设备树）          | 启动输出中的内存范围，与手工计算对照；评分 Test 1              | `Physical Memory from DTB`、`physical memory map`与预期一致；`check page init: OK`                   | 5.2、5.4      |
+| 页描述符初始化（`page_init()`） | 手工计算空闲区；评分 Test 1                                    | `check page init: OK`                                                                                | 5.2、5.4      |
+| Best-Fit 分配器                 | 内核内置自检`check_alloc_page()`；评分 Test 2                  | `check_alloc_page() succeeded!`；`check best fit: OK`                                                | 5.2、5.4      |
+| Buddy System 分配器             | 内核内置自检`buddy_check()`的 8 个场景；评分 Test 3            | 8 行`buddy_check: … OK`；`check buddy system: OK`                                                    | 5.3、5.4      |
+| SLUB（在两种页分配器上）        | 启动时自动运行`slub_check()`（13 个用例）；评分 Test 4、Test 5 | 6 行`slub_check: … OK`和`slub_check() succeeded`；`check slub: OK`、`check slub on buddy system: OK` | 5.2、5.3、5.4 |
+| 构建与代码规范                  | `-Wall -Werror`编译、`clang-format`、`Prettier`                | 无警告；`make format-check`通过                                                                      | 5.5           |
 
 ### 5.2 测试一：默认内核（Best-Fit + SLUB）
 
@@ -727,9 +782,9 @@ DTB init completed
 (THU.CST) os is loading ...
 Special kernel symbols:
   entry  0xffffffffc02000d6 (virtual)
-  etext  0xffffffffc0202a4c (virtual)
-  edata  0xffffffffc0207098 (virtual)
-  end    0xffffffffc0209904 (virtual)
+  etext  0xffffffffc02031f4 (virtual)
+  edata  0xffffffffc0208098 (virtual)
+  end    0xffffffffc0209b10 (virtual)
 Kernel executable memory footprint: 39KB
 memory management: best_fit_pmm_manager
 physical memory map:
@@ -741,6 +796,8 @@ slub_check: multi-slab OK
 slub_check: large sizes OK
 slub_check: huge requests OK
 slub_check: page exhaustion OK
+slub_check: many large objects OK
+slub_check: descriptor rollback OK
 slub_check() succeeded
 ```
 
@@ -752,11 +809,11 @@ slub_check() succeeded
 
 1. **内存范围探测正确。** 设备树给出的`Base = 0x80000000`、`Size = 128 MB`、`End = 0x87ffffff`，与`physical memory map`一行完全一致，也和 QEMU 默认配置相符。说明`page_init()`通过`get_memory_base()`/`get_memory_size()`读到了`dtb_init()`保存的结果。
 2. **内存布局与手工计算一致。** 以本次输出为例：
-   - `end = 0xffffffffc0209904`，向上按页对齐得到`pages = 0xffffffffc020a000`，对应物理地址`0x8020a000`；
+   - `end = 0xffffffffc0209b10`，向上按页对齐得到`pages = 0xffffffffc020a000`，对应物理地址`0x8020a000`；
    - 页数`npage - nbase = 0x88000 - 0x80000 = 32768`，每个`struct Page`占 40 字节，描述符数组共`0x140000`字节（1280KB），末尾物理地址为`0x8034a000`，已按页对齐；
    - 因此空闲区为`[0x8034a000, 0x88000000)`，共`0x7cb6 = 31926`页，约 124.7MB；OpenSBI、内核镜像和描述符数组所在的页面保持保留，没有进入空闲链表。
 3. **Best-Fit 工作正常。** `memory management: best_fit_pmm_manager`说明当前用的是 Best-Fit，`check_alloc_page() succeeded!`说明它自带的`basic_check()`和`best_fit_check()`全部通过。这个自检运行在`page_init()`建立的空闲区上，所以也间接证明了初始化的正确。
-4. **SLUB 工作正常。** `slub_check()`是在`pmm_init()`之后自动运行的，先依次检查 0 字节与`NULL`、8 个尺寸类的对齐与互不重叠、同页对象共用与整页归还、槽的复用、大对象和大对象表满（Case 1–7，全部通过后才会打印最后一行），再打印 4 行补充用例的结果：多 slab（Case 8）、大对象页数边界（Case 9）、超大请求（Case 11）、页分配器耗尽（Case 10）。最后每个用例都核对了`nr_free_pages()`，说明没有泄漏页。
+4. **SLUB 工作正常。** `slub_check()`是在`pmm_init()`之后自动运行的，先依次检查 0 字节与`NULL`、8 个尺寸类的对齐与互不重叠、同页对象共用与整页归还、槽的复用、大对象，以及连续分配大对象直到页分配器没有页为止（Case 1–7，全部通过后才会打印最后一行），再打印 6 行补充用例的结果：多 slab（Case 8）、大对象页数边界（Case 9）、超大请求（Case 11）、页分配器耗尽（Case 10）、300 个大对象同时存活（Case 12）、描述符分配失败的回滚（Case 13）。最后每个用例都核对了`nr_free_pages()`，说明没有泄漏页。
 
 ### 5.3 测试二：Buddy System 内核（Buddy System + SLUB）
 
@@ -786,12 +843,14 @@ buddy_check: fragmentation OK
 buddy_check: random stress OK
 buddy_check: zone boundary OK
 check_alloc_page() succeeded!
-satp virtual address: 0xffffffffc0207000
-satp physical address: 0x0000000080207000
+satp virtual address: 0xffffffffc0208000
+satp physical address: 0x0000000080208000
 slub_check: multi-slab OK
 slub_check: large sizes OK
 slub_check: huge requests OK
 slub_check: page exhaustion OK
+slub_check: many large objects OK
+slub_check: descriptor rollback OK
 slub_check() succeeded
 ```
 
@@ -802,12 +861,12 @@ slub_check() succeeded
 1. **Buddy System 可以作为真实的物理内存管理器运行。** `memory management: buddy_pmm_manager`说明`PMM_BUDDY`接入生效，内核继续正常启动。
 2. **8 个场景逐项通过。** 8 行`buddy_check`依次对应：初始布局、分裂、合并、取整与对齐、耗尽、外部碎片、随机压力、区间边界。
 3. **空闲区的切块符合设计。** 本次内核里空闲区起点为物理页号`0x8034b`（描述符数组比 Best-Fit 内核晚一页结束，因为 Buddy 内核更大），共 31925 页。起点不是 2 的幂次对齐，`init_memmap`贪心地把它切成 1、4、16、32、128、1024、2048、4096、8192、16384 页共 10 个自然对齐的块，总和恰为 31925，没有浪费一页。
-4. **SLUB 在 Buddy System 上同样通过。** 4 行`slub_check: … OK`的输出与 5.2 相同。其中 Case 9 特别针对 Buddy 的取整（3 页会占 4 页），要求归还时页数一致，这一项通过，说明 SLUB 登记的页数与页分配器的取整行为配合正确。
+4. **SLUB 在 Buddy System 上同样通过。** 6 行`slub_check: … OK`的输出与 5.2 相同。其中 Case 9 特别针对 Buddy 的取整（3 页会占 4 页）：断言的页数是实测值，并要求归还时页数一致，这一项通过，说明 SLUB 登记的页数与页分配器的取整行为配合正确。
 5. **两种内核的数值略有不同属正常现象。** Buddy 内核代码更大（含`buddy_check`），`end`、`pages`和空闲页数都随之变化，所以与 5.2 的数值不同。
 
 ### 5.4 测试三：自动评分
 
-`make grade`把工作区复制到`/tmp/lab2_grade`，注入`tools/test_lab2.c`中的三个评分测试，在 QEMU 中运行，不改动工作区的源码。
+`make grade`把工作区复制到`/tmp/lab2_grade`，注入`tools/test_lab2.c`中的五个评分测试，在 QEMU 中运行，不改动工作区的源码。
 
 **步骤：**
 
@@ -822,7 +881,9 @@ make grade
   -check page init:                          OK
   -check best fit:                           OK
   -check buddy system:                       OK
-Total Score: 30/30
+  -check slub:                               OK
+  -check slub on buddy system:               OK
+Total Score: 50/50
 ```
 
 ![make grade 输出](./images/5.4_make_grade.png)
@@ -831,19 +892,21 @@ Total Score: 30/30
 
 1. **Test 1（Page Init）通过：** `va_pa_offset`等于`PHYSICAL_MEMORY_OFFSET`，`npage`等于设备树内存末端的物理页号，`pages`页对齐并位于`end`之后，空闲页数大于 0 且不超过总页数，内核尾页和描述符数组所在页保持保留，`page2pa()`与`pa2page()`互逆。
 2. **Test 2（Best-Fit）通过：** 评分内核默认使用 Best-Fit，`pmm_manager`指向`best_fit_pmm_manager`。
-3. **Test 3（Buddy System）通过：** 这个测试在默认的 Best-Fit 内核里，从 Best-Fit 取出 256 页交给 Buddy System 跑完自检再归还，并恢复`pmm_manager`，所以不影响 Test 1、Test 2。这样一次评分就能覆盖三项功能。
-4. **评分不包含 SLUB。** SLUB 没有评分测试，它的验证来自 5.2、5.3 中启动时自动运行的`slub_check()`。
+3. **Test 3（Buddy System）通过：** 这个测试在默认的 Best-Fit 内核里，从 Best-Fit 取出 256 页交给 Buddy System 跑完自检再归还，并恢复`pmm_manager`，所以不影响 Test 1、Test 2。
+4. **Test 4（SLUB）通过：** 在 Best-Fit 上`slub_init()`后运行`slub_check()`，全部 13 个用例通过，且结束后空闲页数与运行前相同，说明 SLUB 没有泄漏页。`slub_check()`里任何一处`assert`失败都会 panic，这一行就不会出现。
+5. **Test 5（SLUB on Buddy System）通过：** 从 Best-Fit 借出 1024 页给 Buddy System，在其上重新初始化 SLUB 并运行同一份`slub_check()`，再恢复`pmm_manager`、归还这些页。这样不需要`make PMM=buddy`，一次评分就同时覆盖了 SLUB 在两种页分配器上的表现，也让 5.3 的结论进入了自动评分。
+6. **评分覆盖五项功能。** 如果把 SLUB 里的某个错误植入进去（例如大对象描述符分配失败时不归还页），Test 4、Test 5 都会变成`WRONG`，总分降到 30/50。
 
 ### 5.4 结论
 
-| 任务                                   | 验证结果                                                |
-| -------------------------------------- | ------------------------------------------------------- |
-| 物理内存探测与页描述符初始化           | 通过：范围与手工计算一致，Test 1 通过                   |
-| First-Fit 理解（思考题）               | 无需运行测试，见 4.2                                    |
-| Best-Fit 分配器                        | 通过：`check_alloc_page()` 与 Test 2                    |
-| Buddy System 分配器                    | 通过：8 个`buddy_check`场景与 Test 3                    |
-| SLUB（Best-Fit、Buddy 两种页分配器上） | 通过：11 个用例，两种内核都输出`slub_check() succeeded` |
-| 综合评分                               | `make grade`为 30/30                                    |
+| 任务                                   | 验证结果                                                                     |
+| -------------------------------------- | ---------------------------------------------------------------------------- |
+| 物理内存探测与页描述符初始化           | 通过：范围与手工计算一致，Test 1 通过                                        |
+| First-Fit 理解（思考题）               | 无需运行测试，见 4.2                                                         |
+| Best-Fit 分配器                        | 通过：`check_alloc_page()` 与 Test 2                                         |
+| Buddy System 分配器                    | 通过：8 个`buddy_check`场景与 Test 3                                         |
+| SLUB（Best-Fit、Buddy 两种页分配器上） | 通过：13 个用例，两种内核都输出`slub_check() succeeded`；Test 4、Test 5 通过 |
+| 综合评分                               | `make grade`为 50/50                                                         |
 
 全部功能在最终代码上协同工作，实验任务完成。
 

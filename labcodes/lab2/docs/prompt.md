@@ -477,25 +477,25 @@ pmm_manager = &best_fit_pmm_manager;
 
 Best-Fit 分配器需要正确处理以下场景：
 
-- **空闲区初始化**  
+- **空闲区初始化**
   使用链表维护连续空闲块，每个空闲块由首页记录 `property`，并正确维护 `nr_free`。
 
-- **Best-Fit 分配**  
+- **Best-Fit 分配**
   申请连续 `n` 页时，遍历所有满足 `property >= n` 的空闲块，选择其中大小最小的块，而不是选择第一个满足条件的块。
 
-- **空闲块分割**  
+- **空闲块分割**
   当选中的空闲块大于请求大小时，从中分配 `n` 页，并将剩余部分重新作为空闲块加入管理。
 
-- **页面释放**  
+- **页面释放**
   释放连续页面后，将其重新加入空闲链表，并正确恢复 `property` 和页面状态。
 
-- **相邻块合并**  
+- **相邻块合并**
   释放后的空闲块如果与前一个或后一个空闲块在物理地址上连续，应进行合并，避免形成不必要的外部碎片。
 
-- **空闲页计数**  
+- **空闲页计数**
   初始化、分配和释放过程中均需正确维护 `nr_free`。
 
-- **分配失败**  
+- **分配失败**
   当不存在能够满足请求的连续空闲块时返回 `NULL`。
 
 ---
@@ -514,3 +514,712 @@ Best-Fit 分配器需要正确处理以下场景：
 
 > 当同时存在一个 2 页空闲块和一个 1 页空闲块，并申请 1 页时，应选择 1 页空闲块，而不是链表中更早出现的 2 页空闲块。
 ````
+
+#### 2.3.2 gdb 调试页表查询过程
+
+##### 2.3.2.1 配置 QEMU 与双重 GDB 调试环境
+
+[PROMPT]
+
+请指导我配置 Lab2 的 **QEMU 与双重 GDB 调试环境**，为后续分析 RISC-V Sv39 页表查询过程做好准备。
+
+本次实验需要同时使用：
+
+- 宿主机 GDB：调试 QEMU 模拟器的 C 源码；
+- RISC-V GDB：调试 QEMU 中运行的 ucore 内核。
+
+首先检查当前实验环境，确认 QEMU 是否包含调试符号、RISC-V GDB 是否可用，以及内核是否已经生成可调试的 ELF 文件。
+
+如果现有 QEMU 不包含调试信息，请指导我编译支持源码级调试的 QEMU。
+
+请按步骤指导，每完成一个关键步骤后等待我提供终端输出，不要一次性给出全部操作。
+
+---
+
+[RELY]
+
+可以依赖现有工程中的：
+
+- `lab2/Makefile`；
+- `lab2/bin/kernel`；
+- QEMU RISC-V 模拟器；
+- QEMU 源码中的 `target/riscv/cpu_helper.c`；
+- 宿主机 `gdb`；
+- `riscv64-unknown-elf-gdb`；
+- GCC、Make 等构建工具。
+
+请优先检查项目已有配置，不要假定工具安装位置。
+
+---
+
+[GUARANTEE]
+
+必须完成：
+
+- 确认当前 Lab2 项目路径；
+- 确认内核 ELF 文件包含调试符号；
+- 确认 QEMU 版本及源码位置；
+- 确认 QEMU 可执行文件包含调试信息；
+- 确认宿主机 GDB 与 RISC-V GDB 可用；
+- 确认 QEMU 可以运行现有 ucore 内核。
+
+不得修改内核的正常功能或实验测试代码。
+
+---
+
+[SPECIFICATION]
+
+调试环境应满足以下要求：
+
+1. **路径可移植**
+   - 不得硬编码用户主目录；
+   - 不得假设 `NKU_OS_Labwork` 的上一级目录；
+   - 优先使用相对路径、环境变量和自动发现机制。
+
+2. **QEMU 源码调试**
+   - 能够定位 `riscv_cpu_tlb_fill()`；
+   - 能够定位 `get_physical_address()`；
+   - 能够在 GDB 中查看函数源码和局部变量。
+
+3. **ucore 内核调试**
+   - 能够读取内核 ELF 符号；
+   - 能够查看 RISC-V 寄存器；
+   - 能够进行汇编级单步调试。
+
+4. **结果检查**
+   - 给出需要执行的检查命令；
+   - 解释每条检查命令的用途；
+   - 根据实际输出判断环境是否配置成功。
+
+只有调试环境确认正常后，才进入下一阶段。
+
+##### 2.3.2.2 启动双重 GDB 并观察 Bare 模式
+
+[PROMPT]
+
+调试环境已经准备完成。
+
+请指导我启动 **双重 GDB 调试**，分别连接 QEMU 模拟器和其中运行的 RISC-V ucore 内核。
+
+本阶段重点观察 CPU 的初始运行状态，验证分页机制尚未开启时的 Bare 模式。
+
+需要明确区分：
+
+- 终端 A：运行 QEMU；
+- 终端 B：宿主机 GDB，调试 QEMU；
+- 终端 C：RISC-V GDB，调试 ucore。
+
+请逐步指导三个终端的操作，并解释为什么双重 GDB 需要按照特定顺序启动和继续执行。
+
+---
+
+[RELY]
+
+依赖上一阶段已经确认的：
+
+- QEMU 调试版可执行文件；
+- `lab2/Makefile` 中的 QEMU 调试目标；
+- `bin/kernel`；
+- 宿主机 GDB；
+- RISC-V GDB；
+- QEMU GDB Stub。
+
+可以使用：
+
+- `make debug`；
+- `make gdb`；
+- `target remote`；
+- `info registers`；
+- `x/i`。
+
+具体命令需要根据工程实际配置确定。
+
+---
+
+[GUARANTEE]
+
+必须实现：
+
+- QEMU 启动并暂停客户机 CPU；
+- 宿主机 GDB 成功连接 QEMU；
+- RISC-V GDB 成功连接 QEMU GDB Stub；
+- 能够读取客户机 PC 和 `satp`；
+- 能够查看当前 RISC-V 汇编指令；
+- 能够确认当前分页模式。
+
+整个过程中不得修改 ucore 的内存管理实现。
+
+---
+
+[SPECIFICATION]
+
+1. **启动顺序**
+   - 解释 QEMU 的 `-s` 和 `-S` 参数；
+   - 指导宿主机 GDB 与客户机 GDB 的连接；
+   - 解释宿主机 GDB 暂停 QEMU 时，客户机 GDB 为什么可能无法响应。
+
+2. **初始状态检查**
+
+   使用：
+
+   ```gdb
+   info registers pc
+   x/10i $pc
+   p/x $satp
+3. Bare 模式判断
+   - 分析当前 PC 所处的启动阶段；
+   - 解释 satp.MODE=0 的含义；
+   - 说明 Bare 模式下地址翻译的特点。
+4. 调试结果
+   - 记录 PC；
+   - 记录 satp；
+   - 解释当前汇编指令；
+   - 说明 CPU 如何从启动代码进入 OpenSBI 和 ucore。
+本阶段只观察初始状态，不提前执行内核分页切换代码。
+
+
+##### 2.3.2.3 单步调试 ucore 开启 Sv39 分页的过程**
+
+[PROMPT]
+
+目前已经通过 RISC-V GDB 观察到 CPU 处于 Bare 模式。
+
+请继续指导我调试 ucore 内核启动过程，重点分析 **从 Bare 模式切换到 Sv39 分页模式** 的实现。
+
+需要找到内核入口和操作 `satp` 的汇编代码，并通过单步执行观察 `satp` 的变化。
+
+请结合项目实际汇编代码分析，不要直接假定断点地址或内核链接地址。
+
+---
+
+[RELY]
+
+可以依赖：
+
+- 内核入口汇编文件 `entry.S`；
+- 内核链接脚本；
+- `bin/kernel` 中的符号信息；
+- 内核启动页表；
+- RISC-V GDB。
+
+重点关注：
+
+- `kern_entry`；
+- `csrw satp`；
+- `sfence.vma`；
+- 高虚拟地址跳转；
+- `kern_init`。
+
+---
+
+[GUARANTEE]
+
+必须完成：
+
+- 定位 ucore 内核入口；
+- 在尚未开启分页的位置设置断点；
+- 找到 `csrw satp` 指令；
+- 观察执行前后的 `satp`；
+- 验证 Sv39 模式已经启用；
+- 计算根页表物理地址；
+- 观察 `sfence.vma` 的执行。
+
+---
+
+[SPECIFICATION]
+
+1. **入口断点**
+
+   根据当前内核的装载地址与链接地址，选择正确的断点位置。
+
+   不允许将其他机器上的固定地址直接作为通用断点。
+
+2. **汇编检查**
+
+   使用：
+
+   ```gdb
+   info registers pc
+   x/40i $pc
+找到修改 satp 的关键指令。
+3. 单步执行
+
+   使用：
+   si
+   p/x $satp
+
+
+   对比执行 csrw satp 前后的寄存器值。
+4. Sv39 解析
+   - 提取 satp.MODE；
+   - 判断是否为 Sv39；
+   - 提取 satp.PPN；
+   - 计算根页表物理地址。
+   注意 GDB 对有符号整数右移可能产生符号扩展，应采用正确的无符号表达式。
+5. 地址映射分析
+   - 解释为何写入 satp 后仍可能在低地址执行；
+   - 检查启动页表是否包含恒等映射；
+   - 找到后续跳转到高虚拟地址的指令。
+
+本阶段结束时，应得到 Sv39 模式和根页表物理地址的实际调试证据。
+
+
+
+##### 2.3.2.4 捕获 QEMU 软件 TLB 未命中与页表查询入口
+
+[PROMPT]
+
+ucore 已经开启 Sv39 分页。
+
+请指导我在宿主机 GDB 中捕获 **QEMU 对内核高虚拟地址的首次取指翻译过程**。
+
+目标是从 QEMU 软件 TLB 未命中开始，观察进入 RISC-V 页表查询函数的真实调用链。
+
+需要通过实际调试确认：
+
+- 哪个虚拟地址触发了地址翻译；
+- 本次访问属于取指、读取还是写入；
+- QEMU 如何进入 `riscv_cpu_tlb_fill()`；
+- `get_physical_address()` 如何被调用。
+
+请特别说明两个 GDB 之间如何协调，避免误操作造成调试停滞。
+
+---
+
+[RELY]
+
+可以依赖：
+
+- `target/riscv/cpu_helper.c`；
+- `accel/tcg/cputlb.c`；
+- `accel/tcg/cpu-exec.c`；
+- 当前 ucore ELF 符号；
+- 前一阶段找到的高虚拟地址跳转位置。
+
+重点函数：
+
+- `get_page_addr_code()`；
+- `tlb_fill()`；
+- `riscv_cpu_tlb_fill()`；
+- `get_physical_address()`。
+
+---
+
+[GUARANTEE]
+
+必须完成：
+
+- 在宿主机 GDB 中设置正确的 QEMU 函数断点；
+- 捕获一次真实的内核高虚拟地址访问；
+- 验证访问类型；
+- 查看 MMU 上下文；
+- 记录实际调用栈；
+- 单步进入 `get_physical_address()`。
+
+不得伪造或预设运行时的地址翻译结果。
+
+---
+
+[SPECIFICATION]
+
+1. **断点设计**
+   - 根据当前内核符号确定目标高虚拟地址；
+   - 优先捕获首次高虚拟地址取指；
+   - 必要时设置条件断点，避免无关访问频繁触发；
+   - 不得硬编码 QEMU 进程 PID。
+
+2. **调用链分析**
+
+   使用：
+
+   ```gdb
+   info args
+   bt 8
+   list
+
+分析 QEMU 的软件 TLB 未命中处理路径。
+3. 访问类型
+
+   检查：
+   p/x address
+   p access_type
+   p mmu_idx
+
+
+   解释相关参数在 QEMU 中的实际含义。
+4. 进入页表查询
+
+   根据本地源码找到 get_physical_address() 调用位置。
+
+   使用 step 进入函数，而不是使用 next 跳过函数。
+5. 双 GDB 同步
+   - 解释为何宿主机断点命中后，客户机 GDB 可能一直等待；
+   - 避免在两个 GDB 中同时反复执行 continue 或 si；
+   - 保持页表查询现场，等待下一阶段分析。
+本阶段应获得真实的 TLB 未命中调用栈。
+
+
+##### 2.3.2.5 单步调试 Sv39 页表遍历与 PTE 读取
+
+[PROMPT]
+
+目前已经进入 QEMU 的 `get_physical_address()` 函数。
+
+请指导我逐步分析 **Sv39 页表遍历过程**，重点观察：
+
+1. 根页表物理地址如何计算；
+2. Sv39 的三级页表参数如何确定；
+3. 虚拟地址的 VPN 索引如何提取；
+4. PTE 的物理地址如何计算；
+5. QEMU 如何从模拟物理内存读取 PTE；
+6. 如何判断当前 PTE 是中间页表项还是叶子页表项。
+
+要求根据当前源码实际执行流程调试，不要假设一定需要遍历全部三级页表。
+
+---
+
+[RELY]
+
+可以依赖：
+
+- `get_physical_address()`；
+- `env->satp`；
+- `base`；
+- `levels`；
+- `ptidxbits`；
+- `ptesize`；
+- `ptshift`；
+- `idx`；
+- `pte_addr`；
+- `pte`；
+- `ppn`。
+
+以及：
+
+- `ldq_phys()`；
+- RISC-V Sv39 页表格式；
+- 当前内核实际创建的启动页表。
+
+---
+
+[GUARANTEE]
+
+必须完成：
+
+- 读取 QEMU 内部的 `satp`；
+- 验证当前分页模式；
+- 计算根页表物理地址；
+- 检查虚拟地址合法性；
+- 计算当前层 VPN 索引；
+- 计算 PTE 物理地址；
+- 执行并观察 `ldq_phys()`；
+- 提取 PTE 中的 PPN；
+- 判断 PTE 是否为叶子项。
+
+---
+
+[SPECIFICATION]
+
+1. **分页模式检查**
+
+   观察：
+
+   ```gdb
+   p/x env->satp
+   p vm
+   p levels
+   p ptidxbits
+   p ptesize
+   p/x base
+
+```markdown
+[PROMPT]
+
+目前已经进入 QEMU 的 `get_physical_address()` 函数。
+
+请指导我逐步分析 **Sv39 页表遍历过程**，重点观察：
+
+1. 根页表物理地址如何计算；
+2. Sv39 的三级页表参数如何确定；
+3. 虚拟地址的 VPN 索引如何提取；
+4. PTE 的物理地址如何计算；
+5. QEMU 如何从模拟物理内存读取 PTE；
+6. 如何判断当前 PTE 是中间页表项还是叶子页表项。
+
+要求根据当前源码实际执行流程调试，不要假设一定需要遍历全部三级页表。
+
+---
+
+[RELY]
+
+可以依赖：
+
+- `get_physical_address()`；
+- `env->satp`；
+- `base`；
+- `levels`；
+- `ptidxbits`；
+- `ptesize`；
+- `ptshift`；
+- `idx`；
+- `pte_addr`；
+- `pte`；
+- `ppn`。
+
+以及：
+
+- `ldq_phys()`；
+- RISC-V Sv39 页表格式；
+- 当前内核实际创建的启动页表。
+
+---
+
+[GUARANTEE]
+
+必须完成：
+
+- 读取 QEMU 内部的 `satp`；
+- 验证当前分页模式；
+- 计算根页表物理地址；
+- 检查虚拟地址合法性；
+- 计算当前层 VPN 索引；
+- 计算 PTE 物理地址；
+- 执行并观察 `ldq_phys()`；
+- 提取 PTE 中的 PPN；
+- 判断 PTE 是否为叶子项。
+
+---
+
+[SPECIFICATION]
+
+1. **分页模式检查**
+
+   观察：
+
+   ```gdb
+   p/x env->satp
+   p vm
+   p levels
+   p ptidxbits
+   p ptesize
+   p/x base
+2. 页表索引计算
+
+   根据当前虚拟地址计算：
+   p/x (addr >> 30) & 0x1ff
+   p/x (addr >> 21) & 0x1ff
+   p/x (addr >> 12) & 0x1ff
+
+
+   并解释 VPN[2]、VPN[1]、VPN[0] 的含义。
+3. PTE 地址计算
+
+   在实际源码的索引计算位置检查：
+   p i
+   p/x idx
+   p/x pte_addr
+
+
+   验证：
+
+   PTE_ADDR = base + idx × ptesize
+4. 读取 PTE
+
+   单步执行 ldq_phys() 对应语句，然后检查：
+   p/x pte
+   p/x ppn
+5. 叶子项判断
+   - 检查 V、R、W、X 标志；
+   - 判断是否需要继续访问下一级页表；
+   - 解释 4 KiB、2 MiB、1 GiB 页映射与叶子项所在层级的关系。
+6. 注意事项
+   - 不要将客户机物理地址直接当作宿主机进程地址读取；
+   - 不要在 PTE 读取语句执行前使用未初始化的局部变量；
+   - 源码行号应根据当前 QEMU 版本确定。
+最终需要记录 VPN、PTE 地址、PTE 内容和 PPN 的真实调试结果。
+
+
+##### 2.3.2.6 验证 PTE 权限检查与虚拟地址转换
+
+[PROMPT]
+
+已经通过 GDB 获取到 Sv39 页表查询中的 PTE 和 PPN。
+
+请继续指导我分析 **PTE 合法性检查、访问权限检查，以及最终物理地址的计算**。
+
+重点解释为什么当前页表项可以用于本次访问，以及 QEMU 如何将虚拟地址转换为物理地址。
+
+要求通过 GDB 实际计算并验证结果，而不仅仅给出理论公式。
+
+---
+
+[RELY]
+
+可以依赖：
+
+- `get_physical_address()` 中的 PTE 检查逻辑；
+- `PTE_V`、`PTE_R`、`PTE_W`、`PTE_X`；
+- `PTE_U`、`PTE_A`、`PTE_D`；
+- `access_type`；
+- `ptshift`；
+- `vpn`；
+- `ppn`；
+- `physical`；
+- `prot`。
+
+重点关注：
+
+```c
+*physical =
+    (ppn | (vpn & ((1L << ptshift) - 1))) << PGSHIFT;
+
+[GUARANTEE]
+
+必须完成：
+- 验证 PTE 有效性；
+- 检查访问权限；
+- 检查大页物理地址对齐；
+- 分析是否需要更新 A/D 标志；
+- 计算物理页基址；
+- 计算完整物理地址；
+- 确认 get_physical_address() 成功返回。
+
+[SPECIFICATION]
+1. PTE 标志位
+
+   使用 GDB 检查 PTE 的相关位，解释每个标志的作用。
+2. 大页合法性
+
+   检查：
+   p/x (ppn & ((1ULL << ptshift) - 1))
+
+
+   判断物理页号是否满足当前大页的对齐要求。
+3. 地址转换
+
+   在物理地址计算语句执行前后检查：
+   p/x vpn
+   p/x ppn
+   p ptshift
+   p/x *physical
+4. 页内偏移
+
+   使用：
+   p/x (addr & 0xfff)
+   p/x (*physical + (addr & 0xfff))
+
+
+   区分物理页基址与完整物理地址。
+5. 权限结果
+
+   检查：
+   p/x *prot
+
+
+   分析 PAGE_READ、PAGE_WRITE、PAGE_EXEC 权限。
+6. 返回结果
+
+   使用 finish 返回调用函数。
+
+   注意：GDB 停在函数调用所在源码行时，局部变量 ret 可能尚未完成赋值，应通过后续单步确认最终结果。
+最终应形成完整的 VA → PA 地址翻译公式，并以 GDB 实际输出验证。
+
+
+
+##### 2.3.2.6 调试 QEMU 软件 TLB 表项填充过程
+
+[PROMPT]
+
+目前已经确认 `get_physical_address()` 成功返回，并计算出了正确的物理页地址。
+
+请继续指导我调试 **QEMU 软件 TLB 的填充过程**。
+
+目标是分析 QEMU 如何将页表查询结果缓存到软件 TLB 中，并通过比较写入前后的数据验证缓存确实发生了更新。
+
+请重点解释软件 TLB 的索引、表项结构，以及虚拟地址和宿主机内存偏移之间的关系。
+
+---
+
+[RELY]
+
+可以依赖：
+
+- `riscv_cpu_tlb_fill()`；
+- `tlb_set_page()`；
+- `tlb_set_page_with_attrs()`；
+- `tlb_index()`；
+- `tlb_entry()`；
+- `CPUTLBEntry`；
+- `tn`；
+- `te`；
+- `copy_tlb_helper_locked()`。
+
+源码位于：
+
+- `target/riscv/cpu_helper.c`；
+- `accel/tcg/cputlb.c`。
+
+---
+
+[GUARANTEE]
+
+必须完成：
+
+- 确认地址翻译成功；
+- 确认传入 TLB 的虚拟页和物理页；
+- 确认页面大小与访问权限；
+- 定位软件 TLB 缓存槽位；
+- 观察新 TLB 表项的构建；
+- 比较表项写入前后的内容；
+- 验证软件 TLB 填充成功。
+
+---
+
+[SPECIFICATION]
+
+1. **进入 TLB 填充函数**
+
+   在 `tlb_set_page()` 中检查：
+
+   ```gdb
+   info args
+   bt 4
+
+2. 地址与权限
+   - 记录 vaddr；
+   - 记录 paddr；
+   - 记录 prot；
+   - 记录 mmu_idx；
+   - 记录 size。
+3. TLB 索引
+
+   分析：
+   index = tlb_index(env, mmu_idx, vaddr_page);
+   te = tlb_entry(env, mmu_idx, vaddr_page);
+4. 新旧表项
+
+   在实际写入之前，检查：
+   p index
+   p/x tn.addr_code
+   p/x tn.addr_read
+   p/x tn.addr_write
+   p/x tn.addend
+   p/x te->addr_code
+5. 表项写入
+
+   找到并单步执行：
+   copy_tlb_helper_locked(te, &tn);
+6. 写入验证
+
+   检查：
+   p te->addr_code == tn.addr_code
+   p te->addr_read == tn.addr_read
+   p te->addr_write == tn.addr_write
+   p te->addend == tn.addend
+7. 机制分析
+   - 解释 TLB 表项的字段；
+   - 解释 addend 为什么不等于物理地址；
+   - 解释大页映射与软件 TLB 缓存粒度的区别；
+   - 说明缓存命中为什么能够减少后续页表查询开销。
+
+最终需要通过写入前后的实际变量变化，证明 QEMU 软件 TLB 已完成填充。

@@ -30,7 +30,18 @@
 
 ## 一、实验目的
 
----
+本实验的主要目的是：
+
+1. 理解 Sv39 分页机制：掌握 RISC-V 三级页表结构、虚实地址映射原理及 TLB 的作用。
+
+2. 掌握物理内存初始化流程：理解 DTB 内存探测、物理页描述符管理及空闲内存区域的初始化方法。
+
+3. 掌握物理页分配算法：分析 First-Fit，实现 Best-Fit 和 Buddy System，理解页面分配、分裂、回收与合并机制。
+
+4. 理解 SLUB 对象分配机制：掌握基于物理页的小对象内存分配、释放与复用方法。
+
+5. 掌握内核调试与测试方法：利用 QEMU、GDB 及测试程序验证内存管理功能，分析地址翻译过程。
+
 
 ## 二、实验环境
 
@@ -67,6 +78,134 @@
 因此，我们先完成物理内存初始化，建立"可管理物理页"的初始状态；之后才能在此基础上理解并实现各种页分配算法，并通过 `check_alloc_page()` 验证分配与释放的正确性。
 
 #### 3.2.2 Best-fit 分配算法
+
+Best-Fit 是一种连续内存分配算法，核心思想是从所有能够满足分配请求的空闲内存块中选择容量最小的空闲块进行分配，以减少本次分配产生的剩余空间。
+
+设当前空闲块集合为 $F=\{B_1,B_2,\ldots,B_m\}$，其中 $|B_i|$ 表示第 $i$ 个空闲块包含的物理页数。当申请 $n$ 个连续物理页时，Best-Fit 的选择规则为 $B^*=\arg\min_{B_i\in F,\ |B_i|\ge n}|B_i|$,即选择满足 $|B_i|\ge n$ 且大小最小的空闲块。如果不存在满足要求的空闲块，则分配失败，返回 `NULL`。
+
+例如，假设空闲链表中依次存在 12、8、5、20 页的空闲块，当请求分配 6 页时：
+
+- First-Fit：选择第一个满足要求的 12 页块，分配后剩余 6 页。
+- Best-Fit：遍历整个空闲链表，选择 8 页块，分配后剩余 2 页。
+
+相比 First-Fit，Best-Fit 能够使每次分配选择的空闲块更加接近请求大小，但需要遍历全部空闲块，且可能产生较多难以再次利用的小块。
+
+1. **数据结构设计。**本实验在 `kern/mm/best_fit_pmm.c` 中实现 Best-Fit 分配器，复用 ucore 提供的物理页描述符 `struct Page` 和空闲区域结构 `free_area_t`。
+
+  1. 空闲区域管理
+
+使用 `static free_area_t free_area` 保存空闲内存管理信息，其中：
+
+- `free_list`：双向循环链表，按物理地址升序组织空闲块。
+- `nr_free`：记录当前空闲物理页总数。
+
+  2. 物理页描述符
+
+使用 `struct Page` 维护页面状态，其中：
+
+- `flags`：通过 `PG_reserved` 和 `PG_property` 标识页面状态。
+- `property`：记录连续空闲块的页数，仅在空闲块首页有效。
+- `page_link`：将空闲块首页连接到空闲链表。
+- `ref`：记录页面引用计数。
+
+采用这种设计，不需要额外维护独立的空闲块数组，直接利用已有的页面描述符完成空闲区域管理。
+
+2. **核心函数实现分析。**
+  1. `best_fit_init()`：初始化分配器
+
+该函数通过 `list_init(&free_list)` 初始化空闲链表，并将 `nr_free` 设置为 0。
+
+执行完成后，分配器处于空闲链表为空、空闲页总数为 0 的初始状态，等待物理内存初始化模块登记可用页面。
+
+  2. `best_fit_init_memmap()`：初始化空闲内存区域**
+
+该函数接收连续物理页的起始描述符 `base` 和页数 `n`，将其注册为可分配的空闲块。
+
+具体流程如下：
+
+    1. 检查 `n > 0`，并确认待初始化页面处于保留状态。
+    2. 遍历连续页面，清除页面标志、`property` 和引用计数。
+    3. 将首页的 `property` 设置为 `n`，并设置 `PG_property` 标志。
+    4. 更新空闲页总数 `nr_free += n`。
+    5. 按物理地址升序将空闲块首页插入 `free_list`。
+
+由于空闲链表按照地址顺序组织，后续释放页面时只需要检查相邻链表节点，就可以判断是否存在能够合并的连续空闲块。
+
+  3. `best_fit_alloc_pages()`：连续物理页分配
+
+这是 Best-Fit 算法的核心函数，负责根据请求页数选择最合适的空闲块。
+
+首先检查请求页数是否合法，并判断 `n` 是否超过当前空闲页总数。如果总空闲页数不足，直接返回 `NULL`。
+
+随后遍历整个空闲链表，使用以下条件选择最优块：
+
+```c
+p->property >= n && (best == NULL || p->property < best->property)
+```
+
+其中，`p->property >= n` 保证当前块能够满足请求；`p->property < best->property` 保证选中的块是当前找到的最小可容纳块。
+
+与 First-Fit 在找到第一个满足条件的块后立即停止不同，Best-Fit 必须遍历完整链表。当多个候选块大小相同时，当前实现保留第一个找到的块，即选择地址较低的空闲块。
+
+找到目标块后，根据其大小分为两种情况：
+
+- **大小恰好相等**：直接从空闲链表中移除整个块。
+- **空闲块大于请求大小**：从块的起始位置分配 `n` 页，将剩余部分作为新的空闲块重新插入原链表位置。
+
+假设选中的块为 8 页，请求为 6 页，则分裂后的剩余块从 `best + 6` 开始，其 `property` 为 2。
+
+完成分配后，执行 `nr_free -= n`，清除原块首页的 `PG_property` 标志，并将其 `property` 置为 0，最后返回分配区域的首页描述符。
+
+  4. `best_fit_free_pages()`：物理页释放与空闲块合并
+
+该函数负责将已分配的连续物理页归还空闲链表，并合并物理地址相邻的空闲块。
+
+首先遍历待释放页面，检查页面不是保留页或已有空闲块首页，随后清理页面状态，将释放区域的首页设置为新的空闲块头，并执行 `nr_free += n`。
+
+然后按照物理地址升序将该空闲块插入链表，并依次尝试向前、向后合并。
+
+向前合并的判断条件为：
+
+```c
+prev + prev->property == base
+```
+
+若成立，说明前一个空闲块的结束位置恰好等于当前块起点，将两个块合并，并更新块首页。
+
+向后合并的判断条件为：
+
+```c
+base + base->property == next
+```
+
+若成立，说明当前块与后一个空闲块在物理地址上连续，将其合并为更大的空闲块。
+
+例如，原本存在一个 3 页空闲块和一个 4 页空闲块，中间有 2 页已分配区域。当中间 2 页释放后，分配器首先将其与前面的 3 页合并，再与后面的 4 页合并，最终形成一个 9 页连续空闲块。
+
+通过上述机制，可以减少外部碎片，提高后续大块连续内存请求成功的可能性。
+
+  5. `best_fit_nr_free_pages()`：查询空闲页数量
+
+该函数直接返回 `nr_free`，用于获取当前可分配物理页总数。
+
+  6. `best_fit_pmm_manager`：注册分配器
+
+通过定义 `const struct pmm_manager best_fit_pmm_manager`，将上述初始化、分配、释放、计数和测试函数注册到统一的物理内存管理接口中。
+
+随后在 `kern/mm/pmm.c` 的 `init_pmm_manager()` 中，将默认分配器设置为 `&best_fit_pmm_manager`。初始化完成后，系统的 `alloc_pages()`、`free_pages()` 等统一接口便会调用相应的 Best-Fit 实现。
+
+当前 Best-Fit 使用按地址排序的双向链表维护空闲块。设链表中共有 $m$ 个空闲块，其复杂度为：
+
+| 操作 | 时间复杂度 | 原因 |
+|---|---|---|
+| 初始化分配器 | $O(1)$ | 初始化链表及计数 |
+| 空闲区域登记 | $O(n+m)$ | 初始化 $n$ 页并查找插入位置 |
+| 分配页面 | $O(m)$ | 遍历全部空闲块寻找最优块 |
+| 释放页面 | $O(n+m)$ | 重置 $n$ 页状态并查找插入位置 |
+| 查询空闲页数 | $O(1)$ | 直接返回 `nr_free` |
+
+
+
 
 #### 3.2.3 伙伴系统分配算法
 
@@ -218,11 +357,890 @@ static void page_init(void);  // kern/mm/pmm.c
 
 ### 4.2 理解first-fit 连续物理内存分配算法
 
-**负责人：** [学号-姓名]
+**负责人：** 2411622-张雨函
+
+通过阅读 `kern/mm/default_pmm.c`，理解 First-Fit 连续物理内存分配算法的实现原理，重点分析空闲链表管理、连续页面分配、空闲块分裂、页面释放及相邻空闲块合并机制，并探讨该算法的优化空间。
+
+#### 4.2.1 First-Fit 算法原理
+
+First-Fit 算法采用**首次适应策略**：按照空闲链表顺序查找，选择第一个能够满足请求大小的连续空闲块进行分配。
+
+设空闲块集合为 $F=\{B_1,B_2,\ldots,B_m\}$，当申请 $n$ 个连续物理页时，算法选择：
+
+$$
+B^*=B_k,\quad k=\min\{i\mid |B_i|\ge n\}
+$$
+
+即按照链表顺序选择第一个大小不小于 $n$ 的空闲块。该算法无需遍历全部空闲块，但可能导致内存碎片问题。
+
+#### 4.2.2 核心数据结构
+
+First-Fit 使用 `free_area_t` 管理空闲内存：
+
+```c
+static free_area_t free_area;
+
+#define free_list (free_area.free_list)
+#define nr_free (free_area.nr_free)
+```
+
+其中：
+
+- `free_list`：按物理地址升序组织的双向循环链表。
+- `nr_free`：当前空闲物理页总数。
+- `Page.property`：记录空闲块的连续页数。
+- `PG_property`：标记空闲块首页。
+- `Page.page_link`：将空闲块首页连接到链表。
+
+通过记录空闲块首页和块大小，无需将每一个空闲页单独插入链表。
+
+#### 4.2.3 核心函数实现分析
+
+1. default_init()：初始化分配器
+
+```c
+static void default_init(void) {
+    list_init(&free_list);
+    nr_free = 0;
+}
+```
+
+初始化双向循环链表，并将空闲页数设置为 0，为后续物理内存注册做准备。
+
+2. `default_init_memmap()`：注册空闲内存
+
+该函数接收连续物理页起点 `base` 和页数 `n`，主要执行：
+
+  1. 遍历页面，清除保留标志、属性及引用计数。
+  2. 将 `base->property` 设置为 `n`。
+  3. 设置块首页的 `PG_property` 标志。
+  4. 执行 `nr_free += n`。
+  5. 按物理地址顺序将空闲块插入链表。
+
+该函数将 `page_init()` 识别出的可用内存交给 First-Fit 分配器管理。
+
+3. `default_alloc_pages()`：连续页面分配
+
+```c
+while ((le = list_next(le)) != &free_list) {
+    struct Page *p = le2page(le, page_link);
+    if (p->property >= n) {
+        page = p;
+        break;
+    }
+}
+```
+
+算法遍历空闲链表，找到第一个大小不小于请求页数的空闲块后立即停止。找到目标块后，将其从链表中移除。如果原空闲块大于请求大小，则执行分裂：
+
+```c
+if (page->property > n) {
+    struct Page *p = page + n;
+    p->property = page->property - n;
+    SetPageProperty(p);
+    list_add(prev, &(p->page_link));
+}
+```
+
+
+最后执行 `nr_free -= n`，清除原块首页的 `PG_property` 标志，返回分配区域的 `Page` 指针。
+如果没有满足条件的连续空闲块，则返回 `NULL`。
+
+4. `default_free_pages()`：页面释放与合并
+
+释放函数首先恢复页面状态，并按物理地址顺序将释放区域插入空闲链表。
+
+随后检查前后空闲块是否连续。
+
+向前合并条件：
+
+```c
+if (p + p->property == base)
+```
+
+向后合并条件：
+
+```c
+if (base + base->property == p)
+```
+
+若相邻块满足连续条件，则合并块大小，删除被合并块的链表节点，并清除其 `PG_property` 标志。这一机制能够减少外部碎片，提高连续物理内存的利用率。
+
+5. `default_nr_free_pages()`：空闲页统计
+
+该函数直接返回 `nr_free`，用于获取当前空闲物理页总数，时间复杂度为 $O(1)$。
+
+#### 4.2.4 算法测试分析
+
+源码提供 `basic_check()` 和 `default_check()` 两个测试函数。
+
+| 测试函数 | 验证内容 |
+|---|---|
+| `basic_check()` | 单页分配、地址合法性、页面不重叠、分配失败与释放后重新分配 |
+| `default_check()` | 空闲链表一致性、多页分配、空闲块分裂、相邻块合并及空闲页计数恢复 |
+
+其中，`default_check()` 通过构造局部空闲区域，验证连续页面分配和释放后的合并行为，并检查空闲链表中的页面总数是否与 `nr_free` 一致。
+
+需要注意，当前工程默认使用 Best-Fit，因此上述 First-Fit 测试函数属于源码提供的验证机制，并不意味着当前默认构建已经单独执行了 `default_check()`。
+
+#### 4.2.5 算法复杂度与优化分析
+
+设空闲链表包含 $m$ 个空闲块，释放或初始化的页面数为 $n$。
+
+| 操作 | 时间复杂度 |
+|---|---|
+| 初始化分配器 | $O(1)$ |
+| 注册空闲内存 | $O(n+m)$ |
+| 分配连续页面 | 最坏 $O(m)$ |
+| 释放并合并页面 | $O(n+m)$ |
+| 查询空闲页数 | $O(1)$ |
+
+First-Fit 的主要问题及优化方向如下：
+
+1. **搜索效率**：空闲块数量较多时，线性遍历开销较大，可采用分级空闲链表或树形数据结构加速查找。
+2. **外部碎片**：频繁分配和释放可能形成大量不连续的小块，可通过更高效的合并机制改善。
+3. **分配策略**：首次适应不一定能够合理利用不同大小的空闲块，可采用 Best-Fit，选择满足请求的最小空闲块。
+4. **连续大块管理**：可进一步采用 Buddy System，通过按阶管理和伙伴合并提高页面分配与回收效率。
+
 
 ### 4.3 实现 Best-Fit 连续物理内存分配算法
 
-**负责人：** [学号-姓名]
+
+**负责人：** 2411622-张雨函
+
+本实验在理解 First-Fit 连续物理内存分配算法的基础上，实现 Best-Fit 物理页分配算法，并将其接入 ucore 操作系统的物理内存管理框架。
+主要实验任务如下：
+
+1. 阅读 `kern/mm/default_pmm.c`，理解 First-Fit 分配器的初始化、空闲块管理、页面分配与回收机制。
+2. 参考 `struct pmm_manager` 统一接口，在 `kern/mm/best_fit_pmm.c` 中实现 Best-Fit 分配器。
+3. 使用双向循环链表管理连续空闲物理页，实现最佳空闲块搜索、页面分裂和相邻块合并。
+4. 在 `kern/mm/pmm.c` 中注册 Best-Fit 分配器，使其成为默认物理内存管理器。
+5. 保留实验框架提供的 `basic_check()` 和 `best_fit_check()`，通过 QEMU 运行及自动评分验证实现。
+6. 分析 Best-Fit 与 First-Fit 的差异，并讨论算法在时间复杂度和内存碎片控制方面的优化空间。
+
+本实验主要涉及以下文件：
+
+| 文件 | 作用 |
+|---|---|
+| `kern/mm/default_pmm.c` | First-Fit 参考实现 |
+| `kern/mm/best_fit_pmm.c` | Best-Fit 算法的主要实现文件 |
+| `kern/mm/best_fit_pmm.h` | Best-Fit 管理器的外部声明 |
+| `kern/mm/pmm.c` | 选择并初始化物理内存管理器 |
+| `kern/mm/pmm.h` | 定义统一的 `pmm_manager` 接口 |
+| `kern/mm/memlayout.h` | 定义 `struct Page` 和空闲区域数据结构 |
+| `libs/list.h` | 提供双向循环链表操作 |
+| `tools/test_lab2.c` | 提供实验评分测试 |
+
+#### 4.3.2 Best-Fit 算法原理
+
+Best-Fit 的核心思想是在所有能够满足当前分配请求的空闲内存块中，选择容量最小的空闲块进行分配。
+
+设当前空闲内存块集合为：
+
+$$
+F=\{B_1,B_2,\ldots,B_m\}
+$$
+
+其中，$|B_i|$ 表示第 $i$ 个空闲块的页数。当申请 $n$ 个连续物理页时，Best-Fit 的选择策略为：
+
+$$
+B^*=\arg\min_{B_i\in F,\ |B_i|\ge n}|B_i|
+$$
+
+即在满足 $|B_i|\ge n$ 的空闲块中，选择最小的一个。如果没有足够大的连续空闲块，则返回 `NULL`。
+
+两种算法的主要区别如下：
+
+| 对比项目 | First-Fit | Best-Fit |
+|---|---|---|
+| 选择策略 | 第一个满足要求的空闲块 | 满足要求的最小空闲块 |
+| 搜索方式 | 找到合适块后停止 | 遍历所有空闲块 |
+| 搜索开销 | 取决于首个合适块的位置 | 与整个空闲链表长度有关 |
+| 分配后的剩余空间 | 不一定最小 | 当前分配的剩余空间最小 |
+| 碎片问题 | 可能产生外部碎片 | 可能产生较多小空闲块 |
+
+Best-Fit 的优势是能够避免在当前分配中不必要地使用更大的空闲块，但不代表长期运行后的碎片情况一定优于 First-Fit。
+
+#### 4.3.3 Best-Fit 数据结构设计
+
+本实验沿用 First-Fit 的内存管理框架，使用 `struct Page` 和 `free_area_t` 管理空闲页面。
+
+1. 物理页描述符
+
+`kern/mm/memlayout.h` 中定义：
+
+```c
+struct Page {
+    int ref;
+    uint64_t flags;
+    unsigned int property;
+    list_entry_t page_link;
+};
+```
+
+各字段作用如下：
+
+| 字段 | 功能 |
+|---|---|
+| `ref` | 记录页面引用计数 |
+| `flags` | 保存页面状态标志 |
+| `property` | 在空闲块首页记录连续空闲页数量 |
+| `page_link` | 将空闲块首页连接到双向链表 |
+
+其中，`property` 用于标识某个页面是否为空闲块首页。
+
+2. 空闲区域管理结构
+
+`free_area_t` 定义如下：
+
+```c
+typedef struct {
+    list_entry_t free_list;
+    unsigned int nr_free;
+} free_area_t;
+```
+
+Best-Fit 的管理状态在 `best_fit_pmm.c` 中定义：
+
+```c
+static free_area_t free_area;
+
+#define free_list (free_area.free_list)
+#define nr_free (free_area.nr_free)
+```
+
+其中：
+
+- `free_list`：保存空闲块首页，按照物理地址升序组织。
+- `nr_free`：记录全部空闲物理页的数量，而不是空闲块的数量。
+
+采用地址有序链表，是为了在释放页面时能够方便地判断前后空闲块是否连续。
+
+#### 4.3.4 Best-Fit 核心函数实现
+
+本实验实现了五个管理函数，并通过 `best_fit_pmm_manager` 将其注册到统一的物理内存管理框架。
+
+1. `best_fit_init()`：分配器初始化
+
+
+```c
+static void best_fit_init(void) {
+    list_init(&free_list);
+    nr_free = 0;
+}
+```
+
+该函数完成两个操作：
+
+  1. 调用 `list_init()`，将空闲链表初始化为空的双向循环链表。
+  2. 将 `nr_free` 初始化为 0。
+
+此时分配器仅完成内部管理结构的初始化，并没有真正登记空闲物理页。
+
+后续由 `page_init()` 调用 `init_memmap()`，将实际可用的物理内存交给分配器管理。
+
+2. `best_fit_init_memmap()`：初始化空闲内存区域
+
+
+```c
+static void best_fit_init_memmap(struct Page *base, size_t n) {
+    assert(n > 0);
+
+    for (struct Page *p = base; p != base + n; p++) {
+        assert(PageReserved(p));
+        p->flags = p->property = 0;
+        set_page_ref(p, 0);
+    }
+
+    base->property = n;
+    SetPageProperty(base);
+    nr_free += n;
+
+    list_entry_t *le = &free_list;
+
+    while ((le = list_next(le)) != &free_list) {
+        struct Page *page = le2page(le, page_link);
+
+        if (base < page) {
+            list_add_before(le, &base->page_link);
+            return;
+        }
+    }
+
+    list_add(list_prev(&free_list), &base->page_link);
+}
+```
+
+该函数负责将物理内存初始化模块提供的连续空闲页面登记到分配器。具体步骤如下：
+
+  1. 初始化页面状态
+
+通过循环遍历 `base` 到 `base+n` 之间的所有页面，检查其原本是否为保留状态，并清空 `flags`、`property` 和引用计数， `page_init()` 在确定空闲范围前，会将受管理页面统一标记为保留状态。
+
+  2. 创建空闲块首页
+
+```c
+base->property = n;
+SetPageProperty(base);
+```
+
+将 `base` 设置为连续空闲块首页，并将 `property` 设置为该空闲块包含的页数。
+
+  3. 更新空闲页计数
+
+```c
+nr_free += n;
+```
+
+  4. 按地址顺序插入空闲链表
+
+遍历空闲链表，找到第一个地址大于 `base` 的空闲块，将当前块插入它之前。如果所有现有空闲块地址都小于 `base`，则将新块插入链表末尾。这样能够保证空闲链表中的块始终按地址升序排列。
+
+3. `best_fit_alloc_pages()`：最佳适应页面分配
+
+该函数是本次实验的核心，也是 Best-Fit 与 First-Fit 的主要区别所在。
+
+```c
+static struct Page *best_fit_alloc_pages(size_t n) {
+    assert(n > 0);
+
+    if (n > nr_free)
+        return NULL;
+
+    struct Page *best = NULL;
+    list_entry_t *le = &free_list;
+
+    while ((le = list_next(le)) != &free_list) {
+        struct Page *p = le2page(le, page_link);
+
+        if (p->property >= n &&
+            (best == NULL || p->property < best->property)) {
+            best = p;
+        }
+    }
+
+    if (best == NULL)
+        return NULL;
+
+    list_entry_t *prev = list_prev(&best->page_link);
+    size_t old_size = best->property;
+
+    list_del(&best->page_link);
+
+    if (old_size > n) {
+        struct Page *remaining = best + n;
+
+        remaining->property = old_size - n;
+        SetPageProperty(remaining);
+
+        list_add(prev, &remaining->page_link);
+    }
+
+    nr_free -= n;
+
+    ClearPageProperty(best);
+    best->property = 0;
+
+    return best;
+}
+```
+
+整个分配过程可以分为四个阶段。
+
+  1. 第一阶段：检查分配条件
+
+```c
+assert(n > 0);
+
+if (n > nr_free)
+    return NULL;
+```
+
+首先保证请求页数大于 0。
+
+如果请求页数大于当前空闲页总数，说明不可能满足请求，直接返回 `NULL`。
+
+需要注意，总空闲页数足够并不代表一定能够成功分配，因为空闲页面可能分散在多个不连续的块中。
+
+  2. 第二阶段：搜索最佳空闲块
+
+```c
+struct Page *best = NULL;
+
+while ((le = list_next(le)) != &free_list) {
+    struct Page *p = le2page(le, page_link);
+
+    if (p->property >= n &&
+        (best == NULL || p->property < best->property)) {
+        best = p;
+    }
+}
+```
+
+遍历全部空闲块，对每个候选块检查：
+
+```c
+p->property >= n
+```
+
+保证该空闲块能够满足当前请求。
+
+同时通过：
+
+```c
+best == NULL || p->property < best->property
+```
+
+不断更新目前找到的最小可容纳块。
+
+这是 Best-Fit 算法最关键的判断条件。
+
+由于采用严格的小于比较，如果存在多个相同大小的候选块，程序会保留第一个找到的块。又因为链表按地址升序排列，因此会优先选择低地址块。
+
+  3. 第三阶段：分配并分裂空闲块
+
+找到最佳空闲块后，先将其从空闲链表中移除：
+
+```c
+list_del(&best->page_link);
+```
+
+如果原空闲块大小大于请求页数，则需要分裂：
+
+```c
+if (old_size > n) {
+    struct Page *remaining = best + n;
+
+    remaining->property = old_size - n;
+    SetPageProperty(remaining);
+
+    list_add(prev, &remaining->page_link);
+}
+```
+
+通过 `best+n` 计算剩余块首页，并在其描述符中记录剩余页数。由于分配后的剩余部分仍然处于原空闲块位置，代码直接将其插入原链表位置，从而继续保持地址顺序。如果 `old_size == n`，则整个块被分配，无需重新插入空闲链表。
+
+  4. 第四阶段：更新页面状态及空闲页数量
+
+```c
+nr_free -= n;
+
+ClearPageProperty(best);
+best->property = 0;
+
+return best;
+```
+
+将空闲页总数减少 `n`，并清除原块首页的空闲属性，防止已分配区域继续被识别为空闲块。最后返回分配区域首页对应的 `struct Page *`。因此，Best-Fit 的分配过程可概括为：
+
+```text
+申请 n 个连续物理页
+        |
+        v
+检查 n 是否合法
+        |
+        v
+判断总空闲页数是否足够
+        |
+        v
+遍历所有空闲块
+        |
+        v
+选择最小可容纳空闲块
+        |
+        v
+是否找到合适的块？
+   |             |
+   否            是
+   |             |
+返回 NULL        v
+             移除原空闲块
+                 |
+                 v
+           是否需要分裂？
+            |        |
+            否       是
+            |        |
+            |      创建剩余块
+            |        |
+            |      重新入链
+            |        |
+            +----+---+
+                 |
+                 v
+          更新 nr_free
+                 |
+                 v
+          清理块首页状态
+                 |
+                 v
+          返回 Page 指针
+```
+
+4. `best_fit_free_pages()`：页面释放与合并
+
+物理页面释放后，如果只是将其简单加入空闲链表，可能会产生多个相邻的小块。因此 Best-Fit 在释放页面时，还需要将与当前块物理地址连续的前后空闲块合并。
+
+```c
+static void best_fit_free_pages(struct Page *base, size_t n) {
+    assert(n > 0);
+
+    for (struct Page *p = base; p != base + n; p++) {
+        assert(!PageReserved(p) && !PageProperty(p));
+        p->flags = 0;
+        p->property = 0;
+        set_page_ref(p, 0);
+    }
+
+    base->property = n;
+    SetPageProperty(base);
+    nr_free += n;
+
+    list_entry_t *le = &free_list;
+
+    while ((le = list_next(le)) != &free_list) {
+        struct Page *page = le2page(le, page_link);
+
+        if (base < page) {
+            list_add_before(le, &base->page_link);
+            break;
+        }
+    }
+
+    if (le == &free_list)
+        list_add(list_prev(&free_list), &base->page_link);
+
+    le = list_prev(&base->page_link);
+
+    if (le != &free_list) {
+        struct Page *prev = le2page(le, page_link);
+
+        if (prev + prev->property == base) {
+            prev->property += base->property;
+
+            ClearPageProperty(base);
+            list_del(&base->page_link);
+
+            base = prev;
+        }
+    }
+
+    le = list_next(&base->page_link);
+
+    if (le != &free_list) {
+        struct Page *next = le2page(le, page_link);
+
+        if (base + base->property == next) {
+            base->property += next->property;
+
+            ClearPageProperty(next);
+            list_del(&next->page_link);
+        }
+    }
+}
+```
+具体步骤如下：
+
+  1. 恢复页面状态
+
+通过遍历待释放页面，检查其没有被标记为保留页或空闲块首页，并将页面状态清零。随后设置：
+
+```c
+base->property = n;
+SetPageProperty(base);
+nr_free += n;
+```
+
+把释放区域登记成一个新的空闲块。
+
+  2. 按地址顺序插入空闲链表
+
+比较当前块 `base` 与链表中已有空闲块的地址，将其插入合适位置。
+
+  3. 与前一个空闲块合并
+
+判断是否可以合并的条件：
+
+```c
+if (prev + prev->property == base)
+```
+
+其中：
+
+- `prev` 是前一个空闲块的首页。
+- `prev->property` 是前一个空闲块的页数。
+- `prev + prev->property` 表示前一个块的结束位置。
+
+如果结束位置恰好等于 `base`，说明两个块连续，可以合并。
+
+合并时：
+
+```c
+prev->property += base->property;
+ClearPageProperty(base);
+list_del(&base->page_link);
+base = prev;
+```
+
+将当前块合并到前一个块，并以地址更低的块作为新首页。
+
+  4. 与后一个空闲块合并
+
+判断条件：
+
+```c
+if (base + base->property == next)
+```
+
+如果当前块结束位置正好等于下一个块首页，则两个块连续，可以合并。合并操作：
+
+```c
+base->property += next->property;
+ClearPageProperty(next);
+list_del(&next->page_link);
+```
+
+通过先向前合并、再向后合并，可以一次性将释放区域及其前后连续空闲块合并为一个更大的空闲块。该机制有助于减少外部碎片，使后续连续物理页请求更容易得到满足。
+
+5. `best_fit_nr_free_pages()`：查询空闲页面数量
+
+```c
+static size_t best_fit_nr_free_pages(void) {
+    return nr_free;
+}
+```
+
+函数直接返回当前空闲页总数，时间复杂度为 $O(1)$。由于分配器在初始化、分配和释放时始终维护 `nr_free`，因此查询时无需重新遍历空闲链表。
+
+6. 注册 Best-Fit 分配器
+
+在 `best_fit_pmm.c` 中定义：
+
+```c
+const struct pmm_manager best_fit_pmm_manager = {
+    .name = "best_fit_pmm_manager",
+    .init = best_fit_init,
+    .init_memmap = best_fit_init_memmap,
+    .alloc_pages = best_fit_alloc_pages,
+    .free_pages = best_fit_free_pages,
+    .nr_free_pages = best_fit_nr_free_pages,
+    .check = best_fit_check,
+};
+```
+
+该结构将 Best-Fit 的管理函数与 ucore 统一物理内存管理接口对应起来。在 `kern/mm/pmm.c` 的 `init_pmm_manager()` 中，当前实现通过条件编译选择分配器：
+
+```c
+static void init_pmm_manager(void) {
+#ifdef PMM_BUDDY
+    pmm_manager = &buddy_pmm_manager;
+#else
+    pmm_manager = &best_fit_pmm_manager;
+#endif
+
+    cprintf("memory management: %s\n", pmm_manager->name);
+    pmm_manager->init();
+}
+```
+
+在未定义 `PMM_BUDDY` 时，系统默认使用 Best-Fit。此时，上层调用：
+
+```c
+alloc_pages(n);
+free_pages(base, n);
+nr_free_pages();
+```
+
+均会通过 `pmm_manager` 转发到相应的 Best-Fit 函数。
+
+整个初始化与调用关系如下：
+
+```text
+kern_init()
+    |
+    v
+pmm_init()
+    |
+    +-- init_pmm_manager()
+    |       |
+    |       +-- 选择 best_fit_pmm_manager
+    |       |
+    |       +-- best_fit_init()
+    |
+    +-- page_init()
+    |       |
+    |       +-- 计算可用物理内存区间
+    |       |
+    |       +-- init_memmap()
+    |               |
+    |               +-- best_fit_init_memmap()
+    |
+    +-- check_alloc_page()
+            |
+            +-- best_fit_check()
+                    |
+                    +-- basic_check()
+```
+
+因此，Best-Fit 不需要自行探测物理内存，而是由 `page_init()` 找出可用的物理页，再交由 Best-Fit 分配器管理。
+
+#### 4.3.5 实验实现过程
+
+1. 阅读 First-Fit 参考实现
+
+首先分析 `kern/mm/default_pmm.c` 中的：
+
+- `default_init()`
+- `default_init_memmap()`
+- `default_alloc_pages()`
+- `default_free_pages()`
+- `default_nr_free_pages()`
+
+明确空闲链表、页面描述符、分裂和合并机制。由于找到第一个满足要求的空闲块就执行 `break`，因此 First-Fit 无法保证选择最小可容纳块。
+
+2. 实现 Best-Fit 搜索策略
+
+参考 First-Fit 的管理逻辑，修改空闲块选择方式：
+
+```c
+if (p->property >= n &&
+    (best == NULL || p->property < best->property)) {
+    best = p;
+}
+```
+
+并去掉找到第一个可用块后立即退出的行为，确保遍历全部空闲块。
+
+3. 实现块分裂与页面回收
+
+复用 First-Fit 中的页面描述符管理机制，完成：
+
+- 从选中块首页分配请求页面。
+- 将剩余部分重新登记为空闲块。
+- 维护 `PG_property` 与 `property`。
+- 释放页面后按地址重新插入空闲链表。
+- 检查并合并前后连续空闲块。
+- 更新 `nr_free`。
+
+4. 接入 PMM 统一管理框架
+
+在 `best_fit_pmm.c` 中注册 `best_fit_pmm_manager`，并在 `pmm.c` 中将其设置为默认分配器。
+
+5. 执行 QEMU 测试
+
+在 `lab2` 目录中执行：
+
+```bash
+make clean
+make qemu
+```
+
+观察输出中的管理器名称，以及页面分配器自检是否通过。
+
+6. 执行自动评分
+
+运行：
+
+```bash
+make clean
+make grade
+```
+
+检查页面初始化、Best-Fit 和 Buddy System 的评分结果。实验验证 Best-Fit 分配器成功接入 ucore 内核，能够正确管理连续物理页，并通过原始算法自检和实验自动评分。
+
+#### 4.3.7 Best-Fit 算法复杂度分析
+
+设当前空闲链表共有 $m$ 个空闲块，待初始化或释放的连续页面数量为 $n$。
+
+| 操作 | 时间复杂度 | 原因 |
+|---|---|---|
+| `best_fit_init()` | $O(1)$ | 初始化链表及计数 |
+| `best_fit_init_memmap()` | $O(n+m)$ | 初始化页面并寻找插入位置 |
+| `best_fit_alloc_pages()` | $O(m)$ | 遍历全部空闲块寻找最佳块 |
+| `best_fit_free_pages()` | $O(n+m)$ | 重置页面状态并按地址插入 |
+| `best_fit_nr_free_pages()` | $O(1)$ | 直接返回空闲页计数 |
+
+当前实现中，Best-Fit 与 First-Fit 使用相同的地址有序链表结构。主要区别在于搜索阶段：
+
+- First-Fit 找到第一个满足要求的空闲块即可返回。
+- Best-Fit 必须遍历完整的空闲链表，因此分配操作的最坏时间复杂度为 $O(m)$。
+
+在释放操作中，由于需要维持地址有序链表，仍然可能需要扫描全部空闲块才能找到正确的插入位置。因此，Best-Fit 的主要性能开销集中在空闲块查找过程。
+
+#### 4.3.8 Best-Fit 的改进空间
+
+虽然当前算法通过了实验测试，但在搜索效率和内存碎片控制方面仍然存在进一步优化空间。
+
+1. 优化空闲块搜索结构
+
+当前 Best-Fit 使用单条按地址排序的双向链表，每次分配都需要遍历全部空闲块。可以考虑使用按块大小排序的平衡树，例如红黑树。分配时查找大小不小于请求值的最小节点，可以将最佳块查找复杂度降低到 $O(\log m)$。但由于释放时还需要识别相邻地址，因此可以同时维护地址索引，或者设计兼顾地址与大小的信息结构。
+
+2. 采用分级空闲链表
+
+可以根据空闲块大小划分多个尺寸区间，每个尺寸区间维护独立的空闲链表。分配时首先定位可能满足请求的尺寸区间，再在候选区间中查找合适块，从而减少需要遍历的空闲块数量。
+
+3. 改善外部碎片问题
+
+Best-Fit 虽然能够使当前分配留下的剩余空间最小，但可能产生许多很小的空闲块。当后续出现较大的连续页面请求时，即使总空闲页数足够，也可能因为空闲块不连续而分配失败。可以通过更高效的空闲块合并策略、分级管理机制，或者使用 Buddy System 管理物理页面，改善这一问题。
+
+4. 加强分配器测试
+
+当前测试已经覆盖了基本分配、最佳适应选择、分裂、合并及空闲页计数恢复。可以增加多轮随机分配与释放、不同请求规模下的分配成功率测试等测试，进一步评估 Best-Fit 在实际工作负载中的性能
+
+#### 4.3.9 AI 辅助实现提示词
+
+根据本次实验要求，需要设计 Prompt，利用 AI 辅助完成 Best-Fit 算法实现。
+
+以下按照仓库 `docs/prompt.md` 中实际保存的 `[PROMPT]`、`[RELY]`、`[GUARANTEE]` 和 `[SPECIFICATION]` 四部分整理关键内容。
+
+**[PROMPT] 实现目标**
+
+在 `kern/mm/best_fit_pmm.c` 中实现完整的 Best-Fit 连续物理内存分配器，并修改 `kern/mm/pmm.c`，将默认物理内存管理器切换为 `best_fit_pmm_manager`。
+
+分配策略为：从所有能够满足请求的空闲块中，选择大小最小的块进行分配。
+
+**[RELY] 已有代码及约束**
+
+参考 `default_pmm.c` 中的 First-Fit 实现，以及 `pmm.h` 定义的统一物理内存管理接口。
+
+复用：
+
+- `struct Page` 和 `free_area_t`。
+- `free_list` 和 `nr_free`。
+- `property` 和 `PG_property`。
+- `libs/list.h` 提供的双向链表操作。
+
+不得修改实验框架提供的 `basic_check()` 和 `best_fit_check()`。
+
+**[GUARANTEE] 必须完成的功能**
+
+实现 Best-Fit 初始化、空闲区域登记、连续物理页分配、页面释放、空闲页计数，并定义完整的 `best_fit_pmm_manager`。
+
+确保内核使用 Best-Fit，而不是原有的 First-Fit。
+
+**[SPECIFICATION] 功能要求**
+
+1. 使用双向链表管理连续空闲物理页。
+2. 申请 `n` 页时，遍历全部空闲块，选择最小可容纳块。
+3. 对大于请求大小的空闲块进行分裂，并重新登记剩余部分。
+4. 释放页面后按照地址顺序插入空闲链表。
+5. 自动合并前后物理地址连续的空闲块。
+6. 正确维护页面标志、块大小和空闲页总数。
+7. 无法满足分配请求时返回 `NULL`。
+8. 正确注册各管理函数并通过已有测试。
+
+#### 4.3.10 实验总结
+
+通过分析 First-Fit 物理内存管理机制，在 ucore 的统一 PMM 框架下完成了 Best-Fit 连续物理页分配器的实现。与 First-Fit 相比，Best-Fit 的主要改进是通过遍历全部空闲块，选择满足当前请求的最小空闲块。其余页面管理操作仍沿用空闲块描述符、双向链表、页面分裂及相邻块合并机制。实验实现了以下功能：
+
+1. 初始化并维护按物理地址排序的空闲链表。
+2. 搜索并选择最小可容纳空闲块。
+3. 分配连续物理页并管理分裂后的剩余空闲块。
+4. 回收页面并合并前后相邻空闲块。
+5. 维护准确的空闲页总数。
+6. 通过 `pmm_manager` 将 Best-Fit 接入内核。
+
+Best-Fit 成功通过内核自检，并在 Lab2 自动评分中获得对应检查项的通过结果。通过本次实验进一步理解了操作系统中连续物理页分配、空闲内存组织、内存碎片管理和分配算法设计之间的关系，同时认识到 Best-Fit 在查找效率及长期碎片控制方面的局限，为后续 Buddy System 伙伴分配算法奠定了基础。
 
 ### 4.4 buddy system（伙伴系统）分配算法
 
@@ -740,7 +1758,444 @@ slub_check() succeeded
 
 ### 4.7 分支任务：gdb 调试页表查询过程
 
-**负责人：**
+**负责人：** 2411622 张雨函
+
+通过 GDB 调试 QEMU 模拟器和运行在 QEMU 中的 RISC-V ucore 内核，观察虚拟地址到物理地址的翻译过程，理解 Sv39 页表遍历与 TLB 缓存机制。
+
+#### 4.7.1 实验原理
+
+RISC-V Sv39 采用三级页表结构，将 64 位寄存器中的规范虚拟地址划分为以下字段：
+
+| 字段 | 位范围 | 作用 |
+|---|---|---|
+| VPN[2] | 38–30 | 根页表索引 |
+| VPN[1] | 29–21 | 中间页表索引 |
+| VPN[0] | 20–12 | 末级页表索引 |
+| Offset | 11–0 | 页内偏移 |
+
+每级页表包含 512 个 8 字节页表项。
+
+CPU 访问虚拟地址时，首先查询 TLB。如果命中且访问权限满足要求，则直接使用缓存的地址翻译结果；如果未命中，则需要根据 `satp` 指定的根页表进行地址翻译。
+
+Sv39 页表查询流程如下：
+
+```text
+CPU 访问虚拟地址 VA
+         |
+         v
+      查询 TLB
+         |
+    +----+----+
+    |         |
+   命中      未命中
+    |         |
+    |         v
+    |    读取 satp.PPN
+    |         |
+    |         v
+    |    根页表 Level 2
+    |         |
+    |    检查 PTE
+    |         |
+    |    若非叶子表项
+    |         v
+    |    中间页表 Level 1
+    |         |
+    |    若非叶子表项
+    |         v
+    |    末级页表 Level 0
+    |         |
+    |         v
+    |    检查映射权限
+    |         |
+    |         v
+    |    计算物理地址
+    |         |
+    |    更新 TLB
+    |         |
+    +----+----+
+         |
+         v
+      访问物理内存
+```
+Sv39 支持 4 KiB、2 MiB 和 1 GiB 三种页面粒度，因此查询不一定需要经过全部三级页表。如果高层 PTE 已经是合法叶子表项，则可以提前完成地址翻译。
+
+#### 4.7.2 双重 GDB 调试环境
+
+验需要同时调试 QEMU 模拟器和运行在其中的 ucore 内核，因此采用双重 GDB 调试方案。
+
+1. 准备可调试的 QEMU
+
+根据指导书，需要使用带有调试信息的 QEMU 以在地址翻译函数内部设置断点。对于指导书所使用的 QEMU 4.1.1，编译方式为：
+
+```bash
+cd qemu-4.1.1
+make distclean
+
+./configure \
+  --target-list=riscv32-softmmu,riscv64-softmmu \
+  --enable-debug
+
+make -j$(nproc)
+```
+
+当前项目采用 QEMU 8.2.x，因此实际调试时应优先使用与运行环境一致的 QEMU 8.2.x 源码构建调试版，避免版本差异影响观察结果。编译完成后不需要执行 `sudo make install`，可以直接使用源码构建目录中的 QEMU 可执行文件。
+
+2. 终端一：启动 QEMU
+
+在 Lab2 工程目录执行：
+
+```bash
+make QEMU=/path/to/debug-qemu/qemu-system-riscv64 debug
+```
+
+其中路径应替换为实际构建得到的 QEMU 可执行文件路径。
+
+`Makefile` 中的关键参数为：
+
+```makefile
+-s -S
+```
+
+- `-s`：启动 GDB Server，默认监听 TCP 1234 端口。
+- `-S`：使模拟 CPU 初始处于暂停状态，等待调试器控制。
+
+3. 终端二：调试 QEMU 源码
+
+首先查询 QEMU 进程 PID：
+
+```bash
+pgrep -af qemu-system-riscv64
+```
+
+然后附加到目标进程：
+
+```bash
+sudo gdb -p <PID>
+```
+
+进入 GDB 后：
+
+```gdb
+set pagination off
+handle SIGPIPE nostop noprint
+
+info threads
+```
+
+根据 QEMU 源码中实际存在的符号设置断点：
+
+```gdb
+break riscv_cpu_tlb_fill
+break get_physical_address
+continue
+```
+
+如果函数无法被定位，需要确认 QEMU 是否编译了调试符号，以及当前版本中的函数名称和可见性。
+
+4. 终端三：调试 ucore 内核
+
+在另一个终端执行：
+
+```bash
+make gdb
+```
+
+当前 Makefile 会自动加载 `bin/kernel` 中的符号，并连接 `localhost:1234`。
+
+连接后可执行：
+
+```gdb
+break kern_init
+continue
+
+info registers
+display/i $pc
+```
+
+到达内核断点后，使用：
+
+```gdb
+x/10i $pc
+si
+```
+
+查看并单步执行 RISC-V 指令。选择一条访存指令，计算其有效访问地址，再在 QEMU 侧对相应的地址翻译函数设置条件断点，可以减少无关访存造成的频繁中断。
+
+#### 4.7.4 QEMU 地址翻译源码分析
+
+QEMU 采用软件模拟的方式实现 RISC-V 地址翻译机制。在 QEMU 的 RISC-V 相关源码中，主要关注 `target/riscv/cpu_helper.c`；TLB 的通用管理逻辑则需要结合 `accel/tcg/cputlb.c` 等文件分析。
+
+1. `riscv_cpu_tlb_fill()`
+
+该函数主要负责处理需要补充地址翻译缓存的情况。基本流程为：
+
+1. 接收待翻译的虚拟地址。
+2. 确定当前访存类型和 MMU 上下文。
+3. 调用物理地址翻译函数。
+4. 检查翻译结果及物理内存保护权限。
+5. 翻译成功后调用 `tlb_set_page()` 等接口建立缓存映射。
+6. 翻译失败时根据错误类型触发相应异常。
+
+需要说明的是，该函数不是每次访存都会执行，通常由 QEMU 的软件 TLB 查询路径在未命中或需要慢路径处理时调用。
+
+2. `get_physical_address()`
+
+该函数负责根据当前地址翻译模式，将虚拟地址转换为物理地址。
+
+核心逻辑包括：
+
+- 判断是否启用分页。
+- 根据 `satp` 确定根页表。
+- 计算当前层 VPN 索引。
+- 读取对应的 PTE。
+- 检查有效位及读、写、执行权限。
+- 判断是继续访问下一级页表，还是已经找到叶子表项。
+- 根据叶子表项所在层级计算最终物理地址。
+
+对于 Sv39，普通 4 KiB 页面需要完成三级查询，而 1 GiB 大页可以直接在根页表完成映射。
+
+3. TLB 管理相关代码
+
+QEMU 使用软件数据结构模拟地址翻译缓存。
+
+其基本行为为：
+
+```text
+访存请求
+   |
+   v
+软件 TLB 查询
+   |
+   +-- 命中：使用缓存的翻译结果
+   |
+   +-- 未命中：
+          |
+          v
+     riscv_cpu_tlb_fill()
+          |
+          v
+     get_physical_address()
+          |
+          v
+     计算物理地址
+          |
+          v
+     tlb_set_page()
+          |
+          v
+     后续访存使用缓存
+```
+
+上述流程是需要通过 QEMU 源码和 GDB 验证的主要调用关系，具体调用栈及函数参数以本机 QEMU 版本为准。
+
+#### 4.7.5 Sv39 页表查询实例分析
+
+以当前 Lab2 的启动页表为例，`entry.S` 定义：
+
+```asm
+boot_page_table_sv39:
+    .zero 8 * 2
+
+    # 恒等映射
+    .quad (0x80000 << 10) | 0xcf
+
+    .zero 8 * 508
+
+    # 高地址映射
+    .quad (0x80000 << 10) | 0xcf
+```
+
+该页表使用两个根页表叶子表项：
+
+- 第 2 项：将 `0x80000000` 起的 1 GiB 虚拟地址区域恒等映射到同一物理区域。
+- 第 511 项：将 `0xffffffffc0000000` 起的 1 GiB 高虚拟地址区域映射到 `0x80000000` 起的物理区域。
+
+其中，PTE 为：
+
+$$
+PTE=(0x80000\ll10)\ |\ 0xcf
+$$
+
+计算得到：
+
+$$
+PTE=0x200000cf
+$$
+
+`0xcf` 设置了 V、R、W、X、A、D 标志，因此该表项是有效的 1 GiB 叶子表项。
+
+1. 选择虚拟地址
+
+根据仓库已有的 Best-Fit 运行记录，启动根页表的虚拟地址为：
+
+```text
+VA = 0xffffffffc0206000
+```
+
+对应物理地址为：
+
+```text
+PA = 0x80206000
+```
+
+这里选用该地址进行静态推导，不代表已经通过 GDB 捕获到针对此地址的一次实际访存。
+
+2. 计算三级索引
+
+依据 `mmu.h` 中的宏：
+
+```c
+#define SV39_VPN0(la) ((((uintptr_t)(la)) >> 12) & 0x1FF)
+#define SV39_VPN1(la) ((((uintptr_t)(la)) >> 21) & 0x1FF)
+#define SV39_VPN2(la) ((((uintptr_t)(la)) >> 30) & 0x1FF)
+```
+
+对于上述虚拟地址：
+
+| 字段 | 计算结果 |
+|---|---|
+| VPN[2] | 511 |
+| VPN[1] | 1 |
+| VPN[0] | 6 |
+| Offset | 0 |
+
+3. 计算根页表项地址
+
+根据已有的运行记录，根页表物理基址为：
+
+```text
+0x80206000
+```
+
+每个页表项占 8 字节，VPN[2] 为 511，因此：
+
+$$
+PTE_{addr}=0x80206000+511\times8
+$$
+
+得到：
+
+$$
+PTE_{addr}=0x80206ff8
+$$
+
+在该物理地址读取到的预设页表项应为：
+
+```text
+0x200000cf
+```
+
+4. 判断叶子表项
+
+该页表项包含有效的 R、W、X 权限位，因此可以直接作为 1 GiB 大页映射使用。这意味着地址翻译在 Level 2 已完成，不需要继续读取 Level 1 和 Level 0 页表项。
+
+5. 计算最终物理地址
+
+对于 1 GiB 大页，保留虚拟地址的低 30 位作为页内偏移。因此：
+
+$$
+PA=0x80000000+(VA\ \&\ 0x3fffffff)
+$$
+
+将目标地址代入：
+
+$$
+PA=0x80000000+0x00206000
+$$
+
+最终得到：
+
+$$
+\boxed{PA=0x80206000}
+$$
+
+该结果与仓库运行记录中的启动页表物理地址一致，说明静态地址映射关系正确。实际 GDB 调试时，还应在 QEMU 的地址翻译函数中检查索引值、PTE 内容和最终物理地址，以确认软件模拟的执行过程与上述推导一致。
+
+#### 4.7.6 TLB 命中与未命中分析
+
+TLB 缓存已完成的地址翻译结果，避免重复进行多级页表遍历。
+
+| 情况 | 处理过程 |
+|---|---|
+| TLB 命中 | 使用缓存映射，无需重新遍历页表 |
+| TLB 未命中 | 进入地址翻译慢路径，必要时遍历页表并更新 TLB |
+| 地址映射无效 | 根据错误类型触发访问异常或页故障 |
+| 执行 `sfence.vma` | 同步相关地址翻译状态，使旧的翻译缓存不再被错误使用 |
+
+真实 RISC-V CPU 通常使用硬件 TLB 缓存翻译结果；QEMU 则通过软件数据结构和 TCG 生成的访存路径模拟类似行为。两者在逻辑上都能够减少重复地址翻译开销，但其存储结构和执行方式不同。
+
+此外，在 Bare 模式下访存无需通过 Sv39 页表进行地址翻译；但这不代表 QEMU 必然完全绕过内部的软件地址映射缓存。因此可以对比启用 Sv39 前后的访存路径，观察分页模式对地址翻译过程的影响。
+
+#### 4.7.7 调试问题及解决方法
+
+结合实验指导书，调试过程中需要重点关注以下问题：
+
+1. GDB 无法进入 QEMU 源码
+
+原因可能是使用了缺少调试符号的 QEMU，或者源码与可执行文件版本不匹配。
+
+解决方法：重新编译带调试信息的 QEMU，并确认宿主机 GDB 加载的是对应可执行文件。
+
+2. 地址翻译断点触发过于频繁
+
+由于内核启动涉及大量取指和数据访问，直接对地址翻译函数设置普通断点可能导致频繁暂停。
+
+解决方法：先在 ucore 中确定目标访存地址，再根据当前 QEMU 源码中的参数设置条件断点。
+
+例如，若当前版本的 `riscv_cpu_tlb_fill()` 使用参数 `address`：
+
+```gdb
+break riscv_cpu_tlb_fill if address == 0xffffffffc0206000
+```
+
+但必须先确认该地址实际被访问，并且对应访问进入该函数的慢路径，否则条件断点不会命中。
+
+3. GDB 显示 SIGPIPE 信号
+
+指导书建议在宿主机 GDB 中执行：
+
+```gdb
+handle SIGPIPE nostop noprint
+```
+
+避免调试器因部分可忽略的 SIGPIPE 信号而频繁暂停。但仍应结合 QEMU 是否正常运行判断，不应无条件忽略所有信号。
+
+4. 分页开启后观察不到三级遍历
+
+当前内核的启动页表使用 1 GiB 大页映射，根页表第 511 项本身就是叶子表项。
+
+因此，地址翻译在 Level 2 即可结束。这是正常行为，并不意味着三级页表机制失效。
+
+若需要完整观察三级遍历，则必须额外构造合法的 4 KiB 映射，当前实验代码并未实现这一部分。
+
+#### 4.7.8 实验验证记录
+
+由于当前仓库尚未提供完整的双重 GDB 调试日志，以下项目需根据实际调试结果补充。
+
+| 验证项目 | 应记录的内容 |
+|---|---|
+| QEMU 断点 | 实际命中的函数和源码行 |
+| 内核访存指令 | 指令地址、汇编指令、操作数 |
+| 虚拟地址 | 实际访问的 VA |
+| `satp` | MODE、ASID 和根页表 PPN |
+| 页表索引 | VPN[2]、VPN[1]、VPN[0] |
+| PTE | 页表项物理地址、实际读取值、权限位 |
+| 物理地址 | QEMU 计算得到的 PA |
+| TLB 行为 | 命中、未命中或缓存填充的实际证据 |
+
+建议在实际调试后补充以下截图：
+
+- 图 1：QEMU 调试进程与 ucore GDB 连接情况。
+- 图 2：ucore 访存指令及寄存器信息。
+- 图 3：QEMU 地址翻译函数断点与页表项读取过程。
+- 图 4：最终物理地址及 TLB 相关调试结果。
+
+#### 4.7.9 实验总结
+
+本实验通过分析 RISC-V Sv39 分页原理、ucore 启动页表及 QEMU 地址翻译相关代码，梳理了从虚拟地址访问到物理地址生成的主要逻辑。当前内核通过 `entry.S` 设置 `satp`，启用 Sv39 分页，并使用根页表中的 1 GiB 叶子表项完成启动阶段的高地址映射。对示例虚拟地址 `0xffffffffc0206000` 的静态推导得到物理地址 `0x80206000`，与仓库运行记录一致。同时，明确了 QEMU 中地址翻译与 TLB 缓存机制的主要调试入口，以及使用宿主机 GDB 和 RISC-V GDB 协同观察内核访存行为的方法。
+
+通过本实验，可以加深对页表索引、PTE 权限检查、大页映射、TLB 缓存及虚实地址转换等操作系统核心知识的理解。完整的动态调试验证仍需结合实际 GDB 运行记录完成。
 
 ## 五、测试与验证
 

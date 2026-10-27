@@ -1,3 +1,12 @@
+/**
+ * @file   trap.c
+ * @brief  C part of trap handling: trap vector setup, frame printing and dispatch.
+ *
+ * Flow of one trap: hardware jumps to stvec (= __alltraps) -> SAVE_ALL builds a struct trapframe
+ * -> trap() -> trap_dispatch() -> interrupt_handler() or exception_handler() -> back in assembly
+ * RESTORE_ALL + sret. Bit 63 of scause tells the two kinds apart. interrupt_handler() and
+ * exception_handler() are the lab3 exercise 2 task and go at the `lab3 function2` marker below.
+ */
 #include <assert.h>
 #include <clock.h>
 #include <console.h>
@@ -9,8 +18,14 @@
 #include <stdio.h>
 #include <trap.h>
 
+/** @brief Number of timer interrupts between two "100 ticks" lines (100 ticks = 1 second at 10 ms per tick). */
 #define TICK_NUM 100
 
+/**
+ * @brief Print the "100 ticks" line.
+ *
+ * If DEBUG_GRADE is defined it also prints "End of Test." and panics, which ends the run.
+ */
 static void print_ticks() {
     cprintf("%d ticks\n", TICK_NUM);
 #ifdef DEBUG_GRADE
@@ -19,10 +34,13 @@ static void print_ticks() {
 #endif
 }
 
-/* idt_init - initialize IDT to each of the entry points in kern/trap/vectors.S
+/**
+ * @brief Set up the trap vector: all traps jump to __alltraps (Direct mode).
+ *
+ * sscratch is set to 0 to tell the trap entry that the kernel is running (S mode); stvec holds
+ * the 4-byte aligned address of __alltraps, whose low two bits (mode) are 00 = Direct.
  */
 void idt_init(void) {
-
     extern void __alltraps(void);
     /* Set sup0 scratch register to 0, indicating to exception vector
        that we are presently executing in the kernel */
@@ -31,11 +49,23 @@ void idt_init(void) {
     write_csr(stvec, &__alltraps);
 }
 
-/* trap_in_kernel - test if trap happened in kernel */
+/**
+ * @brief Test whether the trap happened in the kernel (sstatus.SPP == 1).
+ * @param tf trap frame of the trap
+ * @return true if the trap came from S mode
+ */
 bool trap_in_kernel(struct trapframe *tf) {
     return (tf->status & SSTATUS_SPP) != 0;
 }
 
+/**
+ * @brief Print the trap frame address, all general-purpose registers and the four CSRs.
+ *
+ * This is also the fallback output for traps without a dedicated handler. The scause line has
+ * the form "  cause    0x%08x".
+ *
+ * @param tf trap frame to print
+ */
 void print_trapframe(struct trapframe *tf) {
     cprintf("trapframe at %p\n", tf);
     print_regs(&tf->gpr);
@@ -45,6 +75,10 @@ void print_trapframe(struct trapframe *tf) {
     cprintf("  cause    0x%08x\n", tf->cause);
 }
 
+/**
+ * @brief Print the 32 general-purpose registers, one per line, in the order of struct pushregs.
+ * @param gpr register block of a trap frame
+ */
 void print_regs(struct pushregs *gpr) {
     cprintf("  zero     0x%08x\n", gpr->zero);
     cprintf("  ra       0x%08x\n", gpr->ra);
@@ -83,6 +117,13 @@ void print_regs(struct pushregs *gpr) {
 //lab3 function2 YOUR CODE
 
 
+/**
+ * @brief Route a trap to the interrupt or the exception handler.
+ *
+ * The top bit of scause is 1 for an interrupt, so the value is negative when read as signed.
+ *
+ * @param tf trap frame of the trap
+ */
 static inline void trap_dispatch(struct trapframe *tf) {
     if ((intptr_t)tf->cause < 0) {
         // interrupts
@@ -93,12 +134,14 @@ static inline void trap_dispatch(struct trapframe *tf) {
     }
 }
 
-/* *
- * trap - handles or dispatches an exception/interrupt. if and when trap()
- * returns,
- * the code in kern/trap/trapentry.S restores the old CPU state saved in the
- * trapframe and then uses the iret instruction to return from the exception.
- * */
+/**
+ * @brief Handle or dispatch an exception/interrupt.
+ *
+ * If and when trap() returns, the code in kern/trap/trapentry.S restores the CPU state saved in
+ * the trap frame and returns from the trap with sret.
+ *
+ * @param tf trap frame built by SAVE_ALL
+ */
 void trap(struct trapframe *tf) {
     // dispatch based on what type of trap occurred
     trap_dispatch(tf);

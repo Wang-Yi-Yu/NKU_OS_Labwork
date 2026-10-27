@@ -1,5 +1,21 @@
+/**
+ * @file   trapentry.S
+ * @brief  Assembly trap entry and exit: build a struct trapframe, call trap(), restore and sret.
+ *
+ * stvec points to __alltraps. SAVE_ALL pushes 36 words on the current stack in the layout of
+ * struct trapframe (trap.h): x0..x31 at words 0..31, then sstatus, sepc, stval, scause at words
+ * 32..35. RESTORE_ALL is its inverse. REGBYTES, STORE and LOAD come from riscv.h.
+ */
 #include <riscv.h>
 
+    /*
+     * SAVE_ALL - push the whole CPU context as a struct trapframe.
+     *
+     * The original sp is parked in sscratch before sp is lowered, because the x2 slot has to
+     * hold the sp of the interrupted code, not the address of the frame; that is why x2 is not
+     * stored with the other registers but written at the end from sscratch.
+     * Clobbers s0..s4 after they have been saved.
+     */
     .macro SAVE_ALL
 
     csrw sscratch, sp
@@ -44,7 +60,7 @@
     csrrw s0, sscratch, x0
     csrr s1, sstatus
     csrr s2, sepc
-    csrr s3, sbadaddr
+    csrr s3, stval
     csrr s4, scause
 
     STORE s0, 2*REGBYTES(sp)
@@ -54,12 +70,24 @@
     STORE s4, 35*REGBYTES(sp)
     .endm
 
+    /*
+     * RESTORE_ALL - inverse of SAVE_ALL (lab3 exercise 1).
+     *
+     * Contract: reload every register and the CSRs that must survive a trap from the trap frame
+     * at sp (trap() may have changed epc), and leave sp equal to the sp of the interrupted code.
+     * The frame layout and the special role of the x2 slot are described at SAVE_ALL.
+     */
     .macro RESTORE_ALL
 
     #lab3 function1 YOUR CODE
 
     .endm
 
+    /*
+     * __alltraps - trap entry installed in stvec; 4-byte aligned as stvec requires.
+     * Saves the context, then calls trap(struct trapframe *tf) with the address of the frame
+     * (lab3 exercise 1); trap() returns into __trapret below.
+     */
     .globl __alltraps
     .align(2)
 __alltraps:
@@ -68,6 +96,10 @@ __alltraps:
     #lab3 function1 YOUR CODE
     # sp should be the same as before "jal trap"
 
+    /*
+     * __trapret - common exit of a trap: restore the context and return with sret
+     * (pc = sepc, privilege = sstatus.SPP, SIE = SPIE).
+     */
     .globl __trapret
 __trapret:
     RESTORE_ALL

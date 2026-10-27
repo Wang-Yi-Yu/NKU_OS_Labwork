@@ -51,9 +51,7 @@ struct Page *alloc_pages(size_t n) {
     struct Page *page = NULL;
     bool intr_flag;
     local_intr_save(intr_flag);
-    {
-        page = pmm_manager->alloc_pages(n);
-    }
+    { page = pmm_manager->alloc_pages(n); }
     local_intr_restore(intr_flag);
     return page;
 }
@@ -62,9 +60,7 @@ struct Page *alloc_pages(size_t n) {
 void free_pages(struct Page *base, size_t n) {
     bool intr_flag;
     local_intr_save(intr_flag);
-    {
-        pmm_manager->free_pages(base, n);
-    }
+    { pmm_manager->free_pages(base, n); }
     local_intr_restore(intr_flag);
 }
 
@@ -74,9 +70,7 @@ size_t nr_free_pages(void) {
     size_t ret;
     bool intr_flag;
     local_intr_save(intr_flag);
-    {
-        ret = pmm_manager->nr_free_pages();
-    }
+    { ret = pmm_manager->nr_free_pages(); }
     local_intr_restore(intr_flag);
     return ret;
 }
@@ -100,9 +94,10 @@ void pmm_init(void) {
     check_alloc_page();
 
     extern char boot_page_table_sv39[];
-    satp_virtual = (pte_t*)boot_page_table_sv39;
+    satp_virtual = (pte_t *)boot_page_table_sv39;
     satp_physical = PADDR(satp_virtual);
-    cprintf("satp virtual address: 0x%016lx\nsatp physical address: 0x%016lx\n", satp_virtual, satp_physical);
+    cprintf("satp virtual address: 0x%016lx\nsatp physical address: 0x%016lx\n", satp_virtual,
+            satp_physical);
 }
 
 static void check_alloc_page(void) {

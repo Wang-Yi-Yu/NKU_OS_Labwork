@@ -1,4 +1,10 @@
 #!/bin/sh
+# lab3 grading script, run by `make grade` inside a temporary copy of the tree after
+# tools/inject.py has added the tests. For each case it rebuilds the kernel with one
+# -DGRADE_LAB3_* macro, runs it in QEMU for a limited time with the serial output sent to a
+# file, and awards the points if every expected line appears in that file.
+# QEMU 8.x with OpenSBI v1.3 needs -kernel to boot the image; the old
+# "-device loader,...,addr=0x80200000" option does not start the kernel there.
 
 set -u
 
@@ -9,6 +15,7 @@ fi
 
 output=.qemu.out
 score=0
+# run_case <label> <macro> <PASS line> <points> <timeout seconds> [extra expected lines...]
 run_case() {
     label=$1
     define=$2
@@ -32,7 +39,7 @@ run_case() {
     echo "Running $label..."
     timeout "${seconds}s" qemu-system-riscv64 \
         -machine virt -nographic -bios default \
-        -device loader,file=bin/ucore.img,addr=0x80200000 \
+        -kernel bin/ucore.img \
         -serial file:"$output" -monitor none -no-reboot >/dev/null 2>&1 || true
 
     passed=1

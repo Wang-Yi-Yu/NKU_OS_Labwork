@@ -6,6 +6,173 @@
 
 //lab2 请补充你在lab2中的代码
 
+/** @brief Free-block bookkeeping: a list of free block head pages sorted by address, and the total number of free pages. */
+static free_area_t free_area;
+/** @brief Shorthand for the head of the address-ordered free block list. */
+#define free_list (free_area.free_list)
+/** @brief Shorthand for the total number of free pages in all free blocks. */
+#define nr_free (free_area.nr_free)
+
+/**
+ * @brief Reset the allocator to the empty state (no free block, nr_free == 0).
+ */
+static void best_fit_init(void) {
+    list_init(&free_list);
+    nr_free = 0;
+}
+
+/**
+ * @brief Register a range of initially free pages as one free block.
+ *
+ * Every page must be reserved on entry; their flags, property and reference
+ * count are cleared, then `base` becomes the head of a free block of n pages
+ * and is inserted into the address-ordered free list.
+ *
+ * @param base descriptor of the first page of the range
+ * @param n    number of pages in the range, must be greater than 0
+ */
+static void best_fit_init_memmap(struct Page *base, size_t n) {
+    assert(n > 0);
+    for (struct Page *p = base; p != base + n; p++) {
+        assert(PageReserved(p));
+        p->flags = p->property = 0;
+        set_page_ref(p, 0);
+    }
+    base->property = n;
+    SetPageProperty(base);
+    nr_free += n;
+    list_entry_t *le = &free_list;
+    while ((le = list_next(le)) != &free_list) {
+        struct Page *page = le2page(le, page_link);
+        if (base < page) {
+            list_add_before(le, &base->page_link);
+            return;
+        }
+    }
+    list_add(list_prev(&free_list), &base->page_link);
+}
+
+/**
+ * @brief Allocate n contiguous pages from the smallest free block that fits.
+ *
+ * The whole free list is scanned and the block with the smallest `property`
+ * that is still at least n is chosen (the first one on ties, i.e. the lowest
+ * address). The first n pages are handed out and the remainder, if any, stays
+ * on the list in the place of the original block.
+ *
+ * @param n number of pages, must be greater than 0
+ * @return head page of the allocated range, or NULL if no free block is large enough
+ */
+static struct Page *best_fit_alloc_pages(size_t n) {
+    assert(n > 0);
+    if (n > nr_free)
+        return NULL;
+    struct Page *best = NULL;
+    list_entry_t *le = &free_list;
+    while ((le = list_next(le)) != &free_list) {
+        struct Page *p = le2page(le, page_link);
+        if (p->property >= n && (best == NULL || p->property < best->property))
+            best = p;
+    }
+    if (best == NULL)
+        return NULL;
+    list_entry_t *prev = list_prev(&best->page_link);
+    size_t old_size = best->property;
+    list_del(&best->page_link);
+    if (old_size > n) {
+        struct Page *remaining = best + n;
+        remaining->property = old_size - n;
+        SetPageProperty(remaining);
+        list_add(prev, &remaining->page_link);
+    }
+    nr_free -= n;
+    ClearPageProperty(best);
+    best->property = 0;
+    return best;
+}
+
+/**
+ * @brief Return n contiguous pages to the free list and merge adjacent free blocks.
+ *
+ * The range is inserted at its address-ordered position, then merged with the
+ * previous and the next block when they are physically adjacent.
+ *
+ * @param base descriptor of the first page, must come from best_fit_alloc_pages()
+ * @param n    number of pages, must be greater than 0 and match the allocation
+ * @note Asserts that no page of the range is reserved or already a free block head.
+ */
+static void best_fit_free_pages(struct Page *base, size_t n) {
+    assert(n > 0);
+    for (struct Page *p = base; p != base + n; p++) {
+        assert(!PageReserved(p) && !PageProperty(p));
+        p->flags = 0;
+        p->property = 0;
+        set_page_ref(p, 0);
+    }
+    base->property = n;
+    SetPageProperty(base);
+    nr_free += n;
+    list_entry_t *le = &free_list;
+    while ((le = list_next(le)) != &free_list) {
+        struct Page *page = le2page(le, page_link);
+        if (base < page) {
+            list_add_before(le, &base->page_link);
+            break;
+        }
+    }
+    if (le == &free_list)
+        list_add(list_prev(&free_list), &base->page_link);
+
+    le = list_prev(&base->page_link);
+    if (le != &free_list) {
+        struct Page *prev = le2page(le, page_link);
+        if (prev + prev->property == base) {
+            prev->property += base->property;
+            ClearPageProperty(base);
+            list_del(&base->page_link);
+            base = prev;
+        }
+    }
+    le = list_next(&base->page_link);
+    if (le != &free_list) {
+        struct Page *next = le2page(le, page_link);
+        if (base + base->property == next) {
+            base->property += next->property;
+            ClearPageProperty(next);
+            list_del(&next->page_link);
+        }
+    }
+}
+
+/**
+ * @brief Return the total number of free pages.
+ * @return value of nr_free
+ */
+static size_t best_fit_nr_free_pages(void) {
+    return nr_free;
+}
+
+/** @brief Forward declaration of the framework self test, defined below (see best_fit_check()). */
+static void best_fit_check(void);
+
+/** @brief The Best-Fit manager instance, selected by default in init_pmm_manager() (pmm.c). */
+const struct pmm_manager best_fit_pmm_manager = {
+    .name = "best_fit_pmm_manager",
+    .init = best_fit_init,
+    .init_memmap = best_fit_init_memmap,
+    .alloc_pages = best_fit_alloc_pages,
+    .free_pages = best_fit_free_pages,
+    .nr_free_pages = best_fit_nr_free_pages,
+    .check = best_fit_check,
+};
+
+// clang-format off
+// Framework tests: students must not modify basic_check or best_fit_check.
+/**
+ * @brief Basic allocate/free sanity test shared by the allocator self tests.
+ * @note Provided by the lab framework, do not modify.
+ */
+
 static void basic_check(void) {
     struct Page *p0, *p1, *p2;
     p0 = p1 = p2 = NULL;

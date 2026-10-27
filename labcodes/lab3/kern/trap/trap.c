@@ -116,6 +116,18 @@ void print_regs(struct pushregs *gpr) {
 
 //lab3 function2 YOUR CODE
 
+/**
+ * @brief Handle an interrupt (scause bit 63 set). Empty stub: owned by lab3 exercise 2-a.
+ * @param tf trap frame of the interrupt
+ */
+void interrupt_handler(struct trapframe *tf) {}
+
+/**
+ * @brief Handle an exception (scause bit 63 clear). Empty stub: owned by lab3 exercise 2-b.
+ * @param tf trap frame of the exception
+ */
+void exception_handler(struct trapframe *tf) {}
+
 
 /**
  * @brief Route a trap to the interrupt or the exception handler.

@@ -1,28 +1,30 @@
+/**
+ * @file   readline.c
+ * @brief  Line input from stdin with echo and backspace handling.
+ *
+ * The prototype and full documentation of readline() are in libs/stdio.h. The result is stored
+ * in a single static buffer shared by all calls, so each call overwrites the previous result.
+ */
 #include <stdio.h>
 
+/** @brief Size in bytes of the static line buffer used by readline(), including the terminating '\0'. */
 #define BUFSIZE 1024
+
+/** @brief Static buffer that holds the line returned by readline(); shared by all calls. */
 static char buf[BUFSIZE];
 
-/* *
- * readline - get a line from stdin
- * @prompt:     the string to be written to stdout
+/**
+ * @brief Reads one line from stdin, echoing characters as they are typed.
  *
- * The readline() function will write the input string @prompt to
- * stdout first. If the @prompt is NULL or the empty string,
- * no prompt is issued.
+ * Writes @p prompt first, then reads characters until '\n' or '\r'. Printable characters are
+ * appended to buf (at most BUFSIZE - 1 of them); '\b' removes the last character when buf is
+ * non-empty; the terminating newline character is echoed. Full description is in libs/stdio.h.
  *
- * This function will keep on reading characters and saving them to buffer
- * 'buf' until '\n' or '\r' is encountered.
- *
- * Note that, if the length of string that will be read is longer than
- * buffer size, the end of string will be discarded.
- *
- * The readline() function returns the text of the line read. If some errors
- * are happened, NULL is returned. The return value is a global variable,
- * thus it should be copied before it is used.
- * */
-char *
-readline(const char *prompt) {
+ * @param prompt  Prompt to print first; may be NULL or empty.
+ * @return Pointer to the static buffer holding the line, or NULL if the underlying read fails
+ *         (returns a negative value).
+ */
+char *readline(const char *prompt) {
     if (prompt != NULL) {
         cprintf("%s", prompt);
     }
@@ -31,20 +33,16 @@ readline(const char *prompt) {
         c = getchar();
         if (c < 0) {
             return NULL;
-        }
-        else if (c >= ' ' && i < BUFSIZE - 1) {
+        } else if (c >= ' ' && i < BUFSIZE - 1) {
             cputchar(c);
-            buf[i ++] = c;
-        }
-        else if (c == '\b' && i > 0) {
+            buf[i++] = c;
+        } else if (c == '\b' && i > 0) {
             cputchar(c);
-            i --;
-        }
-        else if (c == '\n' || c == '\r') {
+            i--;
+        } else if (c == '\n' || c == '\r') {
             cputchar(c);
             buf[i] = '\0';
             return buf;
         }
     }
 }
-

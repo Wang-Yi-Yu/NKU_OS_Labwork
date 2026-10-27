@@ -1,0 +1,51 @@
+# clang-format configuration, kept as close as possible to the existing ucore style.
+# Requires clang-format >= 15 (Ubuntu 24.04 ships 18).
+---
+Language: Cpp
+BasedOnStyle: LLVM
+
+# ---- indentation ----
+IndentWidth: 4
+TabWidth: 4
+UseTab: Never
+ContinuationIndentWidth: 4
+IndentCaseLabels: true          # indent case labels inside switch (see dtb.c)
+IndentPPDirectives: None
+AccessModifierOffset: -4
+
+# ---- line breaking and braces ----
+ColumnLimit: 100
+BreakBeforeBraces: Attach       # K&R: opening brace stays on the same line
+AllowShortFunctionsOnASingleLine: Empty   # function bodies are always expanded; only an empty {} may stay on one line
+AllowShortIfStatementsOnASingleLine: Never
+AllowShortLoopsOnASingleLine: false
+AllowShortBlocksOnASingleLine: Empty
+AllowShortCaseLabelsOnASingleLine: false
+AlwaysBreakAfterReturnType: None        # return type on the same line as the function name
+BinPackArguments: true
+BinPackParameters: true
+AlignAfterOpenBracket: Align
+BreakBeforeBinaryOperators: None
+KeepEmptyLinesAtTheStartOfBlocks: false
+MaxEmptyLinesToKeep: 2
+InsertNewlineAtEOF: true
+
+# ---- spacing and alignment ----
+PointerAlignment: Right         # struct Page *p
+DerivePointerAlignment: false
+SpaceBeforeParens: ControlStatements
+SpacesInParentheses: false
+SpacesBeforeTrailingComments: 2
+AlignTrailingComments: true
+AlignConsecutiveMacros: Consecutive     # align the values of consecutive #defines (see mmu.h)
+AlignEscapedNewlines: Left              # align macro line-continuation backslashes to the longest line
+AlignOperands: Align
+
+# ---- comments ----
+# Never reflow comments: mmu.h and others contain ASCII diagrams that reflowing would break.
+ReflowComments: false
+
+# ---- #include ----
+# Do not sort: some headers depend on their inclusion order, keep the hand-written order.
+SortIncludes: Never
+IncludeBlocks: Preserve

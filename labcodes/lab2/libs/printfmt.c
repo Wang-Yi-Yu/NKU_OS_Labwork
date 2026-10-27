@@ -1,41 +1,53 @@
+/**
+ * @file   printfmt.c
+ * @brief  Implementation of formatted output: printfmt/vprintfmt and snprintf/vsnprintf.
+ *
+ * The core function vprintfmt() emits characters one by one through a putch callback,
+ * so the same formatting logic serves both console output (cprintf, see kern/libs/stdio.c)
+ * and writing into a string buffer (snprintf). The public interface is documented in libs/stdio.h.
+ */
 #include <defs.h>
 #include <riscv.h>
 #include <error.h>
 #include <stdio.h>
 #include <string.h>
 
-/* *
- * Space or zero padding and a field width are supported for the numeric
- * formats only.
+/**
+ * @brief Table mapping error codes to description strings, used by the %e conversion.
  *
- * The special format %e takes an integer error code
- * and prints a string describing the error.
- * The integer may be positive or negative,
- * so that -E_NO_MEM and E_NO_MEM are equivalent.
- * */
-
-static const char * const error_string[MAXERROR + 1] = {
-    [0]                     NULL,
-    [E_UNSPECIFIED]         "unspecified error",
-    [E_BAD_PROC]            "bad process",
-    [E_INVAL]               "invalid parameter",
-    [E_NO_MEM]              "out of memory",
-    [E_NO_FREE_PROC]        "out of processes",
-    [E_FAULT]               "segmentation fault",
+ * Indexed by the error code (defined in libs/error.h). Index 0 and undefined codes map to NULL.
+ * vprintfmt() takes the absolute value of the argument before the lookup.
+ */
+static const char *const error_string[MAXERROR + 1] = {
+    [0] NULL,
+    [E_UNSPECIFIED] "unspecified error",
+    [E_BAD_PROC] "bad process",
+    [E_INVAL] "invalid parameter",
+    [E_NO_MEM] "out of memory",
+    [E_NO_FREE_PROC] "out of processes",
+    [E_FAULT] "segmentation fault",
 };
 
-/* *
- * printnum - print a number (base <= 16) in reverse order
- * @putch:      specified putch function, print a single character
- * @putdat:     used by @putch function
- * @num:        the number will be printed
- * @base:       base for print, must be in [1, 16]
- * @width:      maximum number of digits, if the actual width is less than @width, use @padc instead
- * @padc:       character that padded on the left if the actual width is less than @width
- * */
-static void
-printnum(void (*putch)(int, void*), void *putdat,
-        unsigned long long num, unsigned base, int width, int padc) {
+/**
+ * @brief Prints an integer in reverse digit order, for bases up to 16.
+ *
+ * Recursive: higher-order digits are printed first, then the lowest digit. If the number has
+ * fewer digits than @p width, the missing positions are filled with @p padc on the left.
+ * Digits above 9 use lowercase letters.
+ *
+ * @details width is decremented at each recursion level and the padding is emitted only at the
+ * innermost (least significant) level, so the total number of pad characters is width minus the
+ * number of digits, and they always appear to the left of the digits.
+ *
+ * @param[in] putch   Single-character output callback.
+ * @param[in] putdat  User data passed to @p putch.
+ * @param[in] num     Unsigned value to print.
+ * @param[in] base    Numeric base, in [1, 16].
+ * @param[in] width   Minimum number of digit positions.
+ * @param[in] padc    Padding character, e.g. ' ' or '0'.
+ */
+static void printnum(void (*putch)(int, void *), void *putdat, unsigned long long num,
+                     unsigned base, int width, int padc) {
     unsigned long long result = num;
     unsigned mod = do_div(result, base);
 
@@ -44,57 +56,60 @@ printnum(void (*putch)(int, void*), void *putdat,
         printnum(putch, putdat, result, base, width - 1, padc);
     } else {
         // print any needed pad characters before first digit
-        while (-- width > 0)
+        while (--width > 0)
             putch(padc, putdat);
     }
     // then print this (the least significant) digit
     putch("0123456789abcdef"[mod], putdat);
 }
 
-/* *
- * getuint - get an unsigned int of various possible sizes from a varargs list
- * @ap:         a varargs list pointer
- * @lflag:      determines the size of the vararg that @ap points to
- * */
-static unsigned long long
-getuint(va_list *ap, int lflag) {
+/**
+ * @brief Reads an unsigned integer of the size selected by a length modifier from a va_list.
+ *
+ * @param[in,out] ap     Pointer to the variadic argument list; advanced by the read.
+ * @param[in]     lflag  Length modifier: 0 for unsigned int, 1 for unsigned long,
+ *                       2 or more for unsigned long long.
+ * @return The value read, widened to unsigned long long.
+ */
+static unsigned long long getuint(va_list *ap, int lflag) {
     if (lflag >= 2) {
         return va_arg(*ap, unsigned long long);
-    }
-    else if (lflag) {
+    } else if (lflag) {
         return va_arg(*ap, unsigned long);
-    }
-    else {
+    } else {
         return va_arg(*ap, unsigned int);
     }
 }
 
-/* *
- * getint - same as getuint but signed, we can't use getuint because of sign extension
- * @ap:         a varargs list pointer
- * @lflag:      determines the size of the vararg that @ap points to
- * */
-static long long
-getint(va_list *ap, int lflag) {
+/**
+ * @brief Signed counterpart of getuint().
+ *
+ * Kept separate from getuint() so that the value is sign-extended correctly when widened.
+ *
+ * @param[in,out] ap     Pointer to the variadic argument list; advanced by the read.
+ * @param[in]     lflag  Length modifier: 0 for int, 1 for long, 2 or more for long long.
+ * @return The value read, widened to long long.
+ */
+static long long getint(va_list *ap, int lflag) {
     if (lflag >= 2) {
         return va_arg(*ap, long long);
-    }
-    else if (lflag) {
+    } else if (lflag) {
         return va_arg(*ap, long);
-    }
-    else {
+    } else {
         return va_arg(*ap, int);
     }
 }
 
-/* *
- * printfmt - format a string and print it by using putch
- * @putch:      specified putch function, print a single character
- * @putdat:     used by @putch function
- * @fmt:        the format string to use
- * */
-void
-printfmt(void (*putch)(int, void*), void *putdat, const char *fmt, ...) {
+/**
+ * @brief Formats a string and emits it character by character through @p putch.
+ *
+ * Variadic wrapper around vprintfmt(). Full description is in libs/stdio.h.
+ *
+ * @param putch    Single-character output callback.
+ * @param putdat   User data passed to @p putch.
+ * @param fmt      Format string.
+ */
+void printfmt(void (*putch)(int, void *), void *putdat, const char *fmt, ...) {
     va_list ap;
 
     va_start(ap, fmt);
@@ -102,26 +117,26 @@ printfmt(void (*putch)(int, void*), void *putdat, const char *fmt, ...) {
     va_end(ap);
 }
 
-/* *
- * vprintfmt - format a string and print it by using putch, it's called with a va_list
- * instead of a variable number of arguments
- * @putch:      specified putch function, print a single character
- * @putdat:     used by @putch function
- * @fmt:        the format string to use
- * @ap:         arguments for the format string
+/**
+ * @brief Formats a string from a va_list and emits it through @p putch.
  *
- * Call this function if you are already dealing with a va_list.
- * Or you probably want printfmt() instead.
- * */
-void
-vprintfmt(void (*putch)(int, void*), void *putdat, const char *fmt, va_list ap) {
+ * Core formatting engine. It scans @p fmt, copying ordinary characters directly and parsing
+ * the flags, width, precision, length modifiers and conversion character after each '%'.
+ * The full specification of the supported conversions is in libs/stdio.h.
+ *
+ * @param putch    Single-character output callback.
+ * @param putdat   User data passed to @p putch.
+ * @param fmt      Format string.
+ * @param ap       Argument list consumed by the conversions.
+ */
+void vprintfmt(void (*putch)(int, void *), void *putdat, const char *fmt, va_list ap) {
     register const char *p;
     register int ch, err;
     unsigned long long num;
     int base, width, precision, lflag, altflag;
 
     while (1) {
-        while ((ch = *(unsigned char *)fmt ++) != '%') {
+        while ((ch = *(unsigned char *)fmt++) != '%') {
             if (ch == '\0') {
                 return;
             }
@@ -134,175 +149,182 @@ vprintfmt(void (*putch)(int, void*), void *putdat, const char *fmt, va_list ap) 
         lflag = altflag = 0;
 
     reswitch:
-        switch (ch = *(unsigned char *)fmt ++) {
+        switch (ch = *(unsigned char *)fmt++) {
+            // flag to pad on the right
+            case '-':
+                padc = '-';
+                goto reswitch;
 
-        // flag to pad on the right
-        case '-':
-            padc = '-';
-            goto reswitch;
+            // flag to pad with 0's instead of spaces
+            case '0':
+                padc = '0';
+                goto reswitch;
 
-        // flag to pad with 0's instead of spaces
-        case '0':
-            padc = '0';
-            goto reswitch;
-
-        // width field
-        case '1' ... '9':
-            for (precision = 0; ; ++ fmt) {
-                precision = precision * 10 + ch - '0';
-                ch = *fmt;
-                if (ch < '0' || ch > '9') {
-                    break;
+            // width field
+            case '1' ... '9':
+                for (precision = 0;; ++fmt) {
+                    precision = precision * 10 + ch - '0';
+                    ch = *fmt;
+                    if (ch < '0' || ch > '9') {
+                        break;
+                    }
                 }
-            }
-            goto process_precision;
+                goto process_precision;
 
-        case '*':
-            precision = va_arg(ap, int);
-            goto process_precision;
+            case '*':
+                precision = va_arg(ap, int);
+                goto process_precision;
 
-        case '.':
-            if (width < 0)
-                width = 0;
-            goto reswitch;
+            case '.':
+                if (width < 0)
+                    width = 0;
+                goto reswitch;
 
-        case '#':
-            altflag = 1;
-            goto reswitch;
+            case '#':
+                altflag = 1;
+                goto reswitch;
 
-        process_precision:
-            if (width < 0)
-                width = precision, precision = -1;
-            goto reswitch;
+            process_precision:
+                if (width < 0)
+                    width = precision, precision = -1;
+                goto reswitch;
 
-        // long flag (doubled for long long)
-        case 'l':
-            lflag ++;
-            goto reswitch;
+            // long flag (doubled for long long)
+            case 'l':
+                lflag++;
+                goto reswitch;
 
-        // character
-        case 'c':
-            putch(va_arg(ap, int), putdat);
-            break;
+            // character
+            case 'c':
+                putch(va_arg(ap, int), putdat);
+                break;
 
-        // error message
-        case 'e':
-            err = va_arg(ap, int);
-            if (err < 0) {
-                err = -err;
-            }
-            if (err > MAXERROR || (p = error_string[err]) == NULL) {
-                printfmt(putch, putdat, "error %d", err);
-            }
-            else {
-                printfmt(putch, putdat, "%s", p);
-            }
-            break;
-
-        // string
-        case 's':
-            if ((p = va_arg(ap, char *)) == NULL) {
-                p = "(null)";
-            }
-            if (width > 0 && padc != '-') {
-                for (width -= strnlen(p, precision); width > 0; width --) {
-                    putch(padc, putdat);
+            // error message
+            case 'e':
+                err = va_arg(ap, int);
+                if (err < 0) {
+                    err = -err;
                 }
-            }
-            for (; (ch = *p ++) != '\0' && (precision < 0 || -- precision >= 0); width --) {
-                if (altflag && (ch < ' ' || ch > '~')) {
-                    putch('?', putdat);
+                if (err > MAXERROR || (p = error_string[err]) == NULL) {
+                    printfmt(putch, putdat, "error %d", err);
+                } else {
+                    printfmt(putch, putdat, "%s", p);
                 }
-                else {
-                    putch(ch, putdat);
+                break;
+
+            // string
+            case 's':
+                if ((p = va_arg(ap, char *)) == NULL) {
+                    p = "(null)";
                 }
-            }
-            for (; width > 0; width --) {
-                putch(' ', putdat);
-            }
-            break;
+                if (width > 0 && padc != '-') {
+                    for (width -= strnlen(p, precision); width > 0; width--) {
+                        putch(padc, putdat);
+                    }
+                }
+                for (; (ch = *p++) != '\0' && (precision < 0 || --precision >= 0); width--) {
+                    if (altflag && (ch < ' ' || ch > '~')) {
+                        putch('?', putdat);
+                    } else {
+                        putch(ch, putdat);
+                    }
+                }
+                for (; width > 0; width--) {
+                    putch(' ', putdat);
+                }
+                break;
 
-        // (signed) decimal
-        case 'd':
-            num = getint(&ap, lflag);
-            if ((long long)num < 0) {
-                putch('-', putdat);
-                num = -(long long)num;
-            }
-            base = 10;
-            goto number;
+            // (signed) decimal
+            case 'd':
+                num = getint(&ap, lflag);
+                if ((long long)num < 0) {
+                    putch('-', putdat);
+                    num = -(long long)num;
+                }
+                base = 10;
+                goto number;
 
-        // unsigned decimal
-        case 'u':
-            num = getuint(&ap, lflag);
-            base = 10;
-            goto number;
+            // unsigned decimal
+            case 'u':
+                num = getuint(&ap, lflag);
+                base = 10;
+                goto number;
 
-        // (unsigned) octal
-        case 'o':
-            num = getuint(&ap, lflag);
-            base = 8;
-            goto number;
+            // (unsigned) octal
+            case 'o':
+                num = getuint(&ap, lflag);
+                base = 8;
+                goto number;
 
-        // pointer
-        case 'p':
-            putch('0', putdat);
-            putch('x', putdat);
-            num = (unsigned long long)(uintptr_t)va_arg(ap, void *);
-            base = 16;
-            goto number;
+            // pointer
+            case 'p':
+                putch('0', putdat);
+                putch('x', putdat);
+                num = (unsigned long long)(uintptr_t)va_arg(ap, void *);
+                base = 16;
+                goto number;
 
-        // (unsigned) hexadecimal
-        case 'x':
-            num = getuint(&ap, lflag);
-            base = 16;
-        number:
-            printnum(putch, putdat, num, base, width, padc);
-            break;
+            // (unsigned) hexadecimal
+            case 'x':
+                num = getuint(&ap, lflag);
+                base = 16;
+            number:
+                printnum(putch, putdat, num, base, width, padc);
+                break;
 
-        // escaped '%' character
-        case '%':
-            putch(ch, putdat);
-            break;
+            // escaped '%' character
+            case '%':
+                putch(ch, putdat);
+                break;
 
-        // unrecognized escape sequence - just print it literally
-        default:
-            putch('%', putdat);
-            for (fmt --; fmt[-1] != '%'; fmt --)
-                /* do nothing */;
-            break;
+            // unrecognized escape sequence - just print it literally
+            default:
+                putch('%', putdat);
+                for (fmt--; fmt[-1] != '%'; fmt--)
+                    /* do nothing */;
+                break;
         }
     }
 }
 
-/* sprintbuf is used to save enough information of a buffer */
+/**
+ * @brief State of a string buffer during vsnprintf().
+ *
+ * Built by vsnprintf() and passed as the user data of sprintputch().
+ */
 struct sprintbuf {
-    char *buf;          // address pointer points to the first unused memory
-    char *ebuf;         // points the end of the buffer
-    int cnt;            // the number of characters that have been placed in this buffer
+    char *buf;  /**< Next writable position (first unused byte). */
+    char *ebuf; /**< Position of the last writable byte, i.e. str + size - 1. */
+    int cnt;    /**< Total number of characters produced, including those dropped on overflow. */
 };
 
-/* *
- * sprintputch - 'print' a single character in a buffer
- * @ch:         the character will be printed
- * @b:          the buffer to place the character @ch
- * */
-static void
-sprintputch(int ch, struct sprintbuf *b) {
-    b->cnt ++;
+/**
+ * @brief Writes one character into a bounded string buffer, dropping it when the buffer is full.
+ *
+ * cnt is incremented for every character even when it is not stored, so the final cnt can exceed
+ * the buffer capacity.
+ *
+ * @param[in]     ch  Character to write.
+ * @param[in,out] b   Buffer state; b->buf is advanced when the character is stored.
+ */
+static void sprintputch(int ch, struct sprintbuf *b) {
+    b->cnt++;
     if (b->buf < b->ebuf) {
-        *b->buf ++ = ch;
+        *b->buf++ = ch;
     }
 }
 
-/* *
- * snprintf - format a string and place it in a buffer
- * @str:        the buffer to place the result into
- * @size:       the size of buffer, including the trailing null space
- * @fmt:        the format string to use
- * */
-int
-snprintf(char *str, size_t size, const char *fmt, ...) {
+/**
+ * @brief Formats a string into a buffer (variadic wrapper).
+ *
+ * Full description is in libs/stdio.h.
+ *
+ * @param str   Destination buffer.
+ * @param size  Size of the buffer in bytes, including the terminating '\0'.
+ * @param fmt   Format string.
+ * @return Same as vsnprintf().
+ */
+int snprintf(char *str, size_t size, const char *fmt, ...) {
     va_list ap;
     int cnt;
     va_start(ap, fmt);
@@ -311,30 +333,26 @@ snprintf(char *str, size_t size, const char *fmt, ...) {
     return cnt;
 }
 
-/* *
- * vsnprintf - format a string and place it in a buffer, it's called with a va_list
- * instead of a variable number of arguments
- * @str:        the buffer to place the result into
- * @size:       the size of buffer, including the trailing null space
- * @fmt:        the format string to use
- * @ap:         arguments for the format string
+/**
+ * @brief Formats a string from a va_list into a buffer.
  *
- * The return value is the number of characters which would be generated for the
- * given input, excluding the trailing '\0'.
+ * Calls vprintfmt() with sprintputch() as the callback. At most size - 1 characters are stored,
+ * followed by '\0'. Full description and return-value semantics are in libs/stdio.h.
  *
- * Call this function if you are already dealing with a va_list.
- * Or you probably want snprintf() instead.
- * */
-int
-vsnprintf(char *str, size_t size, const char *fmt, va_list ap) {
+ * @param str   Destination buffer.
+ * @param size  Size of the buffer in bytes, including the terminating '\0'.
+ * @param fmt   Format string.
+ * @param ap    Argument list consumed by the conversions.
+ * @return Same as vsnprintf().
+ */
+int vsnprintf(char *str, size_t size, const char *fmt, va_list ap) {
     struct sprintbuf b = {str, str + size - 1, 0};
     if (str == NULL || b.buf > b.ebuf) {
         return -E_INVAL;
     }
     // print the string to the buffer
-    vprintfmt((void*)sprintputch, &b, fmt, ap);
+    vprintfmt((void *)sprintputch, &b, fmt, ap);
     // null terminate the buffer
     *b.buf = '\0';
     return b.cnt;
 }
-

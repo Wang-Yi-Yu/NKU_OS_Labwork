@@ -1,19 +1,28 @@
+/**
+ * @file   init.c
+ * @brief  C entry point of the kernel: kern_init() and the boot-time kernel info printout.
+ */
 #include <console.h>
 #include <defs.h>
 #include <pmm.h>
 #include <stdio.h>
 #include <string.h>
 #include <dtb.h>
+#include <slub.h>
 
 int kern_init(void) __attribute__((noreturn));
+/** @brief Backtrace helper for lab1 grading; declared but not implemented in this lab. */
 void grade_backtrace(void);
 void print_kerninfo(void);
 
-/* *
- * print_kerninfo - print the information about kernel, including the location
- * of kernel entry, the start addresses of data and text segements, the start
- * address of free memory and how many memory that kernel has used.
- * */
+/**
+ * @brief Print information about the kernel image.
+ *
+ * Prints the location of the kernel entry, the end addresses of the text and
+ * data segments, the end of the kernel image (`end`, where free memory
+ * starts) and how much memory the kernel image occupies. All addresses are
+ * virtual addresses.
+ */
 void print_kerninfo(void) {
     extern char etext[], edata[], end[];
     cprintf("Special kernel symbols:\n");
@@ -21,10 +30,22 @@ void print_kerninfo(void) {
     cprintf("  etext  0x%016lx (virtual)\n", etext);
     cprintf("  edata  0x%016lx (virtual)\n", edata);
     cprintf("  end    0x%016lx (virtual)\n", end);
-    cprintf("Kernel executable memory footprint: %dKB\n",
-            (end - (char*)kern_init + 1023) / 1024);
+    cprintf("Kernel executable memory footprint: %dKB\n", (end - (char *)kern_init + 1023) / 1024);
 }
 
+/**
+ * @brief C entry point of the kernel, jumped to from kern_entry in entry.S once
+ *        paging is enabled.
+ *
+ * Clears the BSS segment, reads the physical memory layout from the device tree
+ * (dtb_init), initialises the console, prints the kernel info, initialises
+ * physical memory management (pmm_init), runs the SLUB allocator self test
+ * (slub_init, slub_check) and then idles forever.
+ *
+ * @note The BSS must be cleared before dtb_init(), because dtb_init() stores its
+ *       result in BSS variables.
+ * @return never returns
+ */
 int kern_init(void) {
     extern char edata[], end[];
     memset(edata, 0, end - edata);
@@ -38,9 +59,10 @@ int kern_init(void) {
 
     // grade_backtrace();
     pmm_init();  // init physical memory management
+    slub_init();
+    slub_check();
 
     /* do nothing */
     while (1)
         ;
 }
-

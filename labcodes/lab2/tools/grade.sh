@@ -222,7 +222,9 @@ osimg=$(make_print ucoreimg)
 swapimg=$(make_print swapimg)
 
 ## qemu-options
-qemuopts="-machine virt -nographic -bios default -device loader,file=bin/ucore.img,addr=0x80200000"
+## QEMU 8.x (OpenSBI v1.3 fw_dynamic) must be given the kernel via -kernel;
+## the old "-device loader,...,addr=0x80200000" no longer starts the kernel
+qemuopts="-machine virt -nographic -bios default -kernel bin/ucore.img"
 
 ## the lab2 kernel only while(1) after entering kernel mode and never calls readline,
 ## so no break function is needed and brkfun stays empty
@@ -239,6 +241,18 @@ quick_check 'check page init'                \
 pts=10
 quick_check 'check best fit'                 \
     '[Test 2] Best-Fit: PASS'
+
+pts=10
+quick_check 'check buddy system'             \
+    '[Test 3] Buddy System: PASS'
+
+pts=10
+quick_check 'check slub'                     \
+    '[Test 4] SLUB: PASS'
+
+pts=10
+quick_check 'check slub on buddy system'     \
+    '[Test 5] SLUB on Buddy System: PASS'
 
 ## print final-score
 show_final

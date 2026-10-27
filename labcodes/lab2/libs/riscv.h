@@ -1,7 +1,19 @@
 // See LICENSE for license details.
 
+/**
+ * @file   riscv.h
+ * @brief  RISC-V architecture definitions: CSR and bit-field constants, instruction encodings,
+ *         and inline helpers for reading and writing CSRs and other privileged state.
+ *
+ * The constant tables below are vendor definitions. Large groups are documented with @name
+ * blocks rather than one comment per constant. Only the inline helpers and macros are documented
+ * individually. The vendor section is wrapped in clang-format off/on.
+ */
 #ifndef __LIBS_RISCV_H__
 #define __LIBS_RISCV_H__
+/* clang-format off */
+
+/** @name Register width and XLEN-dependent instruction mnemonics @{ */
 
 #if __riscv_xlen == 64
 # define SLL32    sllw
@@ -16,7 +28,12 @@
 # define LWU      lw
 # define LOG_REGBYTES 2
 #endif
+/** @brief Size of a general-purpose register in bytes, equal to 1 << LOG_REGBYTES. */
 #define REGBYTES (1 << LOG_REGBYTES)
+
+/** @} */
+
+/** @name MSTATUS register bits @{ */
 
 #define MSTATUS_UIE         0x00000001
 #define MSTATUS_SIE         0x00000002
@@ -38,6 +55,10 @@
 #define MSTATUS32_SD        0x80000000
 #define MSTATUS64_SD        0x8000000000000000
 
+/** @} */
+
+/** @name SSTATUS register bits (supervisor view of MSTATUS) @{ */
+
 #define SSTATUS_UIE         0x00000001
 #define SSTATUS_SIE         0x00000002
 #define SSTATUS_UPIE        0x00000010
@@ -48,6 +69,10 @@
 #define SSTATUS_PUM         0x00040000
 #define SSTATUS32_SD        0x80000000
 #define SSTATUS64_SD        0x8000000000000000
+
+/** @} */
+
+/** @name DCSR debug control and status register bits @{ */
 
 #define DCSR_XDEBUGVER      (3U<<30)
 #define DCSR_NDRESET        (1<<29)
@@ -64,6 +89,10 @@
 #define DCSR_STEP           (1<<2)
 #define DCSR_PRV            (3<<0)
 
+/** @} */
+
+/** @name DCSR.cause values (reason for entering debug mode) @{ */
+
 #define DCSR_CAUSE_NONE     0
 #define DCSR_CAUSE_SWBP     1
 #define DCSR_CAUSE_HWBP     2
@@ -71,9 +100,27 @@
 #define DCSR_CAUSE_STEP     4
 #define DCSR_CAUSE_HALT     5
 
+/** @} */
+
+/**
+ * @brief Mask of the type field in tdata1 (mcontrol) for a given XLEN.
+ * @param xlen  Register width in bits (32 or 64).
+ */
 #define MCONTROL_TYPE(xlen)    (0xfULL<<((xlen)-4))
+
+/**
+ * @brief Mask of the dmode bit in tdata1 (mcontrol) for a given XLEN.
+ * @param xlen  Register width in bits (32 or 64).
+ */
 #define MCONTROL_DMODE(xlen)   (1ULL<<((xlen)-5))
+
+/**
+ * @brief Mask of the maskmax field in tdata1 (mcontrol) for a given XLEN.
+ * @param xlen  Register width in bits (32 or 64).
+ */
 #define MCONTROL_MASKMAX(xlen) (0x3fULL<<((xlen)-11))
+
+/** @name tdata1 (mcontrol) field bits @{ */
 
 #define MCONTROL_SELECT     (1<<19)
 #define MCONTROL_TIMING     (1<<18)
@@ -87,6 +134,10 @@
 #define MCONTROL_EXECUTE    (1<<2)
 #define MCONTROL_STORE      (1<<1)
 #define MCONTROL_LOAD       (1<<0)
+
+/** @} */
+
+/** @name tdata1 (mcontrol) type, action and match values @{ */
 
 #define MCONTROL_TYPE_NONE      0
 #define MCONTROL_TYPE_MATCH     2
@@ -104,6 +155,10 @@
 #define MCONTROL_MATCH_MASK_LOW  4
 #define MCONTROL_MATCH_MASK_HIGH 5
 
+/** @} */
+
+/** @name MIP interrupt-pending bits @{ */
+
 #define MIP_SSIP            (1 << IRQ_S_SOFT)
 #define MIP_HSIP            (1 << IRQ_H_SOFT)
 #define MIP_MSIP            (1 << IRQ_M_SOFT)
@@ -114,13 +169,25 @@
 #define MIP_HEIP            (1 << IRQ_H_EXT)
 #define MIP_MEIP            (1 << IRQ_M_EXT)
 
+/** @} */
+
+/** @name SIP supervisor interrupt-pending bits (subset of MIP) @{ */
+
 #define SIP_SSIP MIP_SSIP
 #define SIP_STIP MIP_STIP
+
+/** @} */
+
+/** @name Privilege levels (encoded in MSTATUS.MPP and similar fields) @{ */
 
 #define PRV_U 0
 #define PRV_S 1
 #define PRV_H 2
 #define PRV_M 3
+
+/** @} */
+
+/** @name Virtual memory modes (satp.MODE values) @{ */
 
 #define VM_MBARE 0
 #define VM_MBB   1
@@ -128,6 +195,10 @@
 #define VM_SV32  8
 #define VM_SV39  9
 #define VM_SV48  10
+
+/** @} */
+
+/** @name Interrupt and exception numbers (cause codes without the interrupt bit) @{ */
 
 #define IRQ_U_SOFT   0
 #define IRQ_S_SOFT   1
@@ -144,6 +215,10 @@
 #define IRQ_COP      12
 #define IRQ_HOST     13
 
+/** @} */
+
+/** @name Default reset, trap and memory-map addresses @{ */
+
 #define DEFAULT_RSTVEC     0x00001000
 #define DEFAULT_NMIVEC     0x00001004
 #define DEFAULT_MTVEC      0x00001010
@@ -151,7 +226,10 @@
 #define EXT_IO_BASE        0x40000000
 #define DRAM_BASE          0x80000000
 
+/** @} */
+
 // page table entry (PTE) fields
+/** @name Page table entry (PTE) flag bits @{ */
 #define PTE_V     0x001 // Valid
 #define PTE_R     0x002 // Read
 #define PTE_W     0x004 // Write
@@ -164,9 +242,21 @@
 
 #define PTE_PPN_SHIFT 10
 
+/** @} */
+
+/**
+ * @brief Tests whether a PTE is a pointer to a next-level page table rather than a leaf mapping.
+ *
+ * A PTE is a table pointer when V is set and R, W and X are all clear.
+ *
+ * @param PTE  The page table entry to test.
+ * @return Non-zero if @p PTE points to a next-level table, 0 otherwise.
+ */
 #define PTE_TABLE(PTE) (((PTE) & (PTE_V | PTE_R | PTE_W | PTE_X)) == PTE_V)
 
 #ifdef __riscv
+
+/** @name XLEN-dependent status masks and paging geometry @{ */
 
 #if __riscv_xlen == 64
 # define MSTATUS_SD MSTATUS64_SD
@@ -180,20 +270,45 @@
 #define RISCV_PGSHIFT 12
 #define RISCV_PGSIZE (1 << RISCV_PGSHIFT)
 
+/** @} */
+
 #ifndef __ASSEMBLER__
 
 #ifdef __GNUC__
 
+/**
+ * @brief Reads a control and status register (CSR).
+ *
+ * Expands to a csrr instruction. The result has type unsigned long.
+ *
+ * @param reg  CSR name as an assembler identifier, e.g. mstatus or satp (not a string).
+ * @return The current value of the CSR.
+ */
 #define read_csr(reg) ({ unsigned long __tmp; \
   asm volatile ("csrr %0, " #reg : "=r"(__tmp)); \
   __tmp; })
 
+/**
+ * @brief Writes a value to a CSR (csrw).
+ *
+ * If @p val is a compile-time constant below 32, the immediate form of csrw is used.
+ *
+ * @param reg  CSR name as an assembler identifier (not a string).
+ * @param val  Value to write.
+ */
 #define write_csr(reg, val) ({ \
   if (__builtin_constant_p(val) && (unsigned long)(val) < 32) \
     asm volatile ("csrw " #reg ", %0" :: "i"(val)); \
   else \
     asm volatile ("csrw " #reg ", %0" :: "r"(val)); })
 
+/**
+ * @brief Atomically swaps a value into a CSR and returns the old value (csrrw).
+ *
+ * @param reg  CSR name as an assembler identifier (not a string).
+ * @param val  New value to write; a constant below 32 uses the immediate form.
+ * @return The previous value of the CSR.
+ */
 #define swap_csr(reg, val) ({ unsigned long __tmp; \
   if (__builtin_constant_p(val) && (unsigned long)(val) < 32) \
     asm volatile ("csrrw %0, " #reg ", %1" : "=r"(__tmp) : "i"(val)); \
@@ -201,6 +316,13 @@
     asm volatile ("csrrw %0, " #reg ", %1" : "=r"(__tmp) : "r"(val)); \
   __tmp; })
 
+/**
+ * @brief Sets the bits given by a mask in a CSR and returns the old value (csrrs).
+ *
+ * @param reg  CSR name as an assembler identifier (not a string).
+ * @param bit  Bit mask to set; a constant below 32 uses the immediate form.
+ * @return The previous value of the CSR.
+ */
 #define set_csr(reg, bit) ({ unsigned long __tmp; \
   if (__builtin_constant_p(bit) && (unsigned long)(bit) < 32) \
     asm volatile ("csrrs %0, " #reg ", %1" : "=r"(__tmp) : "i"(bit)); \
@@ -208,6 +330,13 @@
     asm volatile ("csrrs %0, " #reg ", %1" : "=r"(__tmp) : "r"(bit)); \
   __tmp; })
 
+/**
+ * @brief Clears the bits given by a mask in a CSR and returns the old value (csrrc).
+ *
+ * @param reg  CSR name as an assembler identifier (not a string).
+ * @param bit  Bit mask to clear; a constant below 32 uses the immediate form.
+ * @return The previous value of the CSR.
+ */
 #define clear_csr(reg, bit) ({ unsigned long __tmp; \
   if (__builtin_constant_p(bit) && (unsigned long)(bit) < 32) \
     asm volatile ("csrrc %0, " #reg ", %1" : "=r"(__tmp) : "i"(bit)); \
@@ -215,12 +344,28 @@
     asm volatile ("csrrc %0, " #reg ", %1" : "=r"(__tmp) : "r"(bit)); \
   __tmp; })
 
+/** @brief Reads the time CSR (real-time counter, in timebase ticks). */
 #define rdtime() read_csr(time)
+
+/** @brief Reads the cycle CSR (number of clock cycles elapsed). */
 #define rdcycle() read_csr(cycle)
+
+/** @brief Reads the instret CSR (number of instructions retired). */
 #define rdinstret() read_csr(instret)
 
 #endif
 
+/**
+ * @brief Divides @p n in place by @p base and yields the remainder.
+ *
+ * Statement-expression macro. @p n is assigned the quotient, and the expression evaluates to
+ * the remainder as an int.
+ *
+ * @param n     Lvalue of an integer type; overwritten with the quotient.
+ * @param base  Divisor; cast to unsigned.
+ * @return The remainder of the division.
+ * @warning Operations are performed on unsigned long, and the divisor is truncated to unsigned.
+ */
 #define do_div(n, base)                              \
     ({                                               \
         int __res;                                   \
@@ -229,8 +374,22 @@
         __res;                                       \
     })
 
+/**
+ * @brief Full memory barrier: a fence instruction plus a compiler memory clobber.
+ *
+ * Prevents the compiler and the CPU from reordering memory accesses across this point.
+ */
 #define barrier() __asm__ __volatile__ ("fence" ::: "memory")
 
+/**
+ * @brief Installs a page-table root by writing satp.
+ *
+ * Writes (@p cr3 >> RISCV_PGSHIFT), the physical page number of the root table, to satp.
+ * The MODE field is not set here.
+ *
+ * @param cr3  Physical address of the root page table, page-aligned. The name is historical.
+ * @warning The parameter is unsigned int, so physical addresses of 4 GiB and above are truncated.
+ */
 static inline void
 lcr3(unsigned int cr3) {
     write_csr(satp, cr3 >> RISCV_PGSHIFT);
@@ -244,6 +403,9 @@ lcr3(unsigned int cr3) {
 /* Automatically generated by parse-opcodes */
 #ifndef RISCV_ENCODING_H
 #define RISCV_ENCODING_H
+
+/** @name Instruction encodings: MATCH_* (opcode bits) and MASK_* (fixed-bit mask), one pair per instruction @{ */
+
 #define MATCH_BEQ 0x63
 #define MASK_BEQ  0x707f
 #define MATCH_BNE 0x1063
@@ -702,6 +864,10 @@ lcr3(unsigned int cr3) {
 #define MASK_CUSTOM3_RD_RS1  0x707f
 #define MATCH_CUSTOM3_RD_RS1_RS2 0x707b
 #define MASK_CUSTOM3_RD_RS1_RS2  0x707f
+/** @} */
+
+/** @name CSR addresses (the 12-bit CSR number used in csr* instructions) @{ */
+
 #define CSR_FFLAGS 0x1
 #define CSR_FRM 0x2
 #define CSR_FCSR 0x3
@@ -893,6 +1059,10 @@ lcr3(unsigned int cr3) {
 #define CSR_MHPMCOUNTER29H 0xb9d
 #define CSR_MHPMCOUNTER30H 0xb9e
 #define CSR_MHPMCOUNTER31H 0xb9f
+/** @} */
+
+/** @name Trap cause codes (exception codes, without the interrupt bit) @{ */
+
 #define CAUSE_MISALIGNED_FETCH 0x0
 #define CAUSE_FAULT_FETCH 0x1
 #define CAUSE_ILLEGAL_INSTRUCTION 0x2
@@ -905,7 +1075,16 @@ lcr3(unsigned int cr3) {
 #define CAUSE_SUPERVISOR_ECALL 0x9
 #define CAUSE_HYPERVISOR_ECALL 0xa
 #define CAUSE_MACHINE_ECALL 0xb
+
+/** @} */
+
 #endif
+
+/**
+ * @brief X-macro list of all instructions, for use with DECLARE_INSN(name, match, mask).
+ *
+ * Define DECLARE_INSN before including this header section to expand the list; undefine it afterwards.
+ */
 #ifdef DECLARE_INSN
 DECLARE_INSN(beq, MATCH_BEQ, MASK_BEQ)
 DECLARE_INSN(bne, MATCH_BNE, MASK_BNE)
@@ -1137,6 +1316,11 @@ DECLARE_INSN(custom3_rd, MATCH_CUSTOM3_RD, MASK_CUSTOM3_RD)
 DECLARE_INSN(custom3_rd_rs1, MATCH_CUSTOM3_RD_RS1, MASK_CUSTOM3_RD_RS1)
 DECLARE_INSN(custom3_rd_rs1_rs2, MATCH_CUSTOM3_RD_RS1_RS2, MASK_CUSTOM3_RD_RS1_RS2)
 #endif
+/**
+ * @brief X-macro list of all CSRs, for use with DECLARE_CSR(name, number).
+ *
+ * Define DECLARE_CSR before including this section to expand the list.
+ */
 #ifdef DECLARE_CSR
 DECLARE_CSR(fflags, CSR_FFLAGS)
 DECLARE_CSR(frm, CSR_FRM)
@@ -1330,6 +1514,11 @@ DECLARE_CSR(mhpmcounter29h, CSR_MHPMCOUNTER29H)
 DECLARE_CSR(mhpmcounter30h, CSR_MHPMCOUNTER30H)
 DECLARE_CSR(mhpmcounter31h, CSR_MHPMCOUNTER31H)
 #endif
+/**
+ * @brief X-macro list of trap causes with their names, for use with DECLARE_CAUSE(name, code).
+ *
+ * Define DECLARE_CAUSE before including this section to expand the list.
+ */
 #ifdef DECLARE_CAUSE
 DECLARE_CAUSE("misaligned fetch", CAUSE_MISALIGNED_FETCH)
 DECLARE_CAUSE("fault fetch", CAUSE_FAULT_FETCH)
@@ -1343,4 +1532,5 @@ DECLARE_CAUSE("user_ecall", CAUSE_USER_ECALL)
 DECLARE_CAUSE("supervisor_ecall", CAUSE_SUPERVISOR_ECALL)
 DECLARE_CAUSE("hypervisor_ecall", CAUSE_HYPERVISOR_ECALL)
 DECLARE_CAUSE("machine_ecall", CAUSE_MACHINE_ECALL)
+/* clang-format on */
 #endif

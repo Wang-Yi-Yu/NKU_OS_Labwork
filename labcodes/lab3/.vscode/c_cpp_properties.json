@@ -7,7 +7,8 @@
         "${workspaceFolder}/kern/**"
       ],
       "defines": [
-        "__riscv_xlen=64"
+        "__riscv_xlen=64",
+        "__riscv"
       ],
       "compilerPath": "",
       "cStandard": "gnu99",

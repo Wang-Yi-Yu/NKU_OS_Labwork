@@ -21,6 +21,9 @@
 /** @brief Number of timer interrupts between two "100 ticks" lines (100 ticks = 1 second at 10 ms per tick). */
 #define TICK_NUM 100
 
+/** @brief Number of "100 ticks" lines after which the kernel shuts down. */
+#define SHUTDOWN_AFTER 10
+
 /**
  * @brief Print the "100 ticks" line.
  *

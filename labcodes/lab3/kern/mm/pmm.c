@@ -8,7 +8,7 @@
 #include <sbi.h>
 #include <stdio.h>
 #include <string.h>
-#include <../sync/sync.h>
+#include <sync.h>
 #include <riscv.h>
 #include <dtb.h>
 

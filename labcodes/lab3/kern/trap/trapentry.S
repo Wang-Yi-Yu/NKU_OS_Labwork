@@ -79,7 +79,50 @@
      */
     .macro RESTORE_ALL
 
-    #lab3 function1 YOUR CODE
+    #lab3 function1 2414007
+
+    # Restore the CSRs first: they have to be staged through s1/s2, which are overwritten by
+    # the register reloads below. sepc is reloaded because trap() may have advanced it.
+    LOAD s1, 32*REGBYTES(sp)
+    LOAD s2, 33*REGBYTES(sp)
+    csrw sstatus, s1
+    csrw sepc, s2
+
+    # x0 is hard-wired to zero and x2 (sp) is handled last, so both are skipped here.
+    LOAD x1, 1*REGBYTES(sp)
+    LOAD x3, 3*REGBYTES(sp)
+    LOAD x4, 4*REGBYTES(sp)
+    LOAD x5, 5*REGBYTES(sp)
+    LOAD x6, 6*REGBYTES(sp)
+    LOAD x7, 7*REGBYTES(sp)
+    LOAD x8, 8*REGBYTES(sp)
+    LOAD x9, 9*REGBYTES(sp)
+    LOAD x10, 10*REGBYTES(sp)
+    LOAD x11, 11*REGBYTES(sp)
+    LOAD x12, 12*REGBYTES(sp)
+    LOAD x13, 13*REGBYTES(sp)
+    LOAD x14, 14*REGBYTES(sp)
+    LOAD x15, 15*REGBYTES(sp)
+    LOAD x16, 16*REGBYTES(sp)
+    LOAD x17, 17*REGBYTES(sp)
+    LOAD x18, 18*REGBYTES(sp)
+    LOAD x19, 19*REGBYTES(sp)
+    LOAD x20, 20*REGBYTES(sp)
+    LOAD x21, 21*REGBYTES(sp)
+    LOAD x22, 22*REGBYTES(sp)
+    LOAD x23, 23*REGBYTES(sp)
+    LOAD x24, 24*REGBYTES(sp)
+    LOAD x25, 25*REGBYTES(sp)
+    LOAD x26, 26*REGBYTES(sp)
+    LOAD x27, 27*REGBYTES(sp)
+    LOAD x28, 28*REGBYTES(sp)
+    LOAD x29, 29*REGBYTES(sp)
+    LOAD x30, 30*REGBYTES(sp)
+    LOAD x31, 31*REGBYTES(sp)
+
+    # The x2 slot holds the sp of the interrupted code, not the frame address. Every load above
+    # is addressed through sp, so x2 must be the very last register to be reloaded.
+    LOAD x2, 2*REGBYTES(sp)
 
     .endm
 
@@ -93,8 +136,11 @@
 __alltraps:
     SAVE_ALL
 
-    #lab3 function1 YOUR CODE
-    # sp should be the same as before "jal trap"
+    #lab3 function1 2414007
+    # The frame lives at the current sp, so sp is the first argument (a0) of trap(tf).
+    move a0, sp
+    jal trap
+    # sp should be the same as before "jal trap"; execution falls through into __trapret.
 
     /*
      * __trapret - common exit of a trap: restore the context and return with sret

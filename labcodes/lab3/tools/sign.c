@@ -1,8 +1,22 @@
+/**
+ * @file   sign.c
+ * @brief  Host tool inherited from the x86 ucore: pads a boot sector to 512 bytes and appends 0x55AA.
+ *
+ * Usage: sign <input filename> <output filename>. It is not built by the lab3 Makefile (RISC-V has
+ * no boot sector), the file is kept only because it is part of the original lab tree.
+ */
 #include <stdio.h>
 #include <errno.h>
 #include <string.h>
 #include <sys/stat.h>
 
+/**
+ * @brief Check that the input is at most 510 bytes, then write it padded to 510 bytes plus the
+ *        boot signature bytes 0x55 0xAA.
+ * @param argc argument count, must be 3
+ * @param argv program name, input file, output file
+ * @return 0 on success, -1 on error
+ */
 int
 main(int argc, char *argv[]) {
     struct stat st;

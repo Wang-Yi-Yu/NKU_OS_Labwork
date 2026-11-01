@@ -1,3 +1,12 @@
+/**
+ * @file   test_lab3.c
+ * @brief  Lab3 grading tests, compiled into the kernel only by `make grade` (see tools/inject.py).
+ *
+ * One test is selected per build with a macro: GRADE_LAB3_CONTEXT (registers survive an ebreak
+ * trap), GRADE_LAB3_ILLEGAL (illegal instruction and the interrupt/exception fallback paths) or
+ * GRADE_LAB3_TIMER (the timer keeps firing until ticks reaches 200). tools/grade.sh matches the
+ * "[Test n] ...: PASS" lines printed here.
+ */
 #include <clock.h>
 #include <defs.h>
 #include <riscv.h>
@@ -10,6 +19,7 @@ extern uintptr_t test_lab3_register_context(void);
 extern void interrupt_handler(struct trapframe *tf);
 extern void exception_handler(struct trapframe *tf);
 
+/** @brief Execute a 4-byte illegal instruction; the handler must skip it by advancing epc by 4. */
 static void
 test_lab3_illegal_instruction(void)
 {
@@ -17,6 +27,12 @@ test_lab3_illegal_instruction(void)
     asm volatile(".word 0x0000007b");
 }
 
+/**
+ * @brief Feed hand-made trap frames to the handlers to exercise their fallback paths.
+ *
+ * Cause S software interrupt, unknown interrupt 15 and unknown exception 20 must print the
+ * messages that grade.sh looks for and return without crashing.
+ */
 static void
 test_lab3_handler_fallbacks(void)
 {
@@ -34,6 +50,7 @@ test_lab3_handler_fallbacks(void)
     cprintf("[Test 2] handler fallback completed\\n");
 }
 
+/** @brief Run the selected exception test; see ::test_lab3_exception_context in test_lab3.h. */
 void
 test_lab3_exception_context(void)
 {
@@ -51,6 +68,7 @@ test_lab3_exception_context(void)
 #endif
 }
 
+/** @brief Report a failure if ticks is not 0 right after clock_init. */
 void
 test_lab3_timer_is_armed(void)
 {
@@ -62,6 +80,7 @@ test_lab3_timer_is_armed(void)
 #endif
 }
 
+/** @brief Wait for 200 ticks, print the PASS line and spin forever. */
 void
 test_lab3_wait_for_timer(void)
 {

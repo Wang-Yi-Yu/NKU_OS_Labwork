@@ -1,0 +1,18 @@
+{
+  "configurations": [
+    {
+      "name": "ucore-riscv64",
+      "includePath": [
+        "${workspaceFolder}/libs",
+        "${workspaceFolder}/kern/**"
+      ],
+      "defines": [
+        "__riscv_xlen=64"
+      ],
+      "compilerPath": "",
+      "cStandard": "gnu99",
+      "intelliSenseMode": "linux-gcc-x64"
+    }
+  ],
+  "version": 4
+}

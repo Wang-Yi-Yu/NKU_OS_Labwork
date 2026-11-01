@@ -1,3 +1,11 @@
+/**
+ * @file   test_lab3_context.S
+ * @brief  Register-context test for the trap entry and exit code.
+ *
+ * test_lab3_register_context loads distinct values into every register except ra, sp, gp, tp and a0, executes
+ * ebreak (the trap handler must skip it and return), then checks that every register still has its
+ * value. It returns 0 on success and 1 on the first mismatch.
+ */
     .text
     .align 2
     .globl test_lab3_register_context

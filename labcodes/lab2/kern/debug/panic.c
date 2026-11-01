@@ -1,14 +1,31 @@
+/**
+ * @file   panic.c
+ * @brief  Implementation of kernel fatal-error and warning output.
+ *
+ * Implements __panic and __warn, declared in assert.h, and maintains the global
+ * panic state flag. Output is written to the console through cprintf and vcprintf.
+ */
+
 #include <defs.h>
 #include <stdio.h>
 
+/**
+ * @brief Flag recording whether the kernel has entered the panic state.
+ *
+ * Set to 1 by __panic on its first call, to prevent recursive panics.
+ */
 static bool is_panic = 0;
 
-/* *
- * __panic - __panic is called on unresolvable fatal errors. it prints
- * "panic: 'message'", and then enters the kernel monitor.
- * */
-void
-__panic(const char *file, int line, const char *fmt, ...) {
+/**
+ * @brief Print a fatal error and halt the CPU in an infinite loop.
+ *
+ * @details On the first call, prints "kernel panic at file:line:" and the
+ *          formatted message, then spins forever. If it is called again while
+ *          is_panic is already 1, it jumps straight to the loop to avoid
+ *          recursive printing. The current implementation does not enter the
+ *          kernel monitor.
+ */
+void __panic(const char *file, int line, const char *fmt, ...) {
     if (is_panic) {
         goto panic_dead;
     }
@@ -28,9 +45,13 @@ panic_dead:
     }
 }
 
-/* __warn - like panic, but don't */
-void
-__warn(const char *file, int line, const char *fmt, ...) {
+/**
+ * @brief Print a kernel warning without halting the kernel.
+ *
+ * @details Prints "kernel warning at file:line:" and the formatted message,
+ *          then returns. The is_panic state is not modified.
+ */
+void __warn(const char *file, int line, const char *fmt, ...) {
     va_list ap;
     va_start(ap, fmt);
     cprintf("kernel warning at %s:%d:\n    ", file, line);
@@ -39,8 +60,13 @@ __warn(const char *file, int line, const char *fmt, ...) {
     va_end(ap);
 }
 
-bool
-is_kernel_panic(void) {
+/**
+ * @brief Query whether the kernel has entered the panic state.
+ *
+ * This function is not declared in any header, so callers must provide their own prototype.
+ *
+ * @return Non-zero if __panic has been called; 0 if no fatal error has occurred yet.
+ */
+bool is_kernel_panic(void) {
     return is_panic;
 }
-

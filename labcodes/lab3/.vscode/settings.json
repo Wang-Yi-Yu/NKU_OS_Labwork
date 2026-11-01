@@ -1,0 +1,37 @@
+{
+  // ===== General =====
+  "editor.formatOnSave": true,
+  "files.eol": "\n",
+  "files.insertFinalNewline": true,
+  "files.trimTrailingWhitespace": true,
+
+  // ===== C / headers: clang-format, rules in lab3/.clang-format =====
+  "C_Cpp.formatting": "clangFormat",
+  // "file" = use the .clang-format found in the workspace (cpptools default; written out so personal settings cannot override it)
+  "C_Cpp.clang_format_style": "file",
+  // If the clangd extension is installed as well, both extensions register a C formatter, so pick one explicitly
+  "[c]": {
+    "editor.defaultFormatter": "ms-vscode.cpptools"
+  },
+  "[cpp]": {
+    "editor.defaultFormatter": "ms-vscode.cpptools"
+  },
+  // .h files may be detected as C++ by default; treat them all as C
+  "files.associations": {
+    "*.h": "c"
+  },
+  // Render Doxygen comments (@brief/@param/@return) in hover tooltips
+  "C_Cpp.simplifyStructuredComments": true,
+
+  // ===== Markdown: Prettier, rules in lab3/.prettierrc =====
+  "[markdown]": {
+    "editor.defaultFormatter": "esbenp.prettier-vscode",
+    // Two trailing spaces mean a hard line break in Markdown, do not trim them
+    "files.trimTrailingWhitespace": false
+  },
+
+  // ===== Makefiles require tabs =====
+  "[makefile]": {
+    "editor.insertSpaces": false
+  }
+}

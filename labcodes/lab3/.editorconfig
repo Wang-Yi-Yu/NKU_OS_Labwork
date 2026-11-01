@@ -1,0 +1,25 @@
+# EditorConfig: https://editorconfig.org
+# Note: Prettier reads this file, so the Markdown indentation here must match .prettierrc (2 spaces).
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+
+[*.{c,h,S}]
+indent_style = space
+indent_size = 4
+
+[*.md]
+indent_style = space
+indent_size = 2
+# Two trailing spaces mean a hard line break in Markdown, so they must not be trimmed.
+trim_trailing_whitespace = false
+
+[Makefile]
+indent_style = tab
+
+[*.mk]
+indent_style = tab

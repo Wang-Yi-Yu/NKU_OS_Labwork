@@ -8,6 +8,8 @@
 
 ## 2. 实验结果链接
 
-| 实验编号 |          代码          |               实验报告               |
-| :------: | :--------------------: | :----------------------------------: |
-|   lab1   | [Here](labcodes/lab1/) | [Here](labcodes/lab1/docs/report.md) |
+| 实验编号 |          代码          |               实验报告               |              AI 提示词               |
+| :------: | :--------------------: | :----------------------------------: | :----------------------------------: |
+|   lab1   | [Here](labcodes/lab1/) | [Here](labcodes/lab1/docs/report.md) |                  -                   |
+|   lab2   | [Here](labcodes/lab2/) | [Here](labcodes/lab2/docs/report.md) | [Here](labcodes/lab2/docs/prompt.md) |
+|   lab3   | [Here](labcodes/lab3/) | [Here](labcodes/lab3/docs/report.md) | [Here](labcodes/lab3/docs/prompt.md) |

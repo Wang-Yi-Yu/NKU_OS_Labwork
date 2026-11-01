@@ -1,5 +1,17 @@
+/**
+ * @file   vector.c
+ * @brief  Host tool inherited from the x86 ucore: prints the assembly source of the 256 x86 interrupt
+ *         vector stubs and the vector table.
+ *
+ * Not used by lab3: RISC-V has a single trap entry (__alltraps in kern/trap/trapentry.S) and no
+ * vector stubs. Kept only because it is part of the original lab tree.
+ */
 #include <stdio.h>
 
+/**
+ * @brief Print the vector stubs (`pushl` + `jmp __alltraps`) and the vector table to stdout.
+ * @return 0
+ */
 int
 main(void) {
     printf("# handler\n");

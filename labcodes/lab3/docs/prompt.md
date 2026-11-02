@@ -156,4 +156,111 @@ Requirements：
 
 ### 2.2 2414015-鲁昕宁
 
+#### 中断处理功能提示词
+
+````markdown
+[PROMPT]
+**任务**：修改 `kern/trap/trap.c`，实现中断处理功能：补全 `interrupt_handler()`。`trap_dispatch()` 已经按 `scause` 最高位把 Trap 分成中断和异常，本任务只负责中断这一支。时钟中断要能连续发生、按固定次数输出统计并在达到规定次数后关机；其余已列出的中断只做类型识别和一行提示；无法识别的中断输出规定的原因码。
+
+**操作要求**：你必须在项目中修改实际文件，保留现有代码，只补全 `interrupt_handler()` 的函数体。不得修改 `exception_handler()`、`trap()`、`trap_dispatch()`、`idt_init()`、`print_trapframe()`、`print_ticks()` 以及 `TICK_NUM`、`SHUTDOWN_AFTER` 的定义。不得改函数签名，不得新增文件。把标记注释 `//lab3 function2 YOUR CODE` 中的 `YOUR CODE` 替换为学号 `2414015`，保留 `lab3 function2` 字样。
+
+**输出要求**：直接进行文件操作，使用下面 [RELY]、[GUARANTEE]、[SPECIFICATION] 部分的信息，以工程中的真实代码为准，不要引入无关功能。
+
+[RELY]
+
+1. 待补全的函数已经在 `kern/trap/trap.c` 中声明并给出空函数体，由 `trap_dispatch()` 在判定为中断后调用：
+
+```c
+void interrupt_handler(struct trapframe *tf);
+```
+
+`trap_dispatch()` 的判定（只读参考，不得修改）：把 `tf->cause` 当作有符号数，小于 0 时调用 `interrupt_handler()`，否则调用 `exception_handler()`。因此进入本函数时，调用方认为这是一次中断。评分测试也会直接调用本函数，此时 `tf->cause` 的最高位可能已置位，也可能没有置位。与 `IRQ_*` 比较之前，必须先去掉最高位，只保留异常码。
+
+2. `struct trapframe` 中本函数会读到的字段：
+
+```c
+uintptr_t epc;    /* sepc：被打断的那条指令的地址。中断返回后应重新执行它 */
+uintptr_t cause;  /* scause：最高位为 1 表示中断，低位是异常码 */
+```
+
+3. `libs/riscv.h` 中的中断异常码（均不含最高位）：
+
+```c
+#define IRQ_U_SOFT   0
+#define IRQ_S_SOFT   1
+#define IRQ_H_SOFT   2
+#define IRQ_M_SOFT   3
+#define IRQ_U_TIMER  4
+#define IRQ_S_TIMER  5
+#define IRQ_H_TIMER  6
+#define IRQ_M_TIMER  7
+#define IRQ_U_EXT    8
+#define IRQ_S_EXT    9
+#define IRQ_H_EXT    10
+#define IRQ_M_EXT    11
+#define IRQ_COP      12
+#define IRQ_HOST     13
+```
+
+4. 同一文件中已经定义、本函数必须使用而不得改写的宏和函数：
+
+```c
+#define TICK_NUM 100        /* 每累计这么多次时钟中断，输出一行统计 */
+#define SHUTDOWN_AFTER 10   /* 统计行数达到这个值后关机 */
+static void print_ticks(void); /* 输出 "%d ticks\n"，实参为 TICK_NUM */
+```
+
+5. 时钟与关机接口：
+
+```c
+extern volatile size_t ticks;          /* kern/driver/clock.h，clock_init() 已把它置 0 */
+void clock_set_next_event(void);       /* 预约下一次时钟中断；不调用则只会收到一次 */
+void sbi_shutdown(void);               /* libs/sbi.h，请求固件关机，成功时 QEMU 退出 */
+```
+
+[GUARANTEE]
+需要交付的只有 `kern/trap/trap.c` 中的：
+
+```c
+void interrupt_handler(struct trapframe *tf);
+```
+
+函数签名保持不变。允许在本文件内新增 `static` 辅助函数，但不得增加公开接口，也不得把异常处理逻辑写进本函数。`exception_handler()` 仍保持空函数体。
+
+[SPECIFICATION]
+**interrupt_handler**
+
+Pre-Condition：`tf` 指向一次中断的 trapframe。`tf->cause` 去掉最高位后是本次中断的异常码。`ticks` 记录的是自 `clock_init()` 以来已经处理过的监督态时钟中断次数。`tf->epc` 是被打断指令的地址，返回后要重新执行它。
+
+Post-Condition：函数正常返回，不修改 `tf` 的任何字段，从而后续 `sret` 回到被打断的指令。控制流不在本函数内自旋，也不调用 `panic`。
+
+Case 1：异常码等于 `IRQ_S_TIMER`。
+
+先预约下一次时钟事件，再把 `ticks` 增加 1。增加之后，若 `ticks` 是 `TICK_NUM` 的整数倍，调用 `print_ticks()` 输出一行统计。若至此已经输出的统计行数达到 `SHUTDOWN_AFTER`（即 `ticks` 达到 `TICK_NUM * SHUTDOWN_AFTER`），在输出这行统计之后调用 `sbi_shutdown()`。这一支不另外打印中断名称。只计数而不预约下一次事件时，时钟中断只会到来一次。
+
+Case 2：异常码等于下列值之一。各输出一行后返回，不修改 `ticks`，不预约时钟，不关机。
+
+- `IRQ_U_SOFT`：`User software interrupt`
+- `IRQ_S_SOFT`：`Supervisor software interrupt`
+- `IRQ_H_SOFT`：`Hypervisor software interrupt`
+- `IRQ_M_SOFT`：`Machine software interrupt`
+- `IRQ_U_TIMER`：`User timer interrupt`
+- `IRQ_H_TIMER`：`Hypervisor timer interrupt`
+- `IRQ_M_TIMER`：`Machine timer interrupt`
+- `IRQ_U_EXT`：`User external interrupt`
+- `IRQ_S_EXT`：`Supervisor external interrupt`
+- `IRQ_H_EXT`：`Hypervisor external interrupt`
+- `IRQ_M_EXT`：`Machine external interrupt`
+- `IRQ_COP`：`Coprocessor interrupt`
+- `IRQ_HOST`：`Host interrupt`
+
+Case 3：异常码不属于以上任何一种。输出一行 `Unknown interrupt: cause %d`，其中 `%d` 是去掉最高位后的异常码（异常码 15 必须得到 `Unknown interrupt: cause 15`），然后返回。不调用 `print_trapframe()`。
+
+Requirements：
+
+- 识别异常码时必须忽略 `cause` 的最高位。最高位已置位的监督态软件中断，其异常码仍是 `IRQ_S_SOFT`，输出 `Supervisor software interrupt`。
+- 时钟中断不得改写 `tf->epc`。中断返回后应重新执行被打断的指令；把 `epc` 向前拨会使被打断的代码跳过一条指令。
+- 统计行必须通过已有的 `print_ticks()` 输出，不要自行再写一条 `"%d ticks"`，否则 `DEBUG_GRADE` 下的结束行为会丢失。
+````
+
 ### 2.3 2411622-张雨函

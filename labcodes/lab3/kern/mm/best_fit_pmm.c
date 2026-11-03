@@ -1,10 +1,25 @@
+/**
+ * @file   best_fit_pmm.c
+ * @brief  Best-Fit contiguous physical memory manager (best_fit_pmm_manager).
+ *
+ * Best-Fit allocates from the smallest free block that is still large enough,
+ * which leaves the smallest remainder. The management functions and the
+ * `best_fit_pmm_manager` instance are the lab2 exercise 2 task and go at the
+ * `lab2 function2-2 2411622` marker below. basic_check() and best_fit_check()
+ * are provided by the framework and must not be modified.
+ *
+ * Contract the tests rely on (same as default_pmm.c): the names `free_list` and
+ * `nr_free` (typically macros over a static `free_area_t free_area`), a free
+ * list of block head pages carrying PG_property, and Page::property holding the
+ * block size.
+ */
 #include <pmm.h>
 #include <list.h>
 #include <string.h>
 #include <best_fit_pmm.h>
 #include <stdio.h>
 
-//lab2 请补充你在lab2中的代码
+//lab2 function2-2 2411622
 
 /** @brief Free-block bookkeeping: a list of free block head pages sorted by address, and the total number of free pages. */
 static free_area_t free_area;
@@ -172,8 +187,8 @@ const struct pmm_manager best_fit_pmm_manager = {
  * @brief Basic allocate/free sanity test shared by the allocator self tests.
  * @note Provided by the lab framework, do not modify.
  */
-
-static void basic_check(void) {
+static void
+basic_check(void) {
     struct Page *p0, *p1, *p2;
     p0 = p1 = p2 = NULL;
     assert((p0 = alloc_page()) != NULL);
@@ -223,9 +238,13 @@ static void basic_check(void) {
     free_page(p2);
 }
 
-// LAB2: below code is used to check the best fit allocation algorithm (your EXERCISE 1)
-// NOTICE: You SHOULD NOT CHANGE basic_check, default_check functions!
-static void best_fit_check(void) {
+/**
+ * @brief Self test of the Best-Fit allocator (free list consistency, allocation
+ *        of the best-fitting block, splitting, merging and exhaustion).
+ * @note Provided by the lab framework, do not modify.
+ */
+static void
+best_fit_check(void) {
     int score = 0, sumscore = 6;
     int count = 0, total = 0;
     list_entry_t *le = &free_list;
@@ -238,27 +257,27 @@ static void best_fit_check(void) {
 
     basic_check();
 
-#ifdef ucore_test
+    #ifdef ucore_test
     score += 1;
     cprintf("grading: %d / %d points\n", score, sumscore);
-#endif
+    #endif
     struct Page *p0 = alloc_pages(5), *p1, *p2;
     assert(p0 != NULL);
     assert(!PageProperty(p0));
 
-#ifdef ucore_test
+    #ifdef ucore_test
     score += 1;
     cprintf("grading: %d / %d points\n", score, sumscore);
-#endif
+    #endif
     list_entry_t free_list_store = free_list;
     list_init(&free_list);
     assert(list_empty(&free_list));
     assert(alloc_page() == NULL);
 
-#ifdef ucore_test
+    #ifdef ucore_test
     score += 1;
     cprintf("grading: %d / %d points\n", score, sumscore);
-#endif
+    #endif
     unsigned int nr_free_store = nr_free;
     nr_free = 0;
 
@@ -269,22 +288,22 @@ static void best_fit_check(void) {
     assert(PageProperty(p0 + 1) && p0[1].property == 2);
     // * - - * *
     assert((p1 = alloc_pages(1)) != NULL);
-    assert(alloc_pages(2) != NULL);  // best fit feature
+    assert(alloc_pages(2) != NULL);
     assert(p0 + 4 == p1);
 
-#ifdef ucore_test
+    #ifdef ucore_test
     score += 1;
     cprintf("grading: %d / %d points\n", score, sumscore);
-#endif
+    #endif
     p2 = p0 + 1;
     free_pages(p0, 5);
     assert((p0 = alloc_pages(5)) != NULL);
     assert(alloc_page() == NULL);
 
-#ifdef ucore_test
+    #ifdef ucore_test
     score += 1;
     cprintf("grading: %d / %d points\n", score, sumscore);
-#endif
+    #endif
     assert(nr_free == 0);
     nr_free = nr_free_store;
 
@@ -298,8 +317,9 @@ static void best_fit_check(void) {
     }
     assert(count == 0);
     assert(total == 0);
-#ifdef ucore_test
+    #ifdef ucore_test
     score += 1;
     cprintf("grading: %d / %d points\n", score, sumscore);
-#endif
+    #endif
 }
+// clang-format on

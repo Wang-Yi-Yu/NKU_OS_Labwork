@@ -264,3 +264,88 @@ Requirements：
 ````
 
 ### 2.3 2411622-张雨函
+
+#### 异常处理功能提示词
+
+````markdown
+[PROMPT]
+**任务**：修改 kern/trap/trap.c，实现 Lab3 练习 2-b 的异常处理功能，补全 exception_handler()。需要识别非法指令和断点异常，输出规定的提示，并根据当前 RISC-V 指令是 16 位压缩指令还是 32 位普通指令推进 epc；其他异常沿用已有的 print_trapframe()。
+
+**操作要求**：你必须在项目中修改实际文件，保留现有代码，只补全 exception_handler() 的函数体。不得修改 interrupt_handler()、trap()、trap_dispatch()、print_trapframe()、idt_init()、print_ticks() 或 Trap 汇编入口。不得改变函数签名，不得新增文件。保留标记注释 //lab3 function2 YOUR CODE 中的 lab3 function2，并把 YOUR CODE 替换为学号 2411622。
+
+**输出要求**：直接进行文件操作，使用下面 [RELY]、[GUARANTEE]、[SPECIFICATION] 部分的信息，以工程中的真实代码为准，不要引入与异常处理无关的功能。
+
+[RELY]
+
+1. 待补全的函数位于 kern/trap/trap.c，函数声明和接口如下：
+
+    void exception_handler(struct trapframe *tf);
+
+trap_dispatch() 已经根据 tf->cause 的最高位完成分流：最高位为 1 时调用 interrupt_handler()，最高位为 0 时调用 exception_handler()。本任务只实现异常分支。
+
+2. struct trapframe 中本函数需要使用的字段如下：
+
+    struct trapframe {
+        struct pushregs gpr;
+        uintptr_t status;
+        uintptr_t epc;        /* sepc：发生异常的指令地址 */
+        uintptr_t badvaddr;
+        uintptr_t cause;      /* scause：异常原因 */
+    };
+
+tf->epc 指向发生异常的指令，处理函数可以修改它；tf->cause 用于区分异常类型。
+
+3. libs/riscv.h 已经定义异常原因宏：
+
+    #define CAUSE_ILLEGAL_INSTRUCTION 2
+    #define CAUSE_BREAKPOINT          3
+
+4. print_trapframe(struct trapframe *tf) 已经实现。对于没有专门处理逻辑的异常，应调用该函数输出寄存器和异常现场，不要新增另一套现场打印格式。
+
+5. RISC-V 指令的长度可以由指令编码低两位判断：低两位不等于 0x3 时为 16 位压缩指令，低两位等于 0x3 时为 32 位指令。读取 tf->epc 处的 16 位值即可完成长度判断。
+
+6. cprintf() 已经可用，要求的两类提示格式为：
+
+    Illegal instruction at 0x%08x
+    Breakpoint at 0x%08x
+
+[GUARANTEE]
+
+需要交付的只有 kern/trap/trap.c 中的：
+
+    void exception_handler(struct trapframe *tf);
+
+函数签名保持不变。允许使用函数内部的局部变量，但不得增加公开接口，不得把中断处理逻辑写入本函数，也不得改变 Trap 的分发和返回框架。
+
+[SPECIFICATION]
+
+**exception_handler**
+
+Pre-Condition：tf 指向一次由 SAVE_ALL 建立的异常 trapframe；tf->cause 的最高位为 0；tf->epc 指向触发异常的当前指令。函数返回后，汇编层会通过 RESTORE_ALL 恢复 trapframe，并执行 sret。
+
+Post-Condition：
+
+- 对非法指令和断点，输出对应提示，并将 tf->epc 更新为异常指令之后的下一条指令地址。
+- 对其他异常，输出完整 trapframe 信息，不擅自修改异常原因或引入未要求的处理。
+- 函数正常返回，不循环、不关机、不调用 panic。
+- RESTORE_ALL 能够把更新后的 tf->epc 写回 sepc，使 sret 按新的地址继续执行。
+
+Case 1：tf->cause == CAUSE_ILLEGAL_INSTRUCTION。
+
+读取 tf->epc 处的 16 位指令前缀。若低两位为 0x3，按 32 位指令处理，将 tf->epc 增加 4；否则按 16 位压缩指令处理，将 tf->epc 增加 2。输出 Illegal instruction at 0x%08x，其中地址为发生异常时的原始 tf->epc。
+
+Case 2：tf->cause == CAUSE_BREAKPOINT。
+
+按照与 Case 1 相同的低两位规则判断指令长度。输出 Breakpoint at 0x%08x，其中地址为断点指令的原始地址；然后将 tf->epc 增加 2 或 4。必须推进 epc，否则返回后会重复执行同一条断点指令并再次陷入。
+
+Case 3：其他异常原因。
+
+调用已有的 print_trapframe(tf) 输出现场，然后返回。不得把其他异常误判为非法指令或断点，也不得修改 tf->epc。
+
+Requirements：
+
+- 只能修改 exception_handler()，保留其他 Trap 处理逻辑。
+- 必须同时支持 16 位压缩指令和 32 位普通指令，不能固定使用同一个长度。
+- 非法指令和断点的输出文字必须与评分脚本要求一致。
+- 对中断原因不在本函数中处理；中断由 interrupt_handler() 负责。
+````

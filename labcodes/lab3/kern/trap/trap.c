@@ -118,7 +118,7 @@ void print_regs(struct pushregs *gpr) {
     cprintf("  t6       0x%08x\n", gpr->t6);
 }
 
-//lab3 function2 2414015
+//lab3 function2 2411622
 
 /**
  * @brief Handle an interrupt. The low bits of tf->cause select the source.
@@ -193,7 +193,21 @@ void interrupt_handler(struct trapframe *tf) {
  * @brief Handle an exception (scause bit 63 clear). Empty stub: owned by lab3 exercise 2-b.
  * @param tf trap frame of the exception
  */
-void exception_handler(struct trapframe *tf) {}
+void exception_handler(struct trapframe *tf) {
+    if (tf->cause == CAUSE_ILLEGAL_INSTRUCTION || tf->cause == CAUSE_BREAKPOINT) {
+        uint16_t instruction = *(uint16_t *)(uintptr_t)tf->epc;
+        uintptr_t instruction_length = ((instruction & 0x3) == 0x3) ? 4 : 2;
+
+        if (tf->cause == CAUSE_ILLEGAL_INSTRUCTION) {
+            cprintf("Illegal instruction at 0x%08x\n", tf->epc);
+        } else {
+            cprintf("Breakpoint at 0x%08x\n", tf->epc);
+        }
+        tf->epc += instruction_length;
+    } else {
+        print_trapframe(tf);
+    }
+}
 
 
 /**

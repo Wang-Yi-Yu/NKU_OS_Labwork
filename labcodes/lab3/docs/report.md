@@ -575,7 +575,7 @@ Breakpoint at 0xc0201ac8
 [Test 1] Trap entry and breakpoint return: PASS (35/35)
 ```
 
-这个用例的汇编函数 `test_lab3_register_context` 先给 `t0`~`t2`、`s0`、`s1`、`a1`~`a7`、`s2`~`s11`、`t3`~`t6` 共 26 个寄存器分别装入互不相同的值（`0x105`~`0x11f`），然后执行 `ebreak`，返回后逐个检查这些寄存器的值是否原样保留。
+这个用例的汇编函数 `test_lab3_register_context` 先给 `t0` ~ `t2`、`s0`、`s1`、`a1` ~ `a7`、`s2` ~ `s11`、`t3` ~ `t6` 共 26 个寄存器分别装入互不相同的值（`0x105`~`0x11f`），然后执行 `ebreak`，返回后逐个检查这些寄存器的值是否原样保留。
 
 - 输出了 `Breakpoint at`，说明 `ebreak` 触发的断点异常经过 `stvec` 进入 `__alltraps`，由 `trap()` 分发到 `exception_handler()`。
 - 程序没有死循环，也没有再次输出 `Breakpoint at`，说明 `tf->epc` 被正确地前进了，并且 `RESTORE_ALL` 把新的 `epc` 写回了 `sepc`，`sret` 回到了 `ebreak` 的下一条指令。

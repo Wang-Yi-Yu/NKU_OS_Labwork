@@ -465,7 +465,7 @@ make clean && make
 riscv64-unknown-elf-objcopy bin/kernel --strip-all -O binary bin/ucore.img
 ```
 
-> **【截图 5-1】** 在此处插入 `make clean && make` 的终端输出，要能看到最后的 `+ ld bin/kernel` 和 `objcopy` 行，且没有 `error`/`warning`。
+![](./report.assets/5-1.png)
 
 分析：`Makefile` 的编译选项中带有 `-Wall -Werror`，因此“没有警告”就意味着 `trap.c` 和 `trapentry.S` 的改动是干净的。其中 `trapentry.S` 能够顺利汇编，说明 `SAVE_ALL` 里的 `csrr s3, stval` 已被新版 binutils 接受（旧名字 `sbadaddr` 在这个版本下会报 `unknown CSR`），我们补全的 `RESTORE_ALL` 和 `__alltraps` 也没有引入非法的助记符或寄存器名。`pmm.c` 与 `best_fit_pmm.c` 能够编译，说明回填的 lab2 代码与 lab3 骨架兼容。
 
@@ -501,7 +501,7 @@ satp physical address: 0x0000000080206000
 
 屏幕上共出现了 10 行 `100 ticks`，相邻两行之间约隔 1 秒。第 10 行输出之后 QEMU 自动退出，回到 shell，没有再输出任何内容。我们用 `time` 测得从启动到退出的总时间约为 10.4 秒。
 
-> **【截图 5-2】** 在此处插入 `make qemu` 的运行结果：至少要包含 `Domain0 Next Address`、`++ setup timer interrupts` 以及完整的 10 行 `100 ticks`，最好能同时截到 QEMU 退出后回到命令行提示符的画面。
+![](./report.assets/5-2.png)
 
 分析：
 
@@ -536,7 +536,11 @@ Running re-armed supervisor timer and repeated trap return...
 Total Score: 100/100
 ```
 
-> **【截图 5-3】** 在此处插入 `make grade` 的完整输出，要能看到三个用例的 `PASS` 和最后的 `Total Score: 100/100`。
+![](./report.assets/5-3-1.png)
+
+![](./report.assets/5-3-2.png)
+
+![](./report.assets/5-3-3.png)
 
 三个用例全部通过，总分 100/100。为了看清每个用例到底发生了什么，我们又在 `/tmp` 的临时副本里复现了脚本的步骤，并把每个用例的串口输出保存下来查看：
 
@@ -550,11 +554,15 @@ for d in GRADE_LAB3_CONTEXT GRADE_LAB3_ILLEGAL GRADE_LAB3_TIMER; do
     make --quiet --no-print-directory "DEFS+=-D$d"
     timeout 15 qemu-system-riscv64 -machine virt -nographic -bios default \
         -kernel bin/ucore.img -serial file:$d.out -monitor none -no-reboot
-    echo "===== $d"; sed -n '/satp physical/,$p' $d.out | head -n 12
+    echo "===== $d"; sed -n '/satp physical/,$p' $d.out | head -n 100
 done
 ```
 
-> **【截图 5-4】** 在此处插入上述命令的输出，三个用例各 `===== 用例名` 一段。若 `head -n 12` 截不到 `PASS` 行，请适当调大行数。
+![](./report.assets/5-4-1.png)
+
+![](./report.assets/5-4-2.png)
+
+![](./report.assets/5-4-3.png)
 
 下面分别分析三个用例的输出。
 
@@ -618,37 +626,7 @@ trapframe at 0xffffffffc0205eb0
 
 三个用例的得分合计为 35 + 25 + 40 = 100 分。
 
-### 5.4 代码格式与标记检查
-
-最后我们检查代码是否符合项目的格式要求，以及“YOUR CODE”标记是否都已换成学号：
-
-```bash
-make format-check
-grep -rn "lab3 function" kern
-```
-
-`make format-check` 先后用 `clang-format` 检查 C 代码、用 Prettier 检查 Markdown 文档，得到的输出为：
-
-```text
-clang-format: OK
-Checking formatting...
-All matched files use Prettier code style!
-```
-
-`grep` 找到的标记如下：
-
-```text
-kern/trap/trapentry.S:82:    #lab3 function1 2414007
-kern/trap/trapentry.S:139:    #lab3 function1 2414007
-kern/trap/trap.c:122://lab3 function2 2414015
-kern/trap/trap.c:193://lab3 function2 2411622
-```
-
-> **【截图 5-5】** 在此处插入 `make format-check` 和 `grep -rn "lab3 function" kern` 的输出。
-
-分析：C 代码和文档均已通过格式检查。所有 `lab3` 标记中的 `YOUR CODE` 都已替换为负责人的学号，并且与小组分工一致：练习 1（`RESTORE_ALL` 与 `__alltraps`，两处标记）为 2414007，练习 2(a) 的 `interrupt_handler()` 为 2414015，练习 2(b) 的 `exception_handler()` 为 2411622。
-
-### 5.5 测试结论
+### 5.4 测试结论
 
 |             测试项              |         命令         |                         结果                          |
 | :-----------------------------: | :------------------: | :---------------------------------------------------: |
@@ -657,7 +635,6 @@ kern/trap/trap.c:193://lab3 function2 2411622
 | 用例 1：Trap 入口、寄存器、断点 |     `make grade`     |     35/35，26 个寄存器保持不变，`c.ebreak` 前进 2     |
 |   用例 2：非法指令及兜底路径    |     `make grade`     |       25/25，4 字节非法指令前进 4，兜底输出正确       |
 |      用例 3：时钟持续触发       |     `make grade`     |       40/40，`ticks` 累计到 200，每 100 次一行        |
-|            代码格式             | `make format-check`  |                 C 与 Markdown 均通过                  |
 
 以上结果表明，从 Trap 进入、保存上下文、C 语言分发与处理、恢复上下文到 `sret` 返回的整条链路在中断和异常两种场景下均工作正常，实验三的全部要求得到了满足。
 

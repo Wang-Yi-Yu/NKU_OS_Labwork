@@ -338,13 +338,9 @@
 #define barrier() __asm__ __volatile__("fence" ::: "memory")
 
 /**
- * @brief Install a page table by writing satp (to be called by proc_run() in lab4).
+ * @brief Write satp from the physical address of a root page table (provided by the lab framework).
  *
  * @param[in] pgdir  Physical address of the root page table. Must be page-aligned.
- * @note Uses SATP32_MODE, so it is only correct for RV32 (Sv32). On RV64 this writes MODE = 0
- *       (Bare). QEMU ignores such a satp write, so the kernel keeps running on its boot page table
- *       (which is what all lab4 threads share anyway); real hardware would lose translation. A correct
- *       RV64 version writes `0x8000000000000000 | (pgdir >> RISCV_PGSHIFT)` (Sv39).
  */
 static inline void
 lsatp(unsigned int pgdir)

@@ -8,6 +8,18 @@ Tests are inserted at function boundaries:
 
 The injector does not depend on implementation-specific statements such as
 "ret = 0", comments, labels, or a particular final call in a function.
+
+Usage: python3 tools/inject.py <temporary grading copy>
+This script is run by the "grade" target of the Makefile on a copy of the student tree
+(never on the working tree). It makes these changes in that copy:
+  1. copies tools/test_lab4.c and test_lab4.h into kern/test/;
+  2. adds "kern/test" to KINCLUDE and KSRCDIR in the Makefile so the tests are built;
+  3. adds an #include of test_lab4.h to kern/mm/pmm.c and kern/process/proc.c;
+  4. inserts test_lab4_pmm_basic() before the end of pmm_init();
+     test_lab4_process_create() before the end of proc_init();
+     test_lab4_schedule() at the start of init_main().
+It stops with an error if a function or include anchor is missing or appears more than once, or if
+the tree already contains test hooks (duplicate injection) or a leftover --wrap option.
 """
 
 import os
@@ -17,23 +29,32 @@ import sys
 
 
 def die(message):
+    """Print an error prefixed with "[lab4 inject] ERROR:" and exit with status 1.
+
+    Args:
+        message: Text describing the problem.
+    """
     print("[lab4 inject] ERROR: " + message)
     raise SystemExit(1)
 
 
+# The script takes exactly one argument: the root of the temporary grading copy.
 if len(sys.argv) != 2:
     die("Usage: inject.py <temporary grading copy>")
 
+# root: absolute path of the grading copy to modify; tools: directory that holds the test sources.
 root = os.path.abspath(sys.argv[1])
 tools = os.path.dirname(os.path.abspath(__file__))
 
 
 def read_text(path):
+    """Return the whole content of a UTF-8 text file."""
     with open(path, "r", encoding="utf-8") as f:
         return f.read()
 
 
 def write_text(path, text):
+    """Overwrite a UTF-8 text file with @p text."""
     with open(path, "w", encoding="utf-8") as f:
         f.write(text)
 
@@ -108,6 +129,13 @@ def find_function(text, name):
 
 
 def insert_include(path, header, anchor):
+    """Add "#include <header>" on the line after the existing "#include <anchor>" line.
+
+    Args:
+        path: File to modify.
+        header: Header name to add, e.g. "test_lab4.h".
+        anchor: Existing header name to search for, e.g. "pmm.h". It must occur exactly once.
+    """
     text = read_text(path)
     pattern = re.compile(
         r"(?m)^(?P<line>[ \t]*#include[ \t]*[<\"]"
@@ -123,10 +151,22 @@ def insert_include(path, header, anchor):
 
 
 def indent_code(code):
+    """Return @p code as a block of statements indented by four spaces, with blank lines around it.
+
+    Args:
+        code: One or more C statements, one per line.
+    """
     return "\n" + "\n".join("    " + line for line in code.splitlines()) + "\n"
 
 
 def insert_at_function_start(path, name, code):
+    """Insert @p code as the first statements of function @p name.
+
+    Args:
+        path: C source file to modify.
+        name: Function name; it must be defined exactly once in the file.
+        code: C statements to insert.
+    """
     text = read_text(path)
     _, body_start, _ = find_function(text, name)
     insertion = indent_code(code)
@@ -134,12 +174,20 @@ def insert_at_function_start(path, name, code):
 
 
 def insert_at_function_end(path, name, code):
+    """Insert @p code just before the closing brace of function @p name.
+
+    Args:
+        path: C source file to modify.
+        name: Function name; it must be defined exactly once in the file.
+        code: C statements to insert; they run after the student's code, before the function returns.
+    """
     text = read_text(path)
     _, _, body_end = find_function(text, name)
     insertion = indent_code(code)
     write_text(path, text[:body_end - 1] + insertion + text[body_end - 1:])
 
 
+# Step 1: refuse to run on a tree that already has the test hooks or a --wrap setup.
 makefile = os.path.join(root, "Makefile")
 make = read_text(makefile)
 if "kern/test" in make or "test_lab4.h" in make:
@@ -147,6 +195,7 @@ if "kern/test" in make or "test_lab4.h" in make:
 if "--wrap=" in make:
     die("Detected leftover --wrap configuration; the grading skeleton must use direct injection")
 
+# Step 2: copy the test sources into kern/test/ of the grading copy.
 testdir = os.path.join(root, "kern", "test")
 os.makedirs(testdir, exist_ok=True)
 for name in ("test_lab4.c", "test_lab4.h"):
@@ -155,6 +204,7 @@ for name in ("test_lab4.c", "test_lab4.h"):
         die("tools/ not found".format(name))
     shutil.copyfile(src, os.path.join(testdir, name))
 
+# Step 3: add kern/test to the include path and to the source directories of the Makefile.
 for variable in ("KINCLUDE", "KSRCDIR"):
     match = re.search(
         r"(?m)^" + variable + r"[ \t]*\+=.*(?:\n[ \t]+[^\n]*)*",
@@ -165,6 +215,7 @@ for variable in ("KINCLUDE", "KSRCDIR"):
     make = make[:match.end()] + "\n" + variable + "\t+= kern/test" + make[match.end():]
 write_text(makefile, make)
 
+# Step 4: include the test header and call each test from the student's functions.
 pmm = os.path.join(root, "kern", "mm", "pmm.c")
 proc = os.path.join(root, "kern", "process", "proc.c")
 insert_include(pmm, "test_lab4.h", "pmm.h")

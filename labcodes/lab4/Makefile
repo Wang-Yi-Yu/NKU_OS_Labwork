@@ -5,6 +5,7 @@ SLASH	:= /
 
 V       := @
 
+# Tool names and paths. Each can be overridden on the command line, e.g. make QEMU=/opt/qemu/bin/qemu-system-riscv64
 ifndef GCCPREFIX
 GCCPREFIX := riscv64-unknown-elf-
 endif
@@ -34,11 +35,17 @@ CFLAGS  := -mcmodel=medany -O2 -std=gnu99 -Wno-unused
 CFLAGS	+= -fno-builtin -Wall -nostdinc $(DEFS)
 CFLAGS	+= -fno-stack-protector -ffunction-sections -fdata-sections
 CFLAGS	+= -g
+# GCC 14+ turned these two warnings into hard errors. The lab4 skeleton (kmalloc.c passes an
+# integer to kva2page(); tools/test_lab4.c passes a void-returning function to kernel_thread())
+# relies on the old behaviour, so keep them as warnings instead of editing the provided code.
+CFLAGS	+= -Wno-error=int-conversion -Wno-error=incompatible-pointer-types
 CTYPE	:= c S
 
 LD      := $(GCCPREFIX)ld
 LDFLAGS	:= -m elf64lriscv
 LDFLAGS	+= -nostdlib --gc-sections --print-gc-sections
+# NOTE: --print-gc-sections makes the link step print every discarded section, so 'make' output is
+# very noisy. It is kept on purpose (it helps find dead sections); do not remove it.
 
 OBJCOPY := $(GCCPREFIX)objcopy
 OBJDUMP := $(GCCPREFIX)objdump
@@ -123,6 +130,7 @@ KOBJS	= $(call read_packet,kernel libs)
 # create kernel target
 kernel = $(call totarget,kernel)
 
+# the kernel is linked with the linker script tools/kernel.ld, so a change to it relinks the kernel
 $(kernel): tools/kernel.ld
 
 $(kernel): $(KOBJS)
@@ -140,6 +148,7 @@ UCOREIMG	:= $(call totarget,ucore.img)
 # $(UCOREIMG): $(kernel)
 #	cd ../../riscv-pk && rm -rf build && mkdir build && cd build && ../configure --prefix=$(RISCV) --host=riscv64-unknown-elf --with-payload=../../labcodes/$(PROJ)/$(kernel)  --disable-fp-emulation && make && cp bbl ../../labcodes/$(PROJ)/$(UCOREIMG)
 
+# raw binary image (ELF stripped to bytes), passed to QEMU/OpenSBI with -kernel
 $(UCOREIMG): $(kernel)
 	$(OBJCOPY) $(kernel) --strip-all -O binary $@
 
@@ -208,6 +217,8 @@ MAKEOPTS		:= --quiet --no-print-directory
 
 GRADE_TMP		:= /tmp/lab4_grade
 
+# grading: copy the tree to a temporary directory, inject the lab4 tests with tools/inject.py,
+# then run tools/grade.sh there. The working tree itself is not modified.
 grade:
 	$(V)$(MAKE) $(MAKEOPTS) clean
 	$(V)$(RM) -rf $(GRADE_TMP)
@@ -217,9 +228,11 @@ grade:
 	$(V)cd $(GRADE_TMP) && $(SH) tools/grade.sh
 	$(V)$(RM) -rf $(GRADE_TMP)
 
+# touch the files in TOUCH_FILES so that make rebuilds them (grade.sh uses this before each run)
 touch:
 	$(V)$(foreach f,$(TOUCH_FILES),$(TOUCH) $(f))
 
+# print-VAR: print the value of the Makefile variable VAR (name given in upper or lower case); used by grade.sh
 print-%:
 	@echo $($(shell echo $(patsubst print-%,%,$@) | $(TR) [a-z] [A-Z]))
 

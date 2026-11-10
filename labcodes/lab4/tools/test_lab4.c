@@ -1,3 +1,12 @@
+/**
+ * @file   test_lab4.c
+ * @brief  Grading tests for lab4: physical memory and page tables, process creation, and scheduling.
+ *
+ * This file is not part of the student tree. tools/inject.py copies it to kern/test/ and inserts
+ * the calls below into pmm_init (test_lab4_pmm_basic), proc_init (test_lab4_process_create) and
+ * init_main (test_lab4_schedule). Each test prints "[Test <name>] PASS" when all its checks pass;
+ * a failed assert() panics the kernel, so the output line is then missing and grade.sh scores it 0.
+ */
 #include <defs.h>
 #include <assert.h>
 #include <pmm.h>
@@ -5,11 +14,24 @@
 #include <sched.h>
 #include <stdio.h>
 
+/**
+ * @brief Print the pass line for a test.
+ * @param[in] name  Test name shown in the output, e.g. "PMM".
+ */
 static void lab4_pass(const char *name)
 {
     cprintf("[Test %s] PASS\n", name);
 }
 
+/**
+ * @brief Basic test of the page allocator and the Sv39 page-table functions.
+ *
+ * Allocates three pages and maps them with page_insert() at virtual addresses 0, PGSIZE and
+ * 2*PGSIZE in boot_pgdir_va. It checks the PTE contents (valid bit, PTE_U/PTE_W), the reference
+ * counts from page_ref(), that remapping a page with new permissions keeps the free-page count
+ * unchanged, and that page_remove() drops all references. Prints "[Test PMM] PASS" on success.
+ * Called at the end of pmm_init().
+ */
 void test_lab4_pmm_basic(void)
 {
     struct Page *p1 = alloc_page();
@@ -44,6 +66,14 @@ void test_lab4_pmm_basic(void)
     lab4_pass("PMM");
 }
 
+/**
+ * @brief Check the state of the idle process (pid 0) and the init process (pid 1) after proc_init().
+ *
+ * Verifies that idleproc is the current process, is RUNNABLE, uses bootstack as its kernel stack,
+ * and has no mm or trap frame; that initproc has pid 1, is RUNNABLE, has idleproc as parent, and has
+ * a valid context (ra and sp set). Prints "[Test Process Create] PASS" on success.
+ * Called at the end of proc_init().
+ */
 void test_lab4_process_create(void)
 {
     assert(current == idleproc);
@@ -62,9 +92,19 @@ void test_lab4_process_create(void)
     lab4_pass("Process Create");
 }
 
+/** @brief Set to 1 once kernel thread 1 has run; written by test_lab4_thread. */
 static volatile int test_thread1_ran;
+/** @brief Set to 1 once kernel thread 2 has run; written by test_lab4_thread. */
 static volatile int test_thread2_ran;
 
+/**
+ * @brief Body of the two test kernel threads.
+ *
+ * Runs three rounds: set this thread's "ran" flag, request a reschedule (need_resched = 1) and call
+ * schedule(), so control passes to the other thread. After the rounds it keeps yielding forever.
+ *
+ * @param[in] arg  Thread id cast to a pointer: 1 selects test_thread1_ran, anything else test_thread2_ran.
+ */
 static void test_lab4_thread(void *arg)
 {
     int id = (int)(intptr_t)arg;
@@ -83,6 +123,13 @@ static void test_lab4_thread(void *arg)
     }
 }
 
+/**
+ * @brief Scheduling test: create two kernel threads and check that both get to run.
+ *
+ * Creates two threads with kernel_thread() running test_lab4_thread (ids 1 and 2), forces eight
+ * reschedules from the calling process, and asserts that both threads set their flags. Prints
+ * "[Test Schedule] PASS" on success. Called at the start of init_main().
+ */
 void test_lab4_schedule(void)
 {
     int i;

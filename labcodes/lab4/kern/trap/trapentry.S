@@ -1,5 +1,24 @@
+/**
+ * @file   trapentry.S
+ * @brief  Assembly trap entry and exit: build a struct trapframe, call trap(), restore and sret.
+ *
+ * stvec points to __alltraps. SAVE_ALL pushes 36 words on the current stack in the layout of
+ * struct trapframe (trap.h): x0..x31 at words 0..31, then sstatus, sepc, stval, scause at words
+ * 32..35. RESTORE_ALL is its inverse. REGBYTES, STORE and LOAD come from riscv.h.
+ * forkrets is the exit path used by a brand-new thread (see forkret() in proc.c); it reuses
+ * __trapret, so a new thread leaves the kernel through the same restore/sret code.
+ */
 #include <riscv.h>
 
+    /*
+     * SAVE_ALL - push the whole CPU context as a struct trapframe.
+     *
+     * sp is parked in sscratch before sp is lowered, because the x2 slot has to hold the sp of
+     * the interrupted code, not the address of the frame; x2 is therefore written at the end
+     * from s0 (which holds the sscratch value). Unlike lab3, sscratch is not reset to 0 here: it
+     * keeps a stale copy of sp, which is harmless because every trap rewrites it before reading.
+     * Clobbers s0..s4 after they have been saved.
+     */
     .macro SAVE_ALL
     .align 2
 
@@ -52,6 +71,13 @@
     STORE s4, 35*REGBYTES(sp)
     .endm
 
+    /*
+     * RESTORE_ALL - inverse of SAVE_ALL (lab3 exercise 1).
+     *
+     * Contract: reload every register and the CSRs that must survive a trap from the trap frame
+     * at sp (trap() may have changed epc), and leave sp equal to the sp of the interrupted code.
+     * The frame layout and the special role of the x2 slot are described at SAVE_ALL.
+     */
     .macro RESTORE_ALL
 
     #lab3 function1 2414007
@@ -101,6 +127,11 @@
 
     .endm
 
+    /*
+     * __alltraps - trap entry installed in stvec; 4-byte aligned as stvec requires.
+     * Saves the context, then calls trap(struct trapframe *tf) with the address of the frame
+     * (lab3 exercise 1); trap() returns into __trapret below.
+     */
     .globl __alltraps
 __alltraps:
     SAVE_ALL
@@ -111,12 +142,23 @@ __alltraps:
     jal trap
     # sp should be the same as before "jal trap"
 
+    /*
+     * __trapret - common exit of a trap: restore the context and return with sret
+     * (pc = sepc, privilege = sstatus.SPP, SIE = SPIE). Falls through from __alltraps.
+     */
     .globl __trapret
 __trapret:
     RESTORE_ALL
     # go back from supervisor call
     sret
- 
+
+    /*
+     * forkrets - first exit of a newly created kernel thread (lab4).
+     * Called from C as forkrets(struct trapframe *tf), i.e. tf arrives in a0. It points sp at
+     * the trap frame that copy_thread placed on the new kernel stack and jumps into __trapret,
+     * so the thread starts executing at tf->epc with the registers and status from the frame.
+     * It never returns to its caller.
+     */
     .globl forkrets
 forkrets:
     # set stack to this new process's trapframe

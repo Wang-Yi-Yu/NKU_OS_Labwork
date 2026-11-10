@@ -1,8 +1,22 @@
 // See LICENSE for license details.
 
+/**
+ * @file   riscv.h
+ * @brief  RISC-V architecture definitions: CSR and bit-field constants, instruction encodings,
+ *         and inline helpers for reading and writing CSRs and other privileged state.
+ *
+ * The constant tables are vendor definitions and are grouped by function with a brief per group
+ * rather than one comment per constant. The hand-written helpers (CSR access macros, barrier,
+ * lsatp) are documented individually. The whole file is wrapped in clang-format off/on.
+ */
+
 #ifndef __LIBS_RISCV_H__
 #define __LIBS_RISCV_H__
+/* clang-format off */
 
+/**
+ * @brief XLEN-dependent instruction mnemonics: RV64 uses sd/ld/lwu, RV32 uses sw/lw.
+ */
 #if __riscv_xlen == 64
 #define SLL32 sllw
 #define STORE sd
@@ -16,8 +30,10 @@
 #define LWU lw
 #define LOG_REGBYTES 2
 #endif
+/** @brief Size of a general-purpose register in bytes, equal to 1 << LOG_REGBYTES (8 on RV64, 4 on RV32). */
 #define REGBYTES (1 << LOG_REGBYTES)
 
+/** @brief MSTATUS bit masks: interrupt enables, previous-privilege fields, FPU/extension status, MPRV/SUM/MXR/TVM/TW/TSR. */
 #define MSTATUS_UIE 0x00000001
 #define MSTATUS_SIE 0x00000002
 #define MSTATUS_HIE 0x00000004
@@ -42,6 +58,7 @@
 #define MSTATUS_SXL 0x0000000C00000000
 #define MSTATUS64_SD 0x8000000000000000
 
+/** @brief SSTATUS bit masks: the supervisor-visible subset of MSTATUS (SIE, SPIE, SPP, FS, SUM, MXR, ...). */
 #define SSTATUS_UIE 0x00000001
 #define SSTATUS_SIE 0x00000002
 #define SSTATUS_UPIE 0x00000010
@@ -71,12 +88,19 @@
 #define DCSR_PRV (3 << 0)
 
 #define DCSR_CAUSE_NONE 0
+/** @brief DCSR.cause values: the reason the hart entered debug mode. */
 #define DCSR_CAUSE_SWBP 1
 #define DCSR_CAUSE_HWBP 2
 #define DCSR_CAUSE_DEBUGINT 3
 #define DCSR_CAUSE_STEP 4
 #define DCSR_CAUSE_HALT 5
 
+/**
+ * @brief Trigger-module (tdata1 mcontrol) field masks.
+ *
+ * MCONTROL_TYPE, MCONTROL_DMODE and MCONTROL_MASKMAX take the XLEN (32 or 64) because their
+ * bit positions depend on it; the other MCONTROL_* macros are plain bit masks.
+ */
 #define MCONTROL_TYPE(xlen) (0xfULL << ((xlen) - 4))
 #define MCONTROL_DMODE(xlen) (1ULL << ((xlen) - 5))
 #define MCONTROL_MASKMAX(xlen) (0x3fULL << ((xlen) - 11))
@@ -110,6 +134,7 @@
 #define MCONTROL_MATCH_MASK_LOW 4
 #define MCONTROL_MATCH_MASK_HIGH 5
 
+/** @brief MIP/SIP interrupt-pending bits, one bit per IRQ_* number (MIP_STIP is the supervisor timer bit). */
 #define MIP_SSIP (1 << IRQ_S_SOFT)
 #define MIP_HSIP (1 << IRQ_H_SOFT)
 #define MIP_MSIP (1 << IRQ_M_SOFT)
@@ -123,11 +148,13 @@
 #define SIP_SSIP MIP_SSIP
 #define SIP_STIP MIP_STIP
 
+/** @brief Privilege-level encodings (U=0, S=1, H=2, M=3) used in MSTATUS.MPP and similar fields. */
 #define PRV_U 0
 #define PRV_S 1
 #define PRV_H 2
 #define PRV_M 3
 
+/** @brief satp (address translation register) fields: MODE, ASID and PPN, for RV32 (Sv32) and RV64 (Sv39). */
 #define SATP32_MODE 0x80000000
 #define SATP32_ASID 0x7FC00000
 #define SATP32_PPN 0x003FFFFF
@@ -142,6 +169,7 @@
 #define SATP_MODE_SV57 10
 #define SATP_MODE_SV64 11
 
+/** @brief Physical Memory Protection (PMP) entry configuration bits and address-matching modes. */
 #define PMP_R 0x01
 #define PMP_W 0x02
 #define PMP_X 0x04
@@ -153,6 +181,7 @@
 #define PMP_NA4 0x10
 #define PMP_NAPOT 0x18
 
+/** @brief Interrupt numbers (cause codes without the interrupt bit): software, timer and external, per privilege level. */
 #define IRQ_U_SOFT 0
 #define IRQ_S_SOFT 1
 #define IRQ_H_SOFT 2
@@ -168,6 +197,11 @@
 #define IRQ_COP 12
 #define IRQ_HOST 13
 
+/**
+ * @brief Default reset vector and memory-map base addresses, matching the QEMU virt machine.
+ *
+ * DRAM_BASE (0x80000000) is where OpenSBI loads the kernel image and where the kernel runs from.
+ */
 #define DEFAULT_RSTVEC 0x00001000
 #define CLINT_BASE 0x02000000
 #define CLINT_SIZE 0x000c0000
@@ -175,6 +209,13 @@
 #define DRAM_BASE 0x80000000
 
 // page table entry (PTE) fields
+/**
+ * @brief Page table entry flag bits (Sv39 / Sv32 layout).
+ *
+ * PTE_V valid, PTE_R/W/X read/write/execute permission, PTE_U user accessible, PTE_G global,
+ * PTE_A accessed, PTE_D dirty, PTE_SOFT bits reserved for software. The physical page number
+ * starts at bit PTE_PPN_SHIFT.
+ */
 #define PTE_V 0x001    // Valid
 #define PTE_R 0x002    // Read
 #define PTE_W 0x004    // Write
@@ -187,8 +228,19 @@
 
 #define PTE_PPN_SHIFT 10
 
+/**
+ * @brief Test whether a page table entry points to a next-level table rather than mapping a page.
+ *
+ * @param[in] PTE  Page table entry value.
+ * @return Non-zero if V is set and R, W and X are all clear (a non-leaf entry).
+ */
 #define PTE_TABLE(PTE) (((PTE) & (PTE_V | PTE_R | PTE_W | PTE_X)) == PTE_V)
 
+/**
+ * @brief Page geometry and XLEN-dependent status bits, only when compiling for RISC-V.
+ *
+ * RISCV_PGSHIFT = 12 gives 4 KiB pages; RISCV_PGLEVEL_BITS is 9 for Sv39 (RV64) and 10 for Sv32 (RV32).
+ */
 #ifdef __riscv
 
 #if __riscv_xlen == 64
@@ -207,30 +259,71 @@
 
 #ifdef __GNUC__
 
+/**
+ * @brief Read a control and status register.
+ *
+ * @param[in] reg  CSR name as a bare token, e.g. sstatus; it is stringised into the asm template.
+ * @return The current 64-bit (XLEN-wide) value of the CSR.
+ */
 #define read_csr(reg) ({ unsigned long __tmp; \
   asm volatile ("csrr %0, " #reg : "=r"(__tmp)); \
   __tmp; })
 
+/**
+ * @brief Write a control and status register.
+ *
+ * @param[in] reg  CSR name as a bare token, e.g. stvec.
+ * @param[in] val  New value; a register or a constant (rK constraint).
+ */
 #define write_csr(reg, val) ({ asm volatile("csrw " #reg ", %0" ::"rK"(val)); })
 
+/**
+ * @brief Atomically write a CSR and return its previous value (csrrw).
+ *
+ * @param[in] reg  CSR name as a bare token.
+ * @param[in] val  New value to store.
+ * @return The CSR value before the write.
+ */
 #define swap_csr(reg, val) ({ unsigned long __tmp; \
   asm volatile ("csrrw %0, " #reg ", %1" : "=r"(__tmp) : "rK"(val)); \
   __tmp; })
 
+/**
+ * @brief Set bits in a CSR (csrrs): CSR |= bit. For example set_csr(sie, MIP_STIP) enables the timer interrupt.
+ *
+ * @param[in] reg  CSR name as a bare token.
+ * @param[in] bit  Mask of bits to set.
+ * @return The CSR value before the update.
+ */
 #define set_csr(reg, bit) ({ unsigned long __tmp; \
   asm volatile ("csrrs %0, " #reg ", %1" : "=r"(__tmp) : "rK"(bit)); \
   __tmp; })
 
+/**
+ * @brief Clear bits in a CSR (csrrc): CSR &= ~bit.
+ *
+ * @param[in] reg  CSR name as a bare token.
+ * @param[in] bit  Mask of bits to clear.
+ * @return The CSR value before the update.
+ */
 #define clear_csr(reg, bit) ({ unsigned long __tmp; \
   asm volatile ("csrrc %0, " #reg ", %1" : "=r"(__tmp) : "rK"(bit)); \
   __tmp; })
 
+/** @brief Shorthand readers for the time, cycle and instret counter CSRs (each returns the CSR value). */
 #define rdtime() read_csr(time)
 #define rdcycle() read_csr(cycle)
 #define rdinstret() read_csr(instret)
 
 #endif
 
+/**
+ * @brief Divide @p n by @p base in place: n becomes the quotient and the remainder is returned.
+ *
+ * @param[in,out] n     Dividend; overwritten with the quotient. Evaluated more than once.
+ * @param[in]     base  Divisor.
+ * @return The remainder of the division, as int.
+ */
 #define do_div(n, base)                          \
   ({                                             \
     int __res;                                   \
@@ -239,8 +332,20 @@
     __res;                                       \
   })
 
+/**
+ * @brief Compiler and hardware memory barrier: a FENCE with a "memory" clobber.
+ */
 #define barrier() __asm__ __volatile__("fence" ::: "memory")
 
+/**
+ * @brief Install a page table by writing satp (to be called by proc_run() in lab4).
+ *
+ * @param[in] pgdir  Physical address of the root page table. Must be page-aligned.
+ * @note Uses SATP32_MODE, so it is only correct for RV32 (Sv32). On RV64 this writes MODE = 0
+ *       (Bare). QEMU ignores such a satp write, so the kernel keeps running on its boot page table
+ *       (which is what all lab4 threads share anyway); real hardware would lose translation. A correct
+ *       RV64 version writes `0x8000000000000000 | (pgdir >> RISCV_PGSHIFT)` (Sv39).
+ */
 static inline void
 lsatp(unsigned int pgdir)
 {
@@ -252,6 +357,12 @@ lsatp(unsigned int pgdir)
 #endif
 
 #endif
+/**
+ * @brief Vendor-generated section: MATCH_ and MASK_ instruction encodings, CSR addresses,
+ *        trap cause codes and the DECLARE_INSN/DECLARE_CSR/DECLARE_CAUSE X-macro lists.
+ *
+ * Generated by the riscv-opcodes parse-opcodes tool; the constants are not documented individually.
+ */
 /* Automatically generated by parse-opcodes.  */
 #ifndef RISCV_ENCODING_H
 #define RISCV_ENCODING_H
@@ -1500,3 +1611,4 @@ DECLARE_CAUSE("fetch page fault", CAUSE_FETCH_PAGE_FAULT)
 DECLARE_CAUSE("load page fault", CAUSE_LOAD_PAGE_FAULT)
 DECLARE_CAUSE("store page fault", CAUSE_STORE_PAGE_FAULT)
 #endif
+/* clang-format on */

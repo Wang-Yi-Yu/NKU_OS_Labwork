@@ -49,7 +49,7 @@
 | :------------: | :---------: | :---------------: | :--: |
 | 2414007-王奕瑜 | Claude Code | Claude Sonnet 5.5 |  无  |
 | 2414015-鲁昕宁 |   Cursor    |     Grok 4.7      |  无  |
-| 2411622-张雨函 |             |                   |      |
+| 2411622-张雨函 |     GPT     |       GPT-6       |  无  |
 
 **说明：**
 
@@ -91,6 +91,16 @@
 4. **原因码要去掉最高位，异常处理留在另一个函数里。** `IRQ_S_TIMER` 等宏只含低位的原因码，最高位只表示“这是中断”。`trap_dispatch()` 已经用最高位选过分支；评分也会不经过它、直接调用 `interrupt_handler()`，那时最高位可能置上，也可能没有。比较前先把最高位清掉。`exception_handler()` 由另一部分实现，中断处理不改它，认不出的中断也不调用 `print_trapframe()`，只打印 `Unknown interrupt: cause` 和原因码。
 
 #### 3.2.3 异常处理功能
+
+异常处理是练习 2-b 的实现内容。它和 2-a 的中断处理共用 trap()、trap_dispatch() 以及汇编入口和返回路径，但两者由 scause 的最高位分开选择：最高位为 1 时进入 interrupt_handler()，最高位为 0 时进入 exception_handler()。因此 2-b 不需要修改 2-a 的时钟逻辑，不过依赖 2.1 中已经正确实现的 SAVE_ALL、RESTORE_ALL 和 sret，否则对 tf->epc 的更新无法写回处理器。
+
+本函数针对两类会在当前指令处停下的异常：
+
+1. **非法指令异常。** 输出 Illegal instruction at ...，再根据 epc 指向的指令编码判断长度。RISC-V 指令低两位不为 11 时是 16 位压缩指令，否则是 32 位普通指令，分别让 tf->epc 增加 2 或 4。
+2. **断点异常。** 输出 Breakpoint at ...，使用同样的指令长度判断，并把 tf->epc 移到断点指令之后。这样恢复现场并执行 sret 后，程序不会再次执行同一条 ebreak。
+3. **其他异常。** 不猜测异常类型，直接调用已有的 print_trapframe() 输出完整现场，便于后续定位问题。
+
+实现中只读取 epc 处的低 16 位来判断长度，不会把正在执行的指令整条解释成操作码；异常原因仍由 tf->cause 区分。这个处理满足 16 位和 32 位指令两种边界情况，也保持了未覆盖异常的调试信息。
 
 ---
 
@@ -429,9 +439,70 @@ Requirements：
 
 #### 4.3.1 模块功能描述
 
+**需要实现的函数**（位于 kern/trap/trap.c）：
+
+    void exception_handler(struct trapframe *tf);
+
+**功能说明**
+本实验任务实现 kern/trap/trap.c 中的 exception_handler()，负责处理由 trap_dispatch() 分发的同步异常。该函数接收保存完整寄存器和控制状态的 trapframe，根据 tf->cause 判断异常类型，并在处理结束后通过 RESTORE_ALL 和 sret 返回内核执行流。
+
+主要功能包括：
+
+1. 非法指令处理
+   当异常原因为 CAUSE_ILLEGAL_INSTRUCTION 时，输出非法指令地址。函数读取 tf->epc 处的 16 位指令编码，根据低两位判断指令长度：低两位为 0x3 时为 32 位指令，其他情况为 16 位压缩指令，然后将 tf->epc 增加 4 或 2，使返回后跳过非法指令。
+2. 断点异常处理
+   当异常原因为 CAUSE_BREAKPOINT 时，输出断点地址，并使用相同的指令长度判断规则推进 tf->epc。这样执行 sret 后会从断点指令之后继续运行，避免重复触发同一个断点异常。
+3. 其他异常处理
+   对未专门处理的异常调用已有的 print_trapframe()，输出寄存器、`epc`、`badvaddr` 和 cause 等现场信息，便于后续调试和定位问题。
+   该功能依赖实验一完成的 Trap 上下文保存与恢复机制，与时钟中断处理共同使用 Trap 入口和返回路径，但异常处理本身不修改中断处理逻辑。
+
 #### 4.3.2 最终提示词
 
+以下是用于生成练习 2-b 代码的提示词：
+
+```markdown
+[PROMPT]
+
+任务：只修改 kern/trap/trap.c 中的 exception_handler()，完成 Lab3 练习 2-b。实现非法指令和断点异常的提示、指令长度判断以及 epc 更新；其他异常沿用已有的 print_trapframe()。不得修改练习 2-a 的中断处理和 Trap 分发框架。
+
+操作要求：直接修改项目中的真实文件，不新增文件，不改变 exception_handler(struct trapframe \*tf) 的函数签名。保留 //lab3 function2 YOUR CODE 的 lab3 function2 标记，并把 YOUR CODE 替换为 2411622。除本函数外，不要随意增删或改动代码。
+
+[RELY]
+
+    1. trap_dispatch() 已经按 scause 最高位分流；最高位为 0 时调用本函数。
+    2. struct trapframe 中 epc 是发生异常的指令地址，cause 是异常原因。
+    3. CAUSE_ILLEGAL_INSTRUCTION 和 CAUSE_BREAKPOINT 已在 riscv.h 中定义。
+    4. print_trapframe() 已经实现，可用于输出其他异常的完整现场。
+    5. RISC-V 指令编码的低两位不为 11 时表示 16 位压缩指令，为 11 时表示 32 位指令。
+
+[GUARANTEE]
+
+    只需交付 exception_handler()。非法指令和断点处理后必须正常返回；其他异常必须调用 print_trapframe()。不得在本函数中循环、关机或修改中断处理逻辑。
+
+[SPECIFICATION]
+
+    - 非法指令：打印 Illegal instruction at 0x%08x，判断当前指令长度，并将 tf->epc 增加 2 或 4。
+    - 断点：打印 Breakpoint at 0x%08x，判断当前指令长度，并将 tf->epc 增加 2 或 4。
+    - 指令长度：读取 tf->epc 处的 16 位值；低两位为 0x3 时长度为 4，否则为 2。
+    - 其他异常：调用 print_trapframe(tf)，不自行猜测原因。
+    - 处理函数不能把 epc 留在异常指令上，否则 sret 会重复触发同一异常。
+```
+
 #### 4.3.3 实现迭代过程
+
+本模块的实现经历了 1 次迭代。
+
+##### 第一次迭代
+
+根据 4.3.2 的约束补全 exception_handler()，实现了非法指令和断点两类异常的固定提示、16/32 位指令长度判断、epc 前进，以及其他异常的 print_trapframe() 回退处理。实现过程中只改动了指定函数，并将注释中的 YOUR CODE 替换为 2411622。
+
+随后在 labcodes/lab3 下执行 make grade。评分脚本分三个用例验证 Trap 入口、异常返回和持续时钟中断：
+
+- ✅ trap entry、寄存器恢复和断点返回：35/35；
+- ✅ 非法指令 epc 前进和返回，同时检查 Supervisor software interrupt、Unknown interrupt: cause 15 以及 cause 0x00000014：25/25；
+- ✅ 重新预约监督态时钟并重复返回：40/40。
+
+最终结果为 Total Score: 100/100，说明 2-b 的异常处理可以和 2-a 的中断处理以及练习 1 的 Trap 上下文恢复协同工作。
 
 ---
 
@@ -644,6 +715,16 @@ trapframe at 0xffffffffc0205eb0
 
 ### 6.1 对操作系统的理解
 
+1. **Trap 是一条完整的软硬件协作链。** 硬件保存 sepc、scause 等控制状态并跳转到 stvec；SAVE_ALL 把通用寄存器保存成 struct trapframe；C 代码按原因分发；RESTORE_ALL 恢复现场后由 sret 返回。异常处理函数修改的 tf->epc，只有经过这条恢复路径才会真正写回 sepc。
+2. **中断与异常的返回语义不同。** 时钟中断是外部事件，处理后应保留原 epc，让被打断的指令继续执行；非法指令和断点是当前指令造成的同步异常，处理后必须推进 epc，否则会无限重复陷入。这个差异体现了 scause 分流背后的体系结构语义。
+3. **指令长度会影响异常恢复。** RISC-V 的 C 扩展允许 16 位压缩指令，因此不能固定让 epc += 4。通过低两位判断 16 位或 32 位长度，才能同时正确处理压缩指令和普通指令。
+4. **框架化接口降低了模块之间的耦合。** trap_dispatch() 只负责分流，interrupt_handler() 和 exception_handler() 各自处理一类原因，汇编入口只负责保存和恢复。新增一种异常时可以集中修改异常处理函数，而不必破坏公共 Trap 入口。
+
 ### 6.2 AI 协作开发的经验
+
+1. **先把约束写清楚，再让 AI 生成实现。** 提示词明确了只能修改 exception_handler()、必须保留 lab3 function2 注释、需要把 YOUR CODE 改成 2411622，生成结果才不会误改中断处理或 Trap 分发代码。
+2. **把体系结构规则转成可检查的条件。** 不能笼统地说“跳过当前指令”，而要明确低两位为 11 时加 4，否则加 2，并要求非法指令和断点分别输出固定文本。这样代码和评分脚本的边界条件能够对应起来。
+3. **用评分用例验证控制流，而不只看编译结果。** make grade 分别检查断点返回、非法指令 epc 前进、软件中断和未知中断输出，以及时钟中断持续触发。最终三项测试分别通过 35、25、40 分，总分 100/100，说明异常处理与已有 Trap 入口、中断处理可以协同工作。
+4. **遇到未覆盖异常时保留现场比擅自处理更安全。** 对没有专门要求的 cause 调用 print_trapframe()，既满足调试需要，也避免 AI 根据不完整信息引入额外的异常语义。
 
 ---

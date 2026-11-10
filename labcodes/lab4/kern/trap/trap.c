@@ -83,7 +83,102 @@ void print_regs(struct pushregs *gpr)
 
 extern struct mm_struct *check_mm_struct;
 
-//lab3 请补充你在lab3中的代码
+//lab3 function2 2414015
+
+/**
+ * @brief Handle an interrupt. The low bits of tf->cause select the source.
+ *
+ * A supervisor timer interrupt arms the next event, counts it and prints one line every TICK_NUM
+ * ticks. Other known sources print one line.
+ * The trap frame is left unchanged, so sret resumes the interrupted instruction.
+ *
+ * @param tf trap frame of the interrupt
+ */
+void interrupt_handler(struct trapframe *tf) {
+    /* Bit 63 marks "interrupt". The source number is the rest, and a direct call may or may not have set the bit. */
+    uintptr_t cause = tf->cause << 1 >> 1;
+
+    switch (cause) {
+        case IRQ_S_TIMER:
+            clock_set_next_event();
+            ticks++;
+            if (ticks % TICK_NUM == 0) {
+                print_ticks();
+            }
+            break;
+        case IRQ_U_SOFT:
+            cprintf("User software interrupt\n");
+            break;
+        case IRQ_S_SOFT:
+            cprintf("Supervisor software interrupt\n");
+            break;
+        case IRQ_H_SOFT:
+            cprintf("Hypervisor software interrupt\n");
+            break;
+        case IRQ_M_SOFT:
+            cprintf("Machine software interrupt\n");
+            break;
+        case IRQ_U_TIMER:
+            cprintf("User timer interrupt\n");
+            break;
+        case IRQ_H_TIMER:
+            cprintf("Hypervisor timer interrupt\n");
+            break;
+        case IRQ_M_TIMER:
+            cprintf("Machine timer interrupt\n");
+            break;
+        case IRQ_U_EXT:
+            cprintf("User external interrupt\n");
+            break;
+        case IRQ_S_EXT:
+            cprintf("Supervisor external interrupt\n");
+            break;
+        case IRQ_H_EXT:
+            cprintf("Hypervisor external interrupt\n");
+            break;
+        case IRQ_M_EXT:
+            cprintf("Machine external interrupt\n");
+            break;
+        case IRQ_COP:
+            cprintf("Coprocessor interrupt\n");
+            break;
+        case IRQ_HOST:
+            cprintf("Host interrupt\n");
+            break;
+        default:
+            cprintf("Unknown interrupt: cause %d\n", (int)cause);
+            break;
+    }
+}
+
+//lab3 function2 2411622
+
+/**
+ * @brief Handle an exception (scause bit 63 clear).
+ *
+ * An illegal instruction or a breakpoint prints one line with the address of the faulting
+ * instruction and advances tf->epc past it, so that sret resumes at the next instruction instead
+ * of re-executing the one that trapped. The length is read from the instruction itself: the low
+ * two bits are 0b11 for a 32-bit instruction, anything else is a 16-bit compressed one (for
+ * example c.ebreak). Any other exception is dumped with print_trapframe().
+ *
+ * @param tf trap frame of the exception
+ */
+void exception_handler(struct trapframe *tf) {
+    if (tf->cause == CAUSE_ILLEGAL_INSTRUCTION || tf->cause == CAUSE_BREAKPOINT) {
+        uint16_t instruction = *(uint16_t *)(uintptr_t)tf->epc;
+        uintptr_t instruction_length = ((instruction & 0x3) == 0x3) ? 4 : 2;
+
+        if (tf->cause == CAUSE_ILLEGAL_INSTRUCTION) {
+            cprintf("Illegal instruction at 0x%08x\n", tf->epc);
+        } else {
+            cprintf("Breakpoint at 0x%08x\n", tf->epc);
+        }
+        tf->epc += instruction_length;
+    } else {
+        print_trapframe(tf);
+    }
+}
 
 
 

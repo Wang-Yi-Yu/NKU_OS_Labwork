@@ -1,3 +1,18 @@
+/**
+ * @file   entry.S
+ * @brief  Kernel entry point (kern_entry), boot stack and boot page table.
+ *
+ * Boot flow: OpenSBI (M mode) jumps to the physical address 0x80200000 in S
+ * mode with a0 = hart id and a1 = physical address of the device tree blob
+ * (DTB). The kernel is linked at the high virtual address 0xFFFFFFFFC0200000, so
+ * kern_entry must first turn on Sv39 paging with the page table
+ * boot_page_table_sv39, and only then can it use virtual addresses (set sp and
+ * jump to kern_init).
+ *
+ * Data defined here and used from C: bootstack/bootstacktop (boot stack),
+ * boot_page_table_sv39 (one-page root page table with 1GiB gigapage mappings),
+ * boot_hartid and boot_dtb (copies of a0 and a1, declared in dtb.h).
+ */
 #include <mmu.h>
 #include <memlayout.h>
 
@@ -11,7 +26,7 @@ kern_entry:
     sd a0, 0(t0)
     la t0, boot_dtb
     sd a1, 0(t0)
-    
+
     # t0 := 三级页表的虚拟地址
     lui     t0, %hi(boot_page_table_sv39)
     # t1 := 0xffffffff40000000 即虚实映射偏移量
@@ -36,7 +51,13 @@ kern_entry:
     lui sp, %hi(bootstacktop)
 
     # 我们在虚拟内存空间中：随意跳转到虚拟地址！
-    # 跳转到 kern_init
+    # 1. 使用临时寄存器 t1 计算栈顶的精确地址
+    lui t1, %hi(bootstacktop)
+    addi t1, t1, %lo(bootstacktop)
+    # 2. 将精确地址一次性地、安全地传给 sp
+    mv sp, t1
+    # 现在栈指针已经完美设置，可以安全地调用任何C函数了
+    # 然后跳转到 kern_init (不再返回)
     lui t0, %hi(kern_init)
     addi t0, t0, %lo(kern_init)
     jr t0
@@ -50,16 +71,26 @@ bootstack:
     .global bootstacktop
 bootstacktop:
 
-.section .data
-    # 由于我们要把这个页表放到一个页里面，因此必须 12 位对齐
+    # a page table for Sv39
     .align PGSHIFT
     .global boot_page_table_sv39
 # 分配 4KiB 内存给预设的三级页表
 boot_page_table_sv39:
-    # 0xffffffff_c0000000 map to 0x80000000 (1G)
-    # 前 511 个页表项均设置为 0 ，因此 V=0 ，意味着是空的(unmapped)
-    .zero 8 * 511
-    # 设置最后一个页表项，PPN=0x80000，标志位 VRWXAD 均为 1
+    # Every entry not set below is 0, i.e. V=0 (unmapped).
+    # Entries 0 and 1: 0x00000000~0x7fffffff, unmapped
+    .zero 8 * 2
+    # Entry 2: 0x80000000 identity map to 0x80000000 (1G)
+    # [QEMU 8.x adaptation] The instruction right after `csrw satp` is still
+    # fetched from the low physical address (0x802000xx). QEMU 4.1 keeps running
+    # it inside the same already-translated block as the csrw, so a high-address
+    # mapping alone was enough. QEMU 8.x re-fetches with the new page table after
+    # a satp write; without this identity mapping that fetch raises an
+    # instruction page fault and the kernel hangs with no output at all.
+    .quad (0x80000 << 10) | 0xcf # VRWXAD
+    # Entries 3~510: unmapped
+    .zero 8 * 508
+    # Entry 511: 0xffffffff_c0000000 map to 0x80000000 (1G)
+    # PPN=0x80000, flag bits VRWXAD are all 1
     .quad (0x80000 << 10) | 0xcf # VRWXAD
 
     .global boot_hartid

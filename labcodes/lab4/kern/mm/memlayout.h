@@ -35,6 +35,7 @@
 #define KMEMSIZE            0x7E00000                  // the maximum amount of physical memory
 #define KERNTOP             (KERNBASE + KMEMSIZE)
 
+#define PHYSICAL_MEMORY_END         0x88000000
 #define PHYSICAL_MEMORY_OFFSET      0xFFFFFFFF40000000
 
 

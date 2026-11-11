@@ -6,7 +6,7 @@
 | :----------: | :--------------------------------------------: |
 | **实验名称** |               Lab3：断,都可以断                |
 | **小组成员** | 2414007-王奕瑜、2414015-鲁昕宁、2411622-张雨函 |
-| **完成日期** |                   2026-10-20                   |
+| **完成日期** |                   2026-11-3                    |
 
 ### 小组分工
 
@@ -48,8 +48,8 @@
 |      成员      | AI 编程工具 |     底层模型      | 备注 |
 | :------------: | :---------: | :---------------: | :--: |
 | 2414007-王奕瑜 | Claude Code | Claude Sonnet 5.5 |  无  |
-| 2414015-鲁昕宁 |      Cursor       |      Grok 4.7     |   无   |
-| 2411622-张雨函 |     GPT     |        GPT-6       |  无  |
+| 2414015-鲁昕宁 |   Cursor    |     Grok 4.7      |  无  |
+| 2411622-张雨函 |     GPT     |       GPT-6       |  无  |
 
 **说明：**
 
@@ -447,25 +447,25 @@ Requirements：
 本实验任务实现 kern/trap/trap.c 中的 exception_handler()，负责处理由 trap_dispatch() 分发的同步异常。该函数接收保存完整寄存器和控制状态的 trapframe，根据 tf->cause 判断异常类型，并在处理结束后通过 RESTORE_ALL 和 sret 返回内核执行流。
 
 主要功能包括：
+
 1. 非法指令处理
    当异常原因为 CAUSE_ILLEGAL_INSTRUCTION 时，输出非法指令地址。函数读取 tf->epc 处的 16 位指令编码，根据低两位判断指令长度：低两位为 0x3 时为 32 位指令，其他情况为 16 位压缩指令，然后将 tf->epc 增加 4 或 2，使返回后跳过非法指令。
 2. 断点异常处理
    当异常原因为 CAUSE_BREAKPOINT 时，输出断点地址，并使用相同的指令长度判断规则推进 tf->epc。这样执行 sret 后会从断点指令之后继续运行，避免重复触发同一个断点异常。
 3. 其他异常处理
    对未专门处理的异常调用已有的 print_trapframe()，输出寄存器、`epc`、`badvaddr` 和 cause 等现场信息，便于后续调试和定位问题。
-该功能依赖实验一完成的 Trap 上下文保存与恢复机制，与时钟中断处理共同使用 Trap 入口和返回路径，但异常处理本身不修改中断处理逻辑。
+   该功能依赖实验一完成的 Trap 上下文保存与恢复机制，与时钟中断处理共同使用 Trap 入口和返回路径，但异常处理本身不修改中断处理逻辑。
 
 #### 4.3.2 最终提示词
 
 以下是用于生成练习 2-b 代码的提示词：
 
-````markdown
-
+```markdown
 [PROMPT]
 
 任务：只修改 kern/trap/trap.c 中的 exception_handler()，完成 Lab3 练习 2-b。实现非法指令和断点异常的提示、指令长度判断以及 epc 更新；其他异常沿用已有的 print_trapframe()。不得修改练习 2-a 的中断处理和 Trap 分发框架。
 
-操作要求：直接修改项目中的真实文件，不新增文件，不改变 exception_handler(struct trapframe *tf) 的函数签名。保留 //lab3 function2 YOUR CODE 的 lab3 function2 标记，并把 YOUR CODE 替换为 2411622。除本函数外，不要随意增删或改动代码。
+操作要求：直接修改项目中的真实文件，不新增文件，不改变 exception_handler(struct trapframe \*tf) 的函数签名。保留 //lab3 function2 YOUR CODE 的 lab3 function2 标记，并把 YOUR CODE 替换为 2411622。除本函数外，不要随意增删或改动代码。
 
 [RELY]
 
@@ -486,7 +486,7 @@ Requirements：
     - 指令长度：读取 tf->epc 处的 16 位值；低两位为 0x3 时长度为 4，否则为 2。
     - 其他异常：调用 print_trapframe(tf)，不自行猜测原因。
     - 处理函数不能把 epc 留在异常指令上，否则 sret 会重复触发同一异常。
-````
+```
 
 #### 4.3.3 实现迭代过程
 
@@ -508,6 +508,207 @@ Requirements：
 
 ## 五、测试与验证
 
+**负责人：** [2414007-王奕瑜]
+
+本节记录我们对 lab3 最终代码做的全部验证。测试环境为 WSL2 下的 QEMU 8.2.2（自带 OpenSBI v1.3）和 `riscv64-unknown-elf-gcc` 15.1。所有命令都在 `labcodes/lab3` 目录下执行。验证按由浅入深的顺序进行：先确认能够编译，再运行内核观察真实的时钟中断，然后用 `make grade` 中的三个用例分别检验 Trap 入口与返回、异常处理和时钟中断的持续性，最后检查代码格式和学号标记。
+
+### 5.1 编译
+
+我们先清理旧的编译产物，再完整编译一遍：
+
+```bash
+make clean && make
+```
+
+编译过程依次输出各个源文件的 `+ cc ...` 行，最后输出 `+ ld bin/kernel` 和 `riscv64-unknown-elf-objcopy ... bin/ucore.img`，没有任何警告或错误，生成了 `bin/kernel`（约 126 KB 的 ELF）和 `bin/ucore.img`（约 28 KB 的裸二进制镜像）。
+
+```text
++ cc kern/init/entry.S
++ cc kern/init/init.c
+  ...
++ cc kern/trap/trap.c
++ cc kern/trap/trapentry.S
++ cc kern/mm/best_fit_pmm.c
++ cc kern/mm/default_pmm.c
++ cc kern/mm/pmm.c
+  ...
++ ld bin/kernel
+riscv64-unknown-elf-objcopy bin/kernel --strip-all -O binary bin/ucore.img
+```
+
+![](./report.assets/5-1.png)
+
+分析：`Makefile` 的编译选项中带有 `-Wall -Werror`，因此“没有警告”就意味着 `trap.c` 和 `trapentry.S` 的改动是干净的。其中 `trapentry.S` 能够顺利汇编，说明 `SAVE_ALL` 里的 `csrr s3, stval` 已被新版 binutils 接受（旧名字 `sbadaddr` 在这个版本下会报 `unknown CSR`），我们补全的 `RESTORE_ALL` 和 `__alltraps` 也没有引入非法的助记符或寄存器名。`pmm.c` 与 `best_fit_pmm.c` 能够编译，说明回填的 lab2 代码与 lab3 骨架兼容。
+
+### 5.2 运行内核，观察时钟中断
+
+接着我们启动内核：
+
+```bash
+make qemu
+```
+
+QEMU 先输出 OpenSBI v1.3 的启动信息，随后是内核自己的输出。我们截取其中有代表性的部分如下：
+
+```text
+Domain0 Next Address      : 0x0000000080200000
+Domain0 Next Mode         : S-mode
+  ...
+Boot HART MIDELEG         : 0x0000000000001666
+Boot HART MEDELEG         : 0x0000000000f0b509
+  ...
+memory management: default_pmm_manager
+physical memory map:
+  memory: 0x0000000008000000, [0x0000000080000000, 0x0000000087ffffff].
+check_alloc_page() succeeded!
+satp virtual address: 0xffffffffc0206000
+satp physical address: 0x0000000080206000
+++ setup timer interrupts
+100 ticks
+100 ticks
+  ...（共 10 行）
+100 ticks
+```
+
+屏幕上共出现了 10 行 `100 ticks`，相邻两行之间约隔 1 秒。第 10 行输出之后 QEMU 自动退出，回到 shell，没有再输出任何内容。我们用 `time` 测得从启动到退出的总时间约为 10.4 秒。
+
+![](./report.assets/5-2.png)
+
+分析：
+
+1. **内核确实被启动，并且 lab2 的内容仍然正常。** `Domain0 Next Address` 为 `0x80200000`，说明 `-kernel` 的写法使 OpenSBI v1.3 找到了内核入口。`check_alloc_page() succeeded!` 说明回填的 lab2 代码、物理内存管理在加入中断机制之后没有被破坏。
+2. **中断委托的现状。** `MIDELEG` 为 `0x1666`，其中第 5 位（S 模式时钟中断）为 1，所以时钟中断到来时直接进入 S 模式的 `stvec`，不需要经过 M 模式。`MEDELEG` 为 `0xf0b509`，第 3 位（断点异常）为 1，第 2 位（非法指令异常）为 0：断点直接陷入 S 模式，而非法指令先被 M 模式的 OpenSBI 捕获，再由 OpenSBI 以相同的 `sepc`、`scause`、`stval` 转交给 S 模式的 `stvec`。两条路径最终都到达 `__alltraps`，对内核代码是透明的，这也解释了 5.3 中两个测试都能通过。
+3. **时钟中断被持续重新预约。** `kern_init()` 最后只是一个空的 `while (1)`，所有输出都来自中断处理函数。`sbi_set_timer()` 只预约一次，并且 `sip.STIP` 要等到下一次预约才会被清除。我们在 `/tmp` 的临时副本里把 `interrupt_handler()` 中的 `clock_set_next_event()` 去掉再运行，结果是 10 行 `100 ticks` 在不到 0.1 秒内全部输出并关机：处理函数返回后，仍处于挂起状态的时钟中断立刻再次进入内核，形成中断风暴。可见正常运行时 10 秒的节奏完全来自每次处理里的重新预约，而这个预约既是为了得到下一次中断，也是为了清除这一次的挂起状态。
+4. **计数与时间吻合。** `timebase` 为 100000，而 QEMU 上 `time` 的频率是 10 MHz（OpenSBI 输出的 `aclint-mtimer @ 10000000Hz` 也证实了这一点），所以每次间隔 10 ms，100 次即 1 秒。`SHUTDOWN_AFTER` 为 10，共 1000 次中断，理论时间为 10 秒，实测约 10.4 秒。多出的约 0.4 秒不是启动开销（上面的风暴实验连启动在内一共只用了约 0.07 秒），而是累积误差：`clock_set_next_event()` 以“处理这次中断时的当前时间”为基准再加 `timebase`，而不是以上一次的预约时刻为基准，所以每次中断的响应延迟（约 0.4 ms）都会累积进后续的间隔。
+5. **关机路径正常。** 第 10 行 `100 ticks` 输出后，`ticks / TICK_NUM` 等于 `SHUTDOWN_AFTER`，`interrupt_handler()` 调用 `sbi_shutdown()`，QEMU 随之退出，说明这个调用的先后顺序（先输出统计行，再关机）也符合要求。
+6. **Trap 返回路径经受了 1000 次考验。** 空循环每一次被打断后都能回到原处继续执行，没有崩溃，说明 `__alltraps`、`trap()`、`RESTORE_ALL`、`sret` 这条链在最常见的路径上是通的。不过空循环只用到很少的寄存器，更严格的寄存器级验证放在下一节的用例 1 中。
+
+### 5.3 自动评分测试 `make grade`
+
+然后我们运行课程提供的评分脚本：
+
+```bash
+make grade
+```
+
+脚本先把工作区复制到临时目录，由 `tools/inject.py` 在 `kern_init()` 中插入测试钩子，再分别以 `GRADE_LAB3_CONTEXT`、`GRADE_LAB3_ILLEGAL`、`GRADE_LAB3_TIMER` 三个宏重新编译并在 QEMU 中运行，最后检查串口输出中是否包含期望的字符串。我们得到的结果为：
+
+```text
+lab3 injection complete
+Building trap entry, register restore, and breakpoint EPC...
+Running trap entry, register restore, and breakpoint EPC...
+  - trap entry, register restore, and breakpoint EPC: PASS (35/35)
+Building illegal instruction EPC advance and return...
+Running illegal instruction EPC advance and return...
+  - illegal instruction EPC advance and return: PASS (25/25)
+Building re-armed supervisor timer and repeated trap return...
+Running re-armed supervisor timer and repeated trap return...
+  - re-armed supervisor timer and repeated trap return: PASS (40/40)
+Total Score: 100/100
+```
+
+![](./report.assets/5-3-1.png)
+
+![](./report.assets/5-3-2.png)
+
+![](./report.assets/5-3-3.png)
+
+三个用例全部通过，总分 100/100。为了看清每个用例到底发生了什么，我们又在 `/tmp` 的临时副本里复现了脚本的步骤，并把每个用例的串口输出保存下来查看：
+
+```bash
+rm -rf /tmp/lab3_check && mkdir /tmp/lab3_check
+tar -C . --exclude=.git --exclude=bin --exclude=obj -cf - . | tar -C /tmp/lab3_check -xf -
+python3 tools/inject.py /tmp/lab3_check
+cd /tmp/lab3_check
+for d in GRADE_LAB3_CONTEXT GRADE_LAB3_ILLEGAL GRADE_LAB3_TIMER; do
+    make --quiet --no-print-directory clean
+    make --quiet --no-print-directory "DEFS+=-D$d"
+    timeout 15 qemu-system-riscv64 -machine virt -nographic -bios default \
+        -kernel bin/ucore.img -serial file:$d.out -monitor none -no-reboot
+    echo "===== $d"; sed -n '/satp physical/,$p' $d.out | head -n 100
+done
+```
+
+![](./report.assets/5-4-1.png)
+
+![](./report.assets/5-4-2.png)
+
+![](./report.assets/5-4-3.png)
+
+下面分别分析三个用例的输出。
+
+#### 5.3.1 用例 1：Trap 入口、寄存器恢复与断点返回（35 分）
+
+用例 1 的串口输出为：
+
+```text
+Breakpoint at 0xc0201ac8
+[Test 1] Trap entry and breakpoint return: PASS (35/35)
+```
+
+这个用例的汇编函数 `test_lab3_register_context` 先给 `t0` ~ `t2`、`s0`、`s1`、`a1` ~ `a7`、`s2` ~ `s11`、`t3` ~ `t6` 共 26 个寄存器分别装入互不相同的值（`0x105`~`0x11f`），然后执行 `ebreak`，返回后逐个检查这些寄存器的值是否原样保留。
+
+- 输出了 `Breakpoint at`，说明 `ebreak` 触发的断点异常经过 `stvec` 进入 `__alltraps`，由 `trap()` 分发到 `exception_handler()`。
+- 程序没有死循环，也没有再次输出 `Breakpoint at`，说明 `tf->epc` 被正确地前进了，并且 `RESTORE_ALL` 把新的 `epc` 写回了 `sepc`，`sret` 回到了 `ebreak` 的下一条指令。
+- 检查通过，说明 26 个通用寄存器都在 `SAVE_ALL` → C 函数 → `RESTORE_ALL` 的过程中保持不变。`ra`、`sp`、`gp`、`tp` 虽然没有被显式检查，但如果它们恢复有误，用例会在返回或调用 C 函数时崩溃，因此也被间接验证。特别是 `sp`：`SAVE_ALL` 把 trapframe 放在栈上并把陷入前的 `sp` 存入 `x2` 槽，`RESTORE_ALL` 最后才装载 `x2`，如果提前装载，后续所有以 `sp` 为基址的装载都会读错地址，用例不可能通过。
+- 打印出的地址 `0xc0201ac8` 只有 32 位，这是因为 `exception_handler()` 用 `%08x` 输出 `epc`，只会取低 32 位；真实的虚拟地址是 `0xffffffffc0201ac8`。我们用 `objdump` 查看这个地址，得到的指令是 `9002 ebreak`，只占 2 个字节，下一条指令位于 `0xffffffffc0201aca`。汇编器在启用 C 扩展时把 `ebreak` 压缩成了 `c.ebreak`。我们的实现读取 `epc` 处低 16 位的低两位：不是 `0b11`，所以把 `epc` 增加 2。这一点很关键：如果假定所有指令都是 4 字节，`epc` 会落在下一条 `li` 指令的中间，得到错误的指令流。
+
+#### 5.3.2 用例 2：非法指令、中断与异常的兜底路径（25 分）
+
+用例 2 的串口输出为（中间全为 0 的寄存器行已省略）：
+
+```text
+Illegal instruction at 0xc0201a78
+Supervisor software interrupt
+Unknown interrupt: cause 15
+trapframe at 0xffffffffc0205eb0
+  zero     0x00000000
+  ...
+  cause    0x00000014
+[Test 2] handler fallback completed\n[Test 2] Illegal instruction return: PASS (25/25)
+```
+
+这个用例包含两部分。第一部分执行一条 4 字节的非法指令 `.word 0x0000007b`；第二部分直接构造 trapframe，调用两个处理函数，检查各条兜底路径。
+
+- `Illegal instruction at 0xc0201a78` 说明非法指令异常被识别并按规定格式输出。`objdump` 显示该地址的内容是 `0000007b`，低两位为 `0b11`，因此是 4 字节指令，`epc` 被增加 4，下一条执行的是位于 `0xffffffffc0201a7c` 的 `jal test_lab3_handler_fallbacks`。后面的输出能够出现，本身就证明 `epc` 的前进量是正确的。这条异常不在 `medeleg` 的委托范围内，是 OpenSBI 转交给 S 模式的，说明我们的处理流程对这两种来源一视同仁。
+- `Supervisor software interrupt`：构造的 `cause` 是 `IRQ_S_SOFT` 并且最高位为 1，处理函数先通过 `cause << 1 >> 1` 去掉最高位再比较，所以能够正确识别。
+- `Unknown interrupt: cause 15`：构造的 `cause` 为 15，不是任何已列出的中断，落入 `default` 分支，输出十进制原因码。
+- `trapframe at ...` 以及 `cause 0x00000014`：`cause` 为 20，是一个没有单独处理的异常，`exception_handler()` 走 `print_trapframe()` 兜底，输出整个 trapframe。其中只有 `cause` 非零，是因为这个 trapframe 由测试程序清零后只填写了 `cause`。这里还有一个细节：测试里 `epc` 为 0，如果兜底分支也去读取 `epc` 处的指令就会访问非法地址，因此只有在原因是非法指令或断点时我们才读取 `epc` 处的指令长度，兜底分支只打印不解引用。
+- 输出末尾的 `[Test 2] handler fallback completed\n` 里的 `\n` 是原样输出的字面字符，因此两条 `[Test 2]` 信息连在了一行。这是评分程序 `tools/test_lab3.c` 中字符串的写法造成的（转义了两次），与我们的实现无关，也不影响评分。
+
+#### 5.3.3 用例 3：时钟中断的持续触发（40 分）
+
+用例 3 的串口输出为：
+
+```text
+++ setup timer interrupts
+100 ticks
+100 ticks
+[Test 3] Sustained supervisor timer: PASS (40/40, ticks=200)
+100 ticks
+  ...
+```
+
+这个用例做了两件事：在 `clock_init()` 之后、`intr_enable()` 之前检查 `ticks` 仍为 0（此时中断尚未打开，不应有任何计数）；打开中断后在 `kern_init()` 里忙等直到 `ticks >= 200`，再输出 `PASS`。
+
+- 输出中 `PASS` 出现在第二个 `100 ticks` 之后，`ticks=200` 恰好与两行统计对应，说明每 100 次时钟中断输出一行，并且没有漏数或重复计数。
+- 能够等到 200，说明时钟中断是连续不断的，即每次处理都预约了下一次，并且每次 `sret` 都正确地回到了忙等循环中。忙等循环读取的 `ticks` 是 `volatile` 变量，它之所以能被中断处理函数的修改“看见”，也依赖 `RESTORE_ALL` 没有破坏循环所用的寄存器。
+- `PASS` 之后内核仍在忙等，中断仍在继续，因此后面还会输出更多的 `100 ticks`，最后在第 10 行之后关机。这与 5.2 的现象一致。
+
+三个用例的得分合计为 35 + 25 + 40 = 100 分。
+
+### 5.4 测试结论
+
+|             测试项              |         命令         |                         结果                          |
+| :-----------------------------: | :------------------: | :---------------------------------------------------: |
+|              编译               | `make clean && make` |             无警告，生成 `bin/ucore.img`              |
+|         运行与时钟中断          |     `make qemu`      | 10 行 `100 ticks`，约 10.4 秒后自动关机，与理论值吻合 |
+| 用例 1：Trap 入口、寄存器、断点 |     `make grade`     |     35/35，26 个寄存器保持不变，`c.ebreak` 前进 2     |
+|   用例 2：非法指令及兜底路径    |     `make grade`     |       25/25，4 字节非法指令前进 4，兜底输出正确       |
+|      用例 3：时钟持续触发       |     `make grade`     |       40/40，`ticks` 累计到 200，每 100 次一行        |
+
+以上结果表明，从 Trap 进入、保存上下文、C 语言分发与处理、恢复上下文到 `sret` 返回的整条链路在中断和异常两种场景下均工作正常，实验三的全部要求得到了满足。
+
 ---
 
 ## 六、实验总结与收获
@@ -525,4 +726,5 @@ Requirements：
 2. **把体系结构规则转成可检查的条件。** 不能笼统地说“跳过当前指令”，而要明确低两位为 11 时加 4，否则加 2，并要求非法指令和断点分别输出固定文本。这样代码和评分脚本的边界条件能够对应起来。
 3. **用评分用例验证控制流，而不只看编译结果。** make grade 分别检查断点返回、非法指令 epc 前进、软件中断和未知中断输出，以及时钟中断持续触发。最终三项测试分别通过 35、25、40 分，总分 100/100，说明异常处理与已有 Trap 入口、中断处理可以协同工作。
 4. **遇到未覆盖异常时保留现场比擅自处理更安全。** 对没有专门要求的 cause 调用 print_trapframe()，既满足调试需要，也避免 AI 根据不完整信息引入额外的异常语义。
+
 ---

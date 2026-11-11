@@ -4,8 +4,9 @@
  *
  * Flow of one trap: hardware jumps to stvec (= __alltraps) -> SAVE_ALL builds a struct trapframe
  * -> trap() -> trap_dispatch() -> interrupt_handler() or exception_handler() -> back in assembly
- * RESTORE_ALL + sret. Bit 63 of scause tells the two kinds apart. interrupt_handler() and
- * exception_handler() are the lab3 exercise 2 task and go at the `lab3 function2` marker below.
+ * RESTORE_ALL + sret. Bit 63 of scause tells the two kinds apart. interrupt_handler() (exercise 2a)
+ * and exception_handler() (exercise 2b) are the lab3 exercise 2 task; each has its own
+ * `lab3 function2` marker below.
  */
 #include <assert.h>
 #include <clock.h>
@@ -118,7 +119,7 @@ void print_regs(struct pushregs *gpr) {
     cprintf("  t6       0x%08x\n", gpr->t6);
 }
 
-//lab3 function2 2411622
+//lab3 function2 2414015
 
 /**
  * @brief Handle an interrupt. The low bits of tf->cause select the source.
@@ -134,63 +135,72 @@ void interrupt_handler(struct trapframe *tf) {
     uintptr_t cause = tf->cause << 1 >> 1;
 
     switch (cause) {
-    case IRQ_S_TIMER:
-        clock_set_next_event();
-        ticks++;
-        if (ticks % TICK_NUM == 0) {
-            print_ticks();
-        }
-        if (ticks / TICK_NUM == SHUTDOWN_AFTER) {
-            sbi_shutdown();
-        }
-        break;
-    case IRQ_U_SOFT:
-        cprintf("User software interrupt\n");
-        break;
-    case IRQ_S_SOFT:
-        cprintf("Supervisor software interrupt\n");
-        break;
-    case IRQ_H_SOFT:
-        cprintf("Hypervisor software interrupt\n");
-        break;
-    case IRQ_M_SOFT:
-        cprintf("Machine software interrupt\n");
-        break;
-    case IRQ_U_TIMER:
-        cprintf("User timer interrupt\n");
-        break;
-    case IRQ_H_TIMER:
-        cprintf("Hypervisor timer interrupt\n");
-        break;
-    case IRQ_M_TIMER:
-        cprintf("Machine timer interrupt\n");
-        break;
-    case IRQ_U_EXT:
-        cprintf("User external interrupt\n");
-        break;
-    case IRQ_S_EXT:
-        cprintf("Supervisor external interrupt\n");
-        break;
-    case IRQ_H_EXT:
-        cprintf("Hypervisor external interrupt\n");
-        break;
-    case IRQ_M_EXT:
-        cprintf("Machine external interrupt\n");
-        break;
-    case IRQ_COP:
-        cprintf("Coprocessor interrupt\n");
-        break;
-    case IRQ_HOST:
-        cprintf("Host interrupt\n");
-        break;
-    default:
-        cprintf("Unknown interrupt: cause %d\n", (int)cause);
-        break;
+        case IRQ_S_TIMER:
+            clock_set_next_event();
+            ticks++;
+            if (ticks % TICK_NUM == 0) {
+                print_ticks();
+            }
+            if (ticks / TICK_NUM == SHUTDOWN_AFTER) {
+                sbi_shutdown();
+            }
+            break;
+        case IRQ_U_SOFT:
+            cprintf("User software interrupt\n");
+            break;
+        case IRQ_S_SOFT:
+            cprintf("Supervisor software interrupt\n");
+            break;
+        case IRQ_H_SOFT:
+            cprintf("Hypervisor software interrupt\n");
+            break;
+        case IRQ_M_SOFT:
+            cprintf("Machine software interrupt\n");
+            break;
+        case IRQ_U_TIMER:
+            cprintf("User timer interrupt\n");
+            break;
+        case IRQ_H_TIMER:
+            cprintf("Hypervisor timer interrupt\n");
+            break;
+        case IRQ_M_TIMER:
+            cprintf("Machine timer interrupt\n");
+            break;
+        case IRQ_U_EXT:
+            cprintf("User external interrupt\n");
+            break;
+        case IRQ_S_EXT:
+            cprintf("Supervisor external interrupt\n");
+            break;
+        case IRQ_H_EXT:
+            cprintf("Hypervisor external interrupt\n");
+            break;
+        case IRQ_M_EXT:
+            cprintf("Machine external interrupt\n");
+            break;
+        case IRQ_COP:
+            cprintf("Coprocessor interrupt\n");
+            break;
+        case IRQ_HOST:
+            cprintf("Host interrupt\n");
+            break;
+        default:
+            cprintf("Unknown interrupt: cause %d\n", (int)cause);
+            break;
     }
 }
 
+//lab3 function2 2411622
+
 /**
- * @brief Handle an exception (scause bit 63 clear). Empty stub: owned by lab3 exercise 2-b.
+ * @brief Handle an exception (scause bit 63 clear).
+ *
+ * An illegal instruction or a breakpoint prints one line with the address of the faulting
+ * instruction and advances tf->epc past it, so that sret resumes at the next instruction instead
+ * of re-executing the one that trapped. The length is read from the instruction itself: the low
+ * two bits are 0b11 for a 32-bit instruction, anything else is a 16-bit compressed one (for
+ * example c.ebreak). Any other exception is dumped with print_trapframe().
+ *
  * @param tf trap frame of the exception
  */
 void exception_handler(struct trapframe *tf) {

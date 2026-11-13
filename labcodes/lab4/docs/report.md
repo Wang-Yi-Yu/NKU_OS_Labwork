@@ -53,9 +53,26 @@
 
 ### 3.1 本章节的逻辑主线
 
+本章的主线是“内核怎样为多个执行流准备地址空间，再让它们轮流使用 CPU”。实验三结束时，Trap 已经能进入 `trap()` 再返回，但页表里只有启动时写好的两项 1 GiB 大页，还不能按页增删映射，也没有第二个可运行的线程。实验四先补上映射的建立和撤销，再把当前执行现场登记成线程，最后在线程之间切换。
+
+这条链按依赖关系排开：
+
+1. **按页维护映射。** `get_pte()` 沿 Sv39 的三级页表找到叶子槽，缺的中间页表可以当场分配。`page_insert()` 把一页物理内存挂到指定虚拟地址上，并维护引用计数；`page_remove()` 撤销映射，计数降到 0 时归还这一页。页表项改完后对该虚拟地址执行 `sfence.vma`。没有这一步，后面的自检无法确认虚拟地址和物理页是否一致，线程即使创建出来也没有可靠的页表可以切换。
+2. **把执行流登记成线程。** `alloc_proc()` 得到一块空白的进程控制块。`proc_init()` 把当前现场做成 `idleproc`，再用 `kernel_thread()` 创建运行 `init_main` 的 `initproc`。`do_fork()` 分配内核栈和 PID，并把线程挂进进程链表。本实验的内核线程共用启动页表，`copy_mm()` 不复制用户地址空间。
+3. **让线程真正跑起来。** `cpu_idle()` 在需要调度时调用 `schedule()`。`schedule()` 从链表里选一个 `PROC_RUNNABLE` 的线程，没有则回到 `idleproc`。`proc_run()` 更换 `current` 和 `satp`，`switch_to()` 保存、恢复被调用者保存寄存器。新线程第一次被切换进去时，返回地址指向 `forkret`，再经 `forkrets` 和 `__trapret` 进入线程函数。
+
+因此，后面各节的顺序是：先完成虚拟地址到物理页的映射维护，再创建并登记内核线程，最后实现调度和上下文切换。
+
 ### 3.2 功能的逐步实现
 
 #### 3.2.1 功能模块一：虚拟内存页操作功能
+
+虚拟内存页操作放在进程创建之前。线程控制块里的 `pgdir` 只保存页表的物理地址；页表项里写什么、引用计数怎么变，要先有 `page_insert()` 和 `page_remove()`。
+
+1. **中间页表和叶子分开处理。** `get_pte(pgdir, la, 1)` 保证 VPN[2] 和 VPN[1] 两级页表存在，返回叶子槽的地址。叶子项由 `page_insert()` 填写。`page_remove()` 调用 `get_pte(..., 0)`，页表不存在就返回，不会为了删除映射去分配新页。
+2. **同一页可以被多个虚拟地址引用。** 每建立一处映射，`page_ref` 加 1。撤销时减 1，减到 0 才 `free_page()`。`check_pgdir()` 把同一页先后映射到 `0` 和 `PGSIZE`，引用计数应为 2；两处都撤销后回到 0。新映射的引用先加上，再处理旧映射。目标页和旧页是同一页时，把多加的一次减回，这一页不会在替换过程中被释放。
+3. **换权限和换页是两条路径。** 目标地址已经映射到同一物理页时，只改权限位，引用计数和空闲页数量都保持不变。已经映射到别的页时，先经 `page_remove_pte()` 卸掉旧页，再写入新项。地址上没有映射时，直接填写叶子项。
+4. **页表项、引用计数和 TLB 一起更新。** 写入或清掉叶子项之后调用 `tlb_invalidate()`，对这个虚拟地址执行 `sfence.vma`。叶子项带写权限时同时置 `PTE_R`：RISC-V 里 `W` 为 1 而 `R` 为 0 的项不能当作普通数据页。有读、写或执行权限时再置 `PTE_A` 和 `PTE_D`。QEMU 8 不会在硬件里自动填写这两位，缺了它们，`check_boot_pgdir()` 经新映射写入字符串时会缺页。
 
 #### 3.2.2 功能模块二：进程创建及初始化功能
 
@@ -71,9 +88,138 @@
 
 #### 4.1.1 模块功能描述
 
+**需要实现的函数**（位于 `kern/mm/pmm.c`）：
+
+```c
+int page_insert(pde_t *pgdir, struct Page *page, uintptr_t la, uint32_t perm);
+void page_remove(pde_t *pgdir, uintptr_t la);
+```
+
+同文件内还有一个 `static` 的 `page_remove_pte()`，供上面两个函数卸掉一条已经找到的有效映射。
+
+**功能说明：**
+
+`get_pte()` 已经能沿 Sv39 走到叶子槽。本模块负责叶子项本身：建立映射、替换映射、撤销映射，并让引用计数和 TLB 与页表项一致。
+
+1. **`page_insert()`。** `get_pte(pgdir, la, 1)` 得到叶子槽；中间页表分配失败则返回 `-E_NO_MEM`，不写叶子项。成功时先把 `page` 的引用计数加 1。该地址已映射到同一页时，把多加的一次减回，只更新权限。已映射到其他页时，调用 `page_remove_pte()` 卸掉旧页。然后用 `pte_create()` 写入新项。`pte_create()` 会置 `PTE_V`。调用者给出 `PTE_W` 时补上 `PTE_R`；这项具有读、写或执行权限时再补上 `PTE_A` 和 `PTE_D`。最后 `tlb_invalidate(pgdir, la)`。
+2. **`page_remove()`。** `get_pte(pgdir, la, 0)` 查找叶子。页表不存在，或 `PTE_V` 未置位，直接返回。否则交给 `page_remove_pte()`：引用计数减 1，降到 0 则 `free_page()`，清掉该项，再让该虚拟地址的 TLB 项失效。
+
+引用计数和写回页表项的顺序是：
+
+```c
+page_ref_inc(page);
+if (*ptep & PTE_V) {
+    struct Page *mapped = pte2page(*ptep);
+    if (mapped == page) {
+        page_ref_dec(page);
+    } else {
+        page_remove_pte(pgdir, la, ptep);
+    }
+}
+if (perm & PTE_W) {
+    perm |= PTE_R;
+}
+if (perm & (PTE_R | PTE_W | PTE_X)) {
+    perm |= PTE_A | PTE_D;
+}
+*ptep = pte_create(page2ppn(page), perm);
+tlb_invalidate(pgdir, la);
+```
+
 #### 4.1.2 最终提示词
 
+以下是用于生成练习中虚拟内存页操作的提示词：
+
+````markdown
+[PROMPT]
+**任务**：修改 `kern/mm/pmm.c`，实现虚拟内存页操作：补全 `page_insert()` 和 `page_remove()`。`get_pte()` 已经负责沿 Sv39 查找叶子页表项，并在 `create` 非 0 时分配缺失的中间页表。本任务只维护叶子映射、物理页引用计数和对应虚拟地址的 TLB。
+
+**操作要求**：你必须在项目中修改实际文件，保留现有代码，只在标记 `LAB4 function1` 处补全。不得修改 `get_pte()`、`get_page()`、`check_pgdir()`、`check_boot_pgdir()` 以及 `pte_create()` 的定义。不得改两个公开函数的签名，不得新增文件。允许在本文件内新增 `static` 的 `page_remove_pte()`。把标记注释中的 `YOUR CODE` 替换为学号 `2414015`，保留 `LAB4 function1` 字样。
+
+**输出要求**：直接进行文件操作，使用下面 [RELY]、[GUARANTEE]、[SPECIFICATION] 部分的信息，以工程中的真实代码为准，不要引入无关功能。
+
+[RELY]
+
+1. 待补全的函数已在 `kern/mm/pmm.h` 中声明：
+
+```c
+int page_insert(pde_t *pgdir, struct Page *page, uintptr_t la, uint32_t perm);
+void page_remove(pde_t *pgdir, uintptr_t la);
+```
+
+`pgdir` 是根页表的内核虚拟地址。`la` 不必按页对齐。`perm` 是调用者给出的权限位，测试中会出现 `0`、`PTE_U | PTE_W` 和 `PTE_W | PTE_R`。
+
+2. 已有的页表与页描述符操作：
+
+```c
+pte_t *get_pte(pde_t *pgdir, uintptr_t la, bool create);
+struct Page *pte2page(pte_t pte);
+ppn_t page2ppn(struct Page *page);
+pte_t pte_create(uintptr_t ppn, int type); /* 结果已含 PTE_V */
+int page_ref_inc(struct Page *page);
+int page_ref_dec(struct Page *page);
+void free_page(struct Page *page);
+void tlb_invalidate(pde_t *pgdir, uintptr_t la);
+```
+
+`get_pte(..., 1)` 在中间页表无法分配时返回 `NULL`。`get_pte(..., 0)` 在页表缺失时返回 `NULL`，不分配。`PTE_V` 未置位的叶子槽仍然会返回指针，调用者自己判断。`-E_NO_MEM` 在 `libs/error.h` 中。
+
+3. 权限位（`kern/mm/mmu.h`）：`PTE_V`、`PTE_R`、`PTE_W`、`PTE_X`、`PTE_U`、`PTE_A`、`PTE_D`。`R`、`W`、`X` 全为 0 的有效项表示指向下一级页表。`W` 为 1 时该项还必须可读，才能作为数据页。
+
+[GUARANTEE]
+需要交付的公开函数只有：
+
+```c
+int page_insert(pde_t *pgdir, struct Page *page, uintptr_t la, uint32_t perm);
+void page_remove(pde_t *pgdir, uintptr_t la);
+```
+
+允许新增 `static void page_remove_pte(pde_t *pgdir, uintptr_t la, pte_t *ptep)`，不得放进头文件。
+
+[SPECIFICATION]
+**page_insert**
+
+Pre-Condition：`pgdir` 指向一张可用的根页表。`page` 是已分配的物理页。`la` 是要映射的虚拟地址。
+
+Post-Condition：成功时该虚拟地址所在页映射到 `page`，叶子项含 `PTE_V` 和调用者要求的权限，`page` 的引用计数比调用前多 1（若该地址原先已经映射到同一页，则计数不变）。返回 0。失败时返回 `-E_NO_MEM`，不写入这个叶子项。
+
+Case 1：该地址没有有效映射。引用计数加 1，写入叶子项。
+
+Case 2：该地址已经映射到 `page`。只更新权限。引用计数与调用前相同，这一页不被释放，空闲页数量不变。
+
+Case 3：该地址已经映射到另一页。先撤销旧映射；旧页引用计数降到 0 时归还该页。新页引用计数加 1。
+
+Requirements：
+
+- 新页的引用计数先增加，再撤销旧映射。这样 Case 2 不会在更新权限的过程中把 `page` 释放。
+- 调用者给出 `PTE_W` 时，叶子项同时具有 `PTE_R`。具有 `PTE_R`、`PTE_W` 或 `PTE_X` 时，同时置 `PTE_A` 和 `PTE_D`。
+- 叶子项写入之后，使 `la` 的 TLB 项失效。
+
+**page_remove**
+
+Pre-Condition：`pgdir` 指向一张可用的根页表。`la` 可以已有映射，也可以没有。
+
+Post-Condition：该地址不再有有效叶子映射，对应 TLB 项失效。映射的物理页引用计数减 1，降到 0 时该页回到空闲链表。地址原本没有映射时，页表和空闲页数量都不变。
+
+Requirements：查找叶子时不得分配新的中间页表。
+````
+
 #### 4.1.3 实现迭代过程
+
+本模块的实现经历了 1 次迭代，过程如下：
+
+---
+
+##### 第一次迭代
+
+**最终结果：**
+
+使用 4.1.2 的提示词生成的代码在第一次测试中就满足页映射的要求，因此没有需要修复的问题。模块二、三当时还没有函数体，链接时临时补了空的 `proc_init()` 和调用 `sbi_shutdown()` 的 `cpu_idle()`，只为让内核跑完 `pmm_init()`。这两段临时代码随后已从 `pmm.c` 中删除。QEMU 输出如下：
+
+- ✅ `check_alloc_page() succeeded!`
+- ✅ `check_pgdir() succeeded!` 覆盖了未映射地址、同一页的两处映射（引用计数为 2）、用另一页替换其中一处（旧页引用计数回到 0）以及两次 `page_remove()`。
+- ✅ `check_boot_pgdir() succeeded!` 把同一物理页映射到 `0x100` 和 `0x100 + PGSIZE`，经前一个虚拟地址写入的字符串能从后一个虚拟地址读回。这说明叶子项的 `PTE_R`、`PTE_W`、`PTE_A`、`PTE_D` 和 TLB 失效都生效。
+- 进程创建和调度尚未实现，这次没有把整份 `make grade` 当作本模块的通过标准。
 
 ---
 

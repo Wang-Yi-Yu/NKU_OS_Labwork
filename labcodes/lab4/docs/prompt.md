@@ -80,6 +80,88 @@
 
 ### 2.1 2414007-王奕瑜
 
+**功能模块三：进程调度**
+
+```markdown
+[PROMPT]
+**任务**：补全 lab4 的"进程调度"功能模块。涉及三个文件：`kern/process/proc.c`（空闲线程循环 `cpu_idle` 与切换入口 `proc_run`）、`kern/schedule/sched.c`（调度器 `schedule`）、`kern/process/switch.S`（寄存器级上下文切换 `switch_to`）。这一模块的目标是让 `idleproc` 能够把 CPU 交给已经创建好的 `initproc`。
+
+**操作要求**：你必须在项目中修改实际文件，保留现有代码和 Doxygen 注释，只在带有 `LAB4 function3` 标记的位置补全。把标记中的 `YOUR CODE` 换成学号 `2414007`，并且 `proc.c` 中的 `cpu_idle` 与 `proc_run` 各保留一行独立的标记。新增的代码要写必要的英文 Doxygen / 行内注释。不要修改 `struct context` 的字段顺序，不要修改与本模块无关的函数。
+
+**输出要求**：直接进行文件操作，使用下面 [RELY]、[GUARANTEE]、[SPECIFICATION] 部分的信息，以工程中的真实代码为准，不要引入抢占、优先级、时间片等本实验没有要求的功能。
+
+[RELY]
+
+- 数据结构（`kern/process/proc.h`）：
+  - `struct context`，字段顺序固定为 `ra, sp, s0, s1, ..., s11`，共 14 个机器字；
+  - `struct proc_struct`，本模块用到 `state`、`runs`、`need_resched`（volatile）、`pgdir`（页目录的物理地址）、`context`、`list_link`；
+  - 进程状态 `PROC_RUNNABLE` 等。
+- 全局变量：`current`（正在占用 CPU 的 PCB）、`idleproc`（第 0 个线程，**不在** `proc_list` 中）、`proc_list`（带头结点的循环双向链表，头结点不是 `proc_struct`，各 PCB 通过 `list_link` 挂入）。
+- 已有函数与宏：
+  - 链表：`list_next()`、`le2proc(le, member)`；
+  - 临界区：`local_intr_save(flag)`、`local_intr_restore(flag)`（`kern/sync/sync.h`，嵌套安全）；
+  - 页表相关：`write_csr(satp, v)`、`SATP_MODE_SV39`（模式字段在 satp 的最高 4 位）、`RISCV_PGSHIFT`、`flush_tlb()`（`libs/riscv.h`、`kern/mm/pmm.h`）；`kern/mm/pmm.c` 的 `enable_paging()` 展示了 Sv39 下 satp 的正确写法；`libs/riscv.h` 里的 `lsatp()` 是 Sv32 遗留，不能使用；
+  - 汇编：`libs/riscv.h` 提供 `REGBYTES`、`STORE`、`LOAD`；`switch.S` 需要自己 `#include <riscv.h>`；
+  - 声明：`void switch_to(struct context *from, struct context *to);` 已在 `proc.c` 中声明；`schedule()` 在 `sched.h`；`cpu_idle` 在 `proc.h` 中声明为 `noreturn`。
+- 已由其他模块保证的前提：
+  - 新线程第一次运行时，`context.ra` 是 `forkret`，`context.sp` 是它的 trapframe，所以第一次 `switch_to` 的 `ret` 会进入 `forkret -> forkrets -> __trapret -> kernel_thread_entry`；
+  - 所有 PCB 的 `pgdir` 都是启动页表 `boot_pgdir_pa`；
+  - `proc_init` 已把 `idleproc->need_resched` 置 1，`do_fork` 通过 `wakeup_proc` 把新线程置为 `PROC_RUNNABLE` 并挂入 `proc_list`。
+
+[GUARANTEE]
+必须实现的函数（签名不得改变）：
+
+- `void cpu_idle(void);`（`kern/process/proc.c`）
+- `void schedule(void);`（`kern/schedule/sched.c`）
+- `void proc_run(struct proc_struct *proc);`（`kern/process/proc.c`）
+- `void switch_to(struct context *from, struct context *to);`（`kern/process/switch.S`，汇编，全局符号）
+
+不需要新增辅助函数；如果确实需要，必须是 `static` 的，不能改变公开接口。
+
+[SPECIFICATION]
+**cpu_idle**
+
+- Pre-Condition：当前执行流是 `idleproc`，`kern_init` 已经开启中断，`current == idleproc`。
+- Post-Condition：函数永不返回；只要有线程请求重新调度，就一定会进入 `schedule`。
+- Requirements：空闲线程自己不阻塞、不睡眠；判断重调度标志时必须每次都从内存重新读取。
+
+**schedule**
+
+- Pre-Condition：调用者是当前正在运行的线程（本实验中就是 `idleproc` 或某个内核线程），`current` 有效，`proc_list` 中的 PCB 状态一致。
+- Post-Condition：调用者的重调度请求已被清除；如果存在其他可运行线程，CPU 已经被交给选中的线程，本函数在调用者下次被切换回来时才返回；如果没有任何可运行线程，调用者保持占用 CPU（退回 `idleproc`）。
+- Case 1（调用者是 `idleproc`）：由于 `idleproc` 不在 `proc_list` 中，从链表的第一个 PCB 开始查找，让链表里的线程有平等的机会。
+- Case 2（调用者不是 `idleproc`）：从调用者在链表中的下一个位置开始，环形查找一整圈（Round-Robin），最后才轮到调用者自己。
+- Case 3（没有 `PROC_RUNNABLE` 线程）：选择 `idleproc` 作为下一个线程。
+- Case 4（选中的线程就是 `current`）：不做切换，直接返回。
+- Requirements：
+  1. 整个"清标志 + 选择 + 切换"过程必须处于关中断的临界区内，且嵌套安全；
+  2. 环形查找一圈即止，且必须跳过链表头结点，不能把头结点当成 PCB 解释；
+  3. 被选中线程的 `runs` 计数加 1；
+  4. 只负责选择策略（FIFO/轮转），不直接操作寄存器。
+
+**proc_run**
+
+- Pre-Condition：`proc` 是 `PROC_RUNNABLE` 的有效 PCB；调用者在 `current` 对应的线程里。
+- Post-Condition：`current == proc`，页表根已指向 `proc->pgdir` 且旧的地址翻译缓存已失效，CPU 的寄存器上下文已从旧线程切换到 `proc`；本函数在旧线程被重新调度回来时才返回。
+- Case 1（`proc == current`）：什么也不做，直接返回。
+- Case 2（`proc != current`）：先保存旧线程的 PCB 指针，再依次完成"更新 `current`"、"切换页表"、"切换寄存器上下文"。
+- Requirements：
+  1. 整个切换过程必须关中断，并且在 `switch_to` 返回后（即旧线程被切换回来时）恢复进入前的中断状态；
+  2. `current` 必须在切换栈之前更新，这样新线程里读到的 `current` 才是它自己；
+  3. 页表只在 `pgdir` 的物理页号和 Sv39 模式位组合后写入，之后必须使旧映射的 TLB 失效；
+  4. 新线程第一次运行不会从这里返回，它直接从 `forkret` 开始。
+
+**switch_to**
+
+- Pre-Condition：`a0` 指向旧线程的 `struct context`，`a1` 指向新线程的 `struct context`；调用发生在关中断状态下，调用方式与普通 C 函数调用相同。
+- Post-Condition：旧线程的 `ra`、`sp`、`s0~s11` 已按 `struct context` 的字段顺序保存到 `*from`；这些寄存器已从 `*to` 加载；控制流已转移到新线程保存的 `ra`。
+- Requirements：
+  1. 只保存/恢复被调用者保存寄存器，不碰 `a0~a7`、`t0~t6`；
+  2. 每个寄存器在结构体中的偏移必须与 `struct context` 一致，按机器字宽计算；
+  3. 必须先保存全部旧寄存器再加载新寄存器，最后以 `ret` 结束；
+  4. 不做任何调度决策，也不访问 `current`。
+```
+
 ### 2.2 2414015-鲁昕宁
 
 ### 2.3 2411622-张雨函

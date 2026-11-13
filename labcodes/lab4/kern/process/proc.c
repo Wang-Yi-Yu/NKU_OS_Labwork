@@ -440,8 +440,8 @@ static int init_main(void *arg) {
  *  - nothing to do if proc is already current;
  *  - disable interrupts for the whole operation (local_intr_save / local_intr_restore), so a timer
  *    interrupt cannot run the scheduler in the middle of the switch;
- *  - set current = proc, and install proc->pgdir (a physical address) as the page table with
- *    lsatp() from libs/riscv.h;
+ *  - set current = proc. All lab4 threads run on the shared kernel page table (pgdir is
+ *    boot_pgdir_pa for every PCB), so no page-table change is needed for the switch to be correct;
  *  - call switch_to() with the previous thread's context and the new thread's context.
  * @param proc the process to run; it must be PROC_RUNNABLE
  * @note The call returns only when the calling thread is switched in again. A brand-new thread

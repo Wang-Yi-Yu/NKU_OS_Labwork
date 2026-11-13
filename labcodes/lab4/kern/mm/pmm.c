@@ -398,7 +398,80 @@ struct Page *get_page(pde_t *pgdir, uintptr_t la, pte_t **ptep_store) {
  * Invariants: PTE contents, page reference counts and TLB state must stay consistent.
  * check_pgdir() tests these cases. Only the contract is documented here; no code.
  */
-//LAB4 function1 YOUR CODE
+//LAB4 function1 2414015
+
+/**
+ * @brief Drop one mapping whose leaf PTE is already known.
+ *
+ * The reference count of the mapped page is decreased, and the page is freed when the count
+ * reaches 0. The PTE is then cleared and the TLB entry of la is dropped.
+ * @param pgdir root page directory
+ * @param la    linear address of the mapping
+ * @param ptep  leaf PTE; must be present and valid
+ */
+static void page_remove_pte(pde_t *pgdir, uintptr_t la, pte_t *ptep) {
+    if (!(*ptep & PTE_V)) {
+        return;
+    }
+    struct Page *page = pte2page(*ptep);
+    if (page_ref_dec(page) == 0) {
+        free_page(page);
+    }
+    *ptep = 0;
+    tlb_invalidate(pgdir, la);
+}
+
+/**
+ * @brief Remove the mapping of la, if one exists.
+ *
+ * A missing page table or a clear PTE is not an error: the call returns without changing
+ * anything else.
+ * @param pgdir root page directory (kernel virtual address)
+ * @param la    linear address; need not be page aligned
+ */
+void page_remove(pde_t *pgdir, uintptr_t la) {
+    pte_t *ptep = get_pte(pgdir, la, 0);
+    if (ptep != NULL && (*ptep & PTE_V)) {
+        page_remove_pte(pgdir, la, ptep);
+    }
+}
+
+/**
+ * @brief Map page at la with permission perm, replacing any previous mapping.
+ *
+ * The new reference is counted before an old mapping of the same page is considered, so that
+ * page is not freed and then reused. A leaf that grants R, W or X also gets A and D: QEMU 8
+ * does not set those bits in hardware, and a store through the mapping would fault.
+ * @param pgdir root page directory (kernel virtual address)
+ * @param page  physical page to map
+ * @param la    linear address
+ * @param perm  permission bits besides PTE_V (added by pte_create)
+ * @return 0, or -E_NO_MEM if an intermediate page table cannot be allocated
+ */
+int page_insert(pde_t *pgdir, struct Page *page, uintptr_t la, uint32_t perm) {
+    pte_t *ptep = get_pte(pgdir, la, 1);
+    if (ptep == NULL) {
+        return -E_NO_MEM;
+    }
+    page_ref_inc(page);
+    if (*ptep & PTE_V) {
+        struct Page *mapped = pte2page(*ptep);
+        if (mapped == page) {
+            page_ref_dec(page);
+        } else {
+            page_remove_pte(pgdir, la, ptep);
+        }
+    }
+    if (perm & PTE_W) {
+        perm |= PTE_R;
+    }
+    if (perm & (PTE_R | PTE_W | PTE_X)) {
+        perm |= PTE_A | PTE_D;
+    }
+    *ptep = pte_create(page2ppn(page), perm);
+    tlb_invalidate(pgdir, la);
+    return 0;
+}
 
 
 /**

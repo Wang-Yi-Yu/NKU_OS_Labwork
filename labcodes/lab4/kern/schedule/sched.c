@@ -48,4 +48,44 @@ void wakeup_proc(struct proc_struct *proc) {
  * @note Context: runs in the kernel thread that calls it (normally idleproc). The call returns only
  *       when this thread is switched back in later.
  */
-//LAB4 function3 YOUR CODE
+//LAB4 function3 2414007
+void schedule(void) {
+    bool intr_flag;
+    list_entry_t *le, *last;
+    struct proc_struct *next = NULL;
+
+    local_intr_save(intr_flag);
+    {
+        // The request that brought us here is being served now.
+        current->need_resched = 0;
+
+        // idleproc is not on proc_list, so it scans from the list head; any other thread scans
+        // from its own position, which makes the order round-robin.
+        last = (current == idleproc) ? &proc_list : &(current->list_link);
+        le = last;
+
+        // Walk the circular list at most once. The list head is not embedded in a proc_struct,
+        // so it must be skipped instead of being converted with le2proc().
+        while ((le = list_next(le)) != last) {
+            if (le == &proc_list) {
+                continue;
+            }
+            next = le2proc(le, list_link);
+            if (next->state == PROC_RUNNABLE) {
+                break;
+            }
+            next = NULL;
+        }
+
+        // Nothing else is runnable: let the idle thread keep the CPU.
+        if (next == NULL) {
+            next = idleproc;
+        }
+        next->runs++;
+
+        if (next != current) {
+            proc_run(next);
+        }
+    }
+    local_intr_restore(intr_flag);
+}

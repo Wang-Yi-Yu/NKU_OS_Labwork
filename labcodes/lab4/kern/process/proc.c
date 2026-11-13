@@ -421,7 +421,7 @@ static int init_main(void *arg) {
  * @param proc        the child PCB
  * @return 0 on success, or a negative error code
  */
-//LAB4 function3 YOUR CODE
+//LAB4 function3 2414007
 
 /**
  * @fn void cpu_idle(void)
@@ -431,6 +431,17 @@ static int init_main(void *arg) {
  * current->need_resched and calls schedule() when it is set. The idle thread must not sleep or
  * block on its own. It starts after kern_init() has enabled interrupts.
  */
+void cpu_idle(void) {
+    while (1) {
+        // need_resched is volatile, so it is re-read on every pass. It is set by proc_init() for the
+        // first schedule, and by code that wants the CPU back; schedule() clears it again.
+        if (current->need_resched) {
+            schedule();
+        }
+    }
+}
+
+//LAB4 function3 2414007
 
 /**
  * @fn void proc_run(struct proc_struct *proc)
@@ -440,8 +451,9 @@ static int init_main(void *arg) {
  *  - nothing to do if proc is already current;
  *  - disable interrupts for the whole operation (local_intr_save / local_intr_restore), so a timer
  *    interrupt cannot run the scheduler in the middle of the switch;
- *  - set current = proc. All lab4 threads run on the shared kernel page table (pgdir is
- *    boot_pgdir_pa for every PCB), so no page-table change is needed for the switch to be correct;
+ *  - set current = proc, then load proc->pgdir into satp (Sv39 mode) and flush the TLB. All lab4
+ *    threads share the kernel page table (pgdir is boot_pgdir_pa for every PCB), so the value
+ *    written is the one already in use; the write keeps the function correct for later labs;
  *  - call switch_to() with the previous thread's context and the new thread's context.
  * @param proc the process to run; it must be PROC_RUNNABLE
  * @note The call returns only when the calling thread is switched in again. A brand-new thread
@@ -449,3 +461,26 @@ static int init_main(void *arg) {
  *       interrupt state from its frame. The local_intr_restore after switch_to() therefore runs only
  *       in threads that were switched out inside proc_run().
  */
+void proc_run(struct proc_struct *proc) {
+    if (proc == current) {
+        return;
+    }
+
+    bool intr_flag;
+    struct proc_struct *prev = current;
+
+    local_intr_save(intr_flag);
+    {
+        // 1. current must change before the stack is switched, so that anything running in the
+        //    new thread already sees itself as current.
+        current = proc;
+        // 2. Load the new page table. Every lab4 thread uses boot_pgdir_pa, so the value is the
+        //    same today; the code is kept so that processes with their own pgdir work later.
+        //    satp = MODE(Sv39) | PPN, written as in enable_paging(); sfence.vma drops stale entries.
+        write_csr(satp, ((uintptr_t)SATP_MODE_SV39 << 60) | (proc->pgdir >> RISCV_PGSHIFT));
+        flush_tlb();
+        // 3. Switch the register context. This call returns only when prev is scheduled in again.
+        switch_to(&(prev->context), &(proc->context));
+    }
+    local_intr_restore(intr_flag);
+}

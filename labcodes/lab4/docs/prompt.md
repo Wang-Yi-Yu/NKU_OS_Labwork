@@ -176,6 +176,7 @@
 请先阅读当前 lab4 工程中与进程创建相关的真实代码，只做分析，不修改文件。
 
 请重点检查：
+
 1. kern/process/proc.c、proc.h、entry.S；
 2. kern/trap/trap.h 和 trapentry.S 中的 struct trapframe、forkrets、__trapret；
 3. kern/mm/pmm.h、memlayout.h、kmalloc.h 中的页分配、内核栈和 CLONE_VM 定义；
@@ -183,6 +184,7 @@
 5. proc.c 中 `//LAB4 function2 YOUR CODE` 和 `//LAB4 function3` 的边界。
 
 请输出：
+
 - 功能模块二需要实现的六个函数及其调用关系；
 - idleproc、initproc、current、proc_list、hash_list 的关系；
 - kernel_thread → do_fork → copy_thread → forkret → forkrets → __trapret → kernel_thread_entry 的首次运行链；
@@ -198,6 +200,7 @@
 在上一轮阅读结果与当前工程真实代码一致的前提下，只修改 kern/process/proc.c 中功能模块二的标记区域，先实现 alloc_proc() 和 proc_init()，暂不实现 kernel_thread、do_fork、copy_thread、copy_mm，也不要修改模块三代码。
 
 要求：
+
 - 保留现有代码和 Doxygen 注释；
 - 将 `//LAB4 function2 YOUR CODE` 中的 YOUR CODE 改为 `2411622`，保留 `LAB4 function2`；
 - alloc_proc() 返回的 PCB 必须处于 PROC_UNINIT，所有字段和两个链表节点都必须有确定的初始值；
@@ -217,6 +220,7 @@
 请先对照 kern/process/entry.S、trapentry.S 和 struct trapframe 的真实布局，再写代码。
 
 要求：
+
 - kernel_thread() 在调用者栈上清零临时 trapframe；
 - gpr.s0 保存线程函数 fn，gpr.s1 保存参数 arg，epc 指向 kernel_thread_entry；
 - 从当前 sstatus 出发设置 SSTATUS_SPP 和 SSTATUS_SPIE，清除 SSTATUS_SIE；
@@ -236,6 +240,7 @@
 继续只修改 kern/process/proc.c 的功能模块二区域，实现 do_fork() 和 copy_mm()，并把 proc_init() 中的 initproc 创建流程接通。
 
 do_fork() 必须严格按以下顺序执行：
+
 1. alloc_proc；
 2. setup_kstack；
 3. copy_mm；
@@ -245,6 +250,7 @@ do_fork() 必须严格按以下顺序执行：
 7. 返回新 PID。
 
 失败处理要求：
+
 - alloc_proc 失败返回 -E_NO_MEM；
 - setup_kstack 失败时释放 PCB；
 - copy_mm 失败时释放内核栈和 PCB；
@@ -252,12 +258,14 @@ do_fork() 必须严格按以下顺序执行：
 - 只有完成链表登记后才能调用 wakeup_proc。
 
 copy_mm() 要求：
+
 - current->mm 为 NULL 时，子进程 mm 保持 NULL 并返回 0；
 - current->mm 非 NULL 且 clone_flags 含 CLONE_VM 时共享父进程 mm；
 - 当前实验不实现非共享用户地址空间复制，保持接口完整并返回合适的负错误码；
 - 不要为内核线程额外创建用户页表。
 
 proc_init() 要求：
+
 - 使用 kernel_thread(init_main, "Hello world!!", 0) 创建 initproc；
 - initproc 应能通过 find_proc 找到，名称设置为 init；
 - current 仍为 idleproc，initproc 处于 PROC_RUNNABLE；
@@ -272,6 +280,7 @@ proc_init() 要求：
 请验证刚才完成的功能模块二，不要为验证目的修改其他任务代码。
 
 依次检查：
+
 1. `grep` 确认 `//LAB4 function2 2411622` 存在，`LAB4 function3` 区域未被改写；
 2. 单独编译 `kern/process/proc.c`，确认没有隐式声明、静态函数声明冲突或类型错误；
 3. 检查 `git diff --check`；

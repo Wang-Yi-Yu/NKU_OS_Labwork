@@ -319,7 +319,136 @@ static int init_main(void *arg) {
     return 0;
 }
 
-//LAB4 function2 YOUR CODE
+//LAB4 function2 2411622
+
+static struct proc_struct *alloc_proc(void) {
+    struct proc_struct *proc = kmalloc(sizeof(struct proc_struct));
+    if (proc == NULL) {
+        return NULL;
+    }
+
+    proc->state = PROC_UNINIT;
+    proc->pid = -1;
+    proc->runs = 0;
+    proc->kstack = 0;
+    proc->need_resched = 0;
+    proc->parent = NULL;
+    proc->mm = NULL;
+    memset(&proc->context, 0, sizeof(proc->context));
+    proc->tf = NULL;
+    proc->pgdir = boot_pgdir_pa;
+    proc->flags = 0;
+    memset(proc->name, 0, sizeof(proc->name));
+    list_init(&proc->list_link);
+    list_init(&proc->hash_link);
+    return proc;
+}
+
+void proc_init(void) {
+    int i;
+    list_init(&proc_list);
+    for (i = 0; i < HASH_LIST_SIZE; i++) {
+        list_init(hash_list + i);
+    }
+
+    idleproc = alloc_proc();
+    if (idleproc == NULL) {
+        panic("cannot allocate idle process");
+    }
+    idleproc->pid = 0;
+    idleproc->state = PROC_RUNNABLE;
+    idleproc->kstack = (uintptr_t)bootstack;
+    idleproc->need_resched = 1;
+    set_proc_name(idleproc, "idle");
+    current = idleproc;
+    nr_process++;
+
+    int pid = kernel_thread(init_main, (void *)"Hello world!!", 0);
+    if (pid < 0) {
+        panic("cannot create init process");
+    }
+    initproc = find_proc(pid);
+    if (initproc == NULL) {
+        panic("init process is missing");
+    }
+    set_proc_name(initproc, "init");
+}
+
+int kernel_thread(int (*fn)(void *), void *arg, uint32_t clone_flags) {
+    struct trapframe tf;
+    memset(&tf, 0, sizeof(tf));
+    tf.gpr.s0 = (uintptr_t)fn;
+    tf.gpr.s1 = (uintptr_t)arg;
+    tf.epc = (uintptr_t)kernel_thread_entry;
+    tf.status = (read_csr(sstatus) | SSTATUS_SPP | SSTATUS_SPIE) & ~SSTATUS_SIE;
+    return do_fork(clone_flags | CLONE_VM, 0, &tf);
+}
+
+static void copy_thread(struct proc_struct *proc, uintptr_t esp, struct trapframe *tf);
+static int copy_mm(uint32_t clone_flags, struct proc_struct *proc);
+
+int do_fork(uint32_t clone_flags, uintptr_t stack, struct trapframe *tf) {
+    struct proc_struct *proc;
+    int ret;
+
+    if (tf == NULL || current == NULL) {
+        return -E_INVAL;
+    }
+    if ((proc = alloc_proc()) == NULL) {
+        return -E_NO_MEM;
+    }
+    if ((ret = setup_kstack(proc)) != 0) {
+        kfree(proc);
+        return ret;
+    }
+    if ((ret = copy_mm(clone_flags, proc)) != 0) {
+        put_kstack(proc);
+        kfree(proc);
+        return ret;
+    }
+
+    copy_thread(proc, stack, tf);
+
+    bool intr_flag;
+    local_intr_save(intr_flag);
+    proc->pid = get_pid();
+    proc->parent = current;
+    list_add(&proc_list, &proc->list_link);
+    hash_proc(proc);
+    nr_process++;
+    wakeup_proc(proc);
+    local_intr_restore(intr_flag);
+    return proc->pid;
+}
+
+static void copy_thread(struct proc_struct *proc, uintptr_t esp, struct trapframe *tf) {
+    uintptr_t stack_top = proc->kstack + KSTACKSIZE;
+    struct trapframe *frame = (struct trapframe *)(stack_top - sizeof(struct trapframe));
+
+    memcpy(frame, tf, sizeof(struct trapframe));
+    frame->gpr.a0 = 0;
+    if (esp != 0) {
+        frame->gpr.sp = esp;
+    } else {
+        frame->gpr.sp = (uintptr_t)frame;
+    }
+    proc->tf = frame;
+    memset(&proc->context, 0, sizeof(proc->context));
+    proc->context.ra = (uintptr_t)forkret;
+    proc->context.sp = (uintptr_t)frame;
+}
+
+static int copy_mm(uint32_t clone_flags, struct proc_struct *proc) {
+    if (current->mm == NULL) {
+        proc->mm = NULL;
+        return 0;
+    }
+    if (clone_flags & CLONE_VM) {
+        proc->mm = current->mm;
+        return 0;
+    }
+    return -E_NO_MEM;
+}
 
 /**
  * @fn static struct proc_struct *alloc_proc(void)

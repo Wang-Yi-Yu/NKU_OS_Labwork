@@ -30,6 +30,19 @@
 
 ## 一、实验目的
 
+本实验的主要目的是：
+
+1. 理解操作系统进程管理的基本流程：掌握进程控制块（PCB）、进程状态、进程链表和 PID 哈希表在内核中的作用，理解从启动执行流到可调度内核线程的登记过程。
+
+2. 掌握进程创建及初始化方法：实现 PCB 初始化、`idleproc` 和 `initproc` 的建立，理解内核栈、Trap frame、context 以及父子进程关系之间的联系。
+
+3. 理解内核线程的首次运行机制：掌握 `kernel_thread()`、`do_fork()`、`copy_thread()` 和 `copy_mm()` 的职责，理解线程函数、参数、地址空间和共享内核页表的传递方式。
+
+4. 理解进程调度与上下文切换：掌握 `cpu_idle()`、`schedule()`、`proc_run()` 和 `switch_to()` 的协作过程，理解如何在可运行线程之间保存和恢复寄存器上下文。
+
+5. 掌握进程管理代码的调试与验证方法：通过编译、链表和状态检查以及 QEMU 运行结果，验证进程创建、资源回收、首次运行现场和调度切换是否满足实验要求。
+
+
 ---
 
 ## 二、实验环境
@@ -75,6 +88,28 @@
 4. **页表项、引用计数和 TLB 一起更新。** 写入或清掉叶子项之后调用 `tlb_invalidate()`，对这个虚拟地址执行 `sfence.vma`。叶子项带写权限时同时置 `PTE_R`：RISC-V 里 `W` 为 1 而 `R` 为 0 的项不能当作普通数据页。有读、写或执行权限时再置 `PTE_A` 和 `PTE_D`。QEMU 8 不会在硬件里自动填写这两位，缺了它们，`check_boot_pgdir()` 经新映射写入字符串时会缺页。
 
 #### 3.2.2 功能模块二：进程创建及初始化功能
+
+进程创建模块位于整个执行链的中间位置。页表和内存管理已经提供了 PCB 分配、内核栈分配以及共享内核地址空间所需的基础，调度模块则需要一个状态完整、已经登记并带有初始上下文的进程对象。因此，本模块必须先把“当前启动执行流”和“目标内核线程函数”转换为统一的 `proc_struct`。
+
+本模块的实现顺序如下：
+
+1. **建立 PCB 的安全初始状态。** `alloc_proc()` 使用 `kmalloc()` 分配 `struct proc_struct`，将状态设为 `PROC_UNINIT`，PID 设为 `-1`，清零运行次数、内核栈、重调度标志、父进程、地址空间、Trap frame、上下文、标志和名称，并把链表节点初始化为未链接状态。内核线程共享启动页表，因此 `pgdir` 初始化为 `boot_pgdir_pa`。
+
+2. **把启动执行流登记为 `idleproc`。** `proc_init()` 先初始化进程链表和 PID 哈希表，再把一个新 PCB 配置为 PID 0 的可运行空闲线程。`idleproc` 复用当前正在使用的 `bootstack`，不通过普通 `do_fork()` 分配新栈；`current` 指向 `idleproc`，并将 `need_resched` 置为 1，使初始化结束后能够立即进入调度。
+
+3. **创建第一个普通内核线程。** `proc_init()` 调用 `kernel_thread(init_main, "Hello world!!", 0)`。`kernel_thread()` 在调用者栈上构造临时 `struct trapframe`，将线程函数放入 `s0`、参数放入 `s1`，把 `epc` 设置为 `kernel_thread_entry`，并根据当前 `sstatus` 设置 `SPP`、`SPIE`、清除 `SIE`，使线程首次 `sret` 后仍在 S 模式运行并恢复中断使能。
+
+4. **分配 PCB 和独立内核栈。** `do_fork()` 依次调用 `alloc_proc()` 和 `setup_kstack()`。普通内核线程拥有自己的两页内核栈，Trap frame 放在这个栈上，context 保存在 PCB 中；发生内存不足时，必须释放已经分配的 PCB 或内核栈。
+
+5. **处理地址空间。** `copy_mm()` 保留了进程创建接口。当前实验创建的都是内核线程，父进程 `current->mm` 为 `NULL`，因此子线程的 `mm` 保持为 `NULL` 并直接成功返回。对于存在地址空间且带有 `CLONE_VM` 的情况，接口可以共享父进程的 `mm`；真正的用户地址空间复制留给后续实验。
+
+6. **构造首次运行现场。** `copy_thread()` 将 Trap frame 复制到新内核栈顶部，设置子线程返回值寄存器 `a0 = 0`，为内核线程设置栈指针，并令 context 的 `ra = forkret`、`sp = trapframe`。这样，第一次执行 `switch_to()` 恢复该 context 时，会进入 `forkret()`，随后通过 `forkrets()` 和 `__trapret` 恢复 Trap frame。
+
+7. **分配 PID、登记并唤醒。** 在关闭中断的临界区内，`do_fork()` 分配 PID，设置 `parent = current`，将 PCB 加入 `proc_list` 和 `hash_list`，更新进程计数，最后调用 `wakeup_proc()` 将状态从 `PROC_UNINIT` 改为 `PROC_RUNNABLE`。只有完成登记后才允许调度器看到该线程，从而避免出现半初始化的可运行进程。
+
+完成这些步骤后，系统中至少存在 PID 0 的 `idleproc` 和 PID 1 的 `initproc`。`initproc` 具有独立内核栈、有效的 `context.ra` 和 `context.sp`，状态为 `PROC_RUNNABLE`，父进程为 `idleproc`，并等待调度模块将 CPU 交给它。
+
+---
 
 #### 3.2.3 功能模块三：进程调度
 
@@ -231,15 +266,146 @@ Requirements：查找叶子时不得分配新的中间页表。
 
 ---
 
-### 4.2 功能模块二：进程创建及初始化功能
+### 4.2 进程创建及初始化功能
 
-**负责人：** [2411622-张雨函]
+**负责人：** 2411622-张雨函
 
 #### 4.2.1 模块功能描述
 
+**需要实现的函数：**
+
+```c
+static struct proc_struct *alloc_proc(void);
+void proc_init(void);
+int kernel_thread(int (*fn)(void *), void *arg, uint32_t clone_flags);
+int do_fork(uint32_t clone_flags, uintptr_t stack, struct trapframe *tf);
+static void copy_thread(struct proc_struct *proc, uintptr_t esp, struct trapframe *tf);
+static int copy_mm(uint32_t clone_flags, struct proc_struct *proc);
+```
+
+这些函数共同完成“从当前启动执行流创建出可调度内核线程”的过程。模块的核心不是简单分配一个结构体，而是让 PCB、内核栈、Trap frame、context、PID、链表状态和地址空间字段在创建完成后彼此一致。
+
+**1. PCB 初始化：**
+
+`alloc_proc()` 从内核堆分配 PCB，并将所有字段置于可预测的空状态：`state = PROC_UNINIT`、`pid = -1`、`runs = 0`、`kstack = 0`、`need_resched = 0`、`parent = NULL`、`mm = NULL`、`tf = NULL`、`flags = 0`。上下文和进程名称清零，`list_link` 与 `hash_link` 自指初始化，`pgdir` 指向共享的 `boot_pgdir_pa`。该函数返回的对象不能直接被调度，必须由后续创建流程补全身份和运行现场。
+
+**2. idleproc 和 initproc 建立：**
+
+`proc_init()` 初始化 `proc_list` 及全部 PID 哈希桶，将当前启动上下文包装为 `idleproc`。`idleproc` 使用 PID 0 和 `bootstack`，状态为 `PROC_RUNNABLE`，并将 `need_resched` 置位。随后通过 `kernel_thread()` 创建运行 `init_main()` 的 `initproc`，设置其名称为 `init`，使其成为 PID 1 的可运行内核线程。
+
+**3. 内核线程入口现场：**
+
+`kernel_thread()` 使用临时 Trap frame 传递函数指针和参数。`s0` 保存线程函数，`s1` 保存参数，`epc` 指向 `kernel_thread_entry`。`status` 的位操作保证线程通过 `sret` 返回到 S 模式，并在返回后允许中断。这个约定与 `kern/process/entry.S` 中的实现对应：入口代码把 `s1` 移到 `a0`，再通过 `s0` 调用线程函数。
+
+**4. do_fork 和资源生命周期：**
+
+`do_fork()` 按固定顺序完成 PCB、内核栈、地址空间和首次运行现场的准备，然后在关中断临界区内完成 PID 分配、父子关系设置、链表登记和唤醒。任何前置步骤失败，都沿相反顺序释放已经获得的资源；只有调用 `wakeup_proc()` 后，PCB 才从 `PROC_UNINIT` 进入 `PROC_RUNNABLE`。
+
+**5. Trap frame 和 context 的关系：**
+
+Trap frame 用于 `__trapret` 恢复完整寄存器和控制状态，context 只保存 `switch_to()` 需要的 `ra`、`sp`、`s0`～`s11`。新线程的 context 设置为 `ra = forkret`，其 `sp` 指向内核栈顶部的 Trap frame。首次切换时先恢复 context，再由 `forkret → forkrets → __trapret` 恢复 Trap frame，最后跳转到 `kernel_thread_entry`。
+
+**6. copy_mm 的阶段性实现：**
+
+本实验不创建用户进程，因此 `current->mm` 通常为 `NULL`，`copy_mm()` 不进行真正的页表复制。实现保留 `CLONE_VM` 分支用于共享已有 `mm`，非共享地址空间的复制由后续实验扩展。这样既满足当前内核线程的需求，也保持了未来扩展所需的接口。
+
 #### 4.2.2 最终提示词
 
+下面是本模块实际采用的提示词结构。提示词保留了实验手册中的接口边界，并把代码身份标记指定为 `2411622`。
+
+````markdown
+[PROMPT]
+任务：修改 kern/process/proc.c，在 `//LAB4 function2 YOUR CODE` 标记处完成进程创建及初始化功能。只实现功能模块二，不修改模块一的 pmm.c、模块三的 sched.c/proc_run/cpu_idle，也不修改 switch.S、Trap 入口或其他任务代码。将标记中的 YOUR CODE 替换为 2411622，并保留 `LAB4 function2` 字样。
+
+目标：完成 alloc_proc、proc_init、kernel_thread、do_fork、copy_thread、copy_mm，使内核能够建立 idleproc 和 initproc，并为后续调度准备可运行的内核线程。
+
+操作要求：直接修改工程中的实际文件，保留已有函数和注释。实现必须遵循当前仓库的真实结构、头文件和函数接口，不新增无关文件，不改变公开函数签名。每条失败路径都要释放此前已经分配的资源。
+
+[RELY]
+1. struct proc_struct 包含 state、pid、runs、kstack、need_resched、parent、mm、context、tf、pgdir、flags、name、list_link 和 hash_link。
+2. PROC_UNINIT、PROC_RUNNABLE 是本模块需要使用的进程状态；CLONE_VM 表示共享地址空间。
+3. boot_pgdir_pa 是共享内核页表根的物理地址；bootstack 是启动执行流使用的内核栈；KSTACKPAGE 和 KSTACKSIZE 描述普通线程的内核栈大小。
+4. 可调用 kmalloc/kfree、alloc_pages/free_pages、page2kva/kva2page、memset/memcpy、list_init/list_add、find_proc、get_pid、hash_proc、wakeup_proc、local_intr_save/local_intr_restore。
+5. kernel_thread_entry 约定从 s0 取线程函数、从 s1 取参数；forkret/forkrets/__trapret 负责首次运行恢复链。
+6. RISC-V sstatus 中 SSTATUS_SPP、SSTATUS_SPIE、SSTATUS_SIE 分别用于首次返回的特权级、先前中断使能状态和当前中断使能状态。
+
+[GUARANTEE]
+必须实现以下函数：
+static struct proc_struct *alloc_proc(void);
+void proc_init(void);
+int kernel_thread(int (*fn)(void *), void *arg, uint32_t clone_flags);
+int do_fork(uint32_t clone_flags, uintptr_t stack, struct trapframe *tf);
+static void copy_thread(struct proc_struct *proc, uintptr_t esp, struct trapframe *tf);
+static int copy_mm(uint32_t clone_flags, struct proc_struct *proc);
+
+不得修改模块三的 `//LAB4 function3 YOUR CODE` 区域，不得把调度策略写入本模块。
+
+[SPECIFICATION]
+alloc_proc：
+- 分配失败返回 NULL；成功后 state=PROC_UNINIT、pid=-1、runs=0、kstack=0、need_resched=0。
+- parent、mm、tf 置 NULL，context 清零，pgdir=boot_pgdir_pa，flags=0，name 清空。
+- 初始化 list_link/hash_link，使 PCB 尚未加入任何链表。
+
+proc_init：
+- 初始化 proc_list 和所有 hash_list 桶。
+- 创建 PID 0 的 idleproc，状态为 PROC_RUNNABLE，名称为 idle，kstack 使用 bootstack，need_resched 置 1，current 指向 idleproc。
+- 通过 kernel_thread(init_main, "Hello world!!", 0) 创建 initproc，设置名称为 init，并保证其 PID 为 1、状态为 PROC_RUNNABLE、父进程为 idleproc。
+- 创建失败时应 panic，不能留下空的 initproc。
+
+kernel_thread：
+- 在调用者栈上清零临时 trapframe。
+- gpr.s0 保存 fn，gpr.s1 保存 arg，epc 设置为 kernel_thread_entry。
+- 从当前 sstatus 出发设置 SPP 和 SPIE，清除 SIE。
+- 调用 do_fork(clone_flags | CLONE_VM, 0, &tf)，返回 PID 或负错误码。
+
+do_fork：
+- 按 alloc_proc、setup_kstack、copy_mm、copy_thread、PID/链表登记、wakeup_proc 的顺序执行。
+- alloc_proc、setup_kstack 或 copy_mm 失败时释放已获得的资源并返回负错误码。
+- 在关中断临界区内设置 PID、parent，加入 proc_list/hash_list，更新进程数量并唤醒子线程。
+- 成功返回新线程 PID，且新线程只能在 wakeup_proc 后变为 PROC_RUNNABLE。
+
+copy_thread：
+- 在新线程内核栈顶部预留 struct trapframe，并复制模板。
+- 设置子线程 gpr.a0=0；esp 非零时使用 esp，否则将栈指针设为 Trap frame 地址。
+- proc->tf 指向新 Trap frame，context.ra=forkret，context.sp 指向该 Trap frame。
+
+copy_mm：
+- 当前父进程没有 mm 时保持子进程 mm=NULL 并返回 0。
+- 如果存在 mm 且设置 CLONE_VM，可共享父进程 mm。
+- 不实现当前实验不需要的用户地址空间复制，但保留完整函数接口和错误返回约定。
+````
+
 #### 4.2.3 实现迭代过程
+
+本模块的实现经历了两次代码迭代，重点集中在 C 语言声明顺序和完整构建边界的确认。
+
+##### 第一次迭代：完成六个函数的主体
+
+第一次实现按照接口契约补全了 PCB 初始化、`proc_init()`、`kernel_thread()`、`do_fork()`、`copy_thread()` 和 `copy_mm()`。主要实现决策如下：
+
+- 使用 `kmalloc(sizeof(struct proc_struct))` 分配 PCB，并显式初始化每个字段和两个链表节点，避免后续调度读取未初始化指针。
+- `idleproc` 不经过 `setup_kstack()`，直接复用 `bootstack`；普通线程通过 `alloc_pages(KSTACKPAGE)` 获得独立内核栈。
+- `kernel_thread()` 通过临时 Trap frame 传递 `fn`、`arg` 和 `kernel_thread_entry`，并按 RISC-V `sstatus` 语义设置 SPP、SPIE 和 SIE。
+- `do_fork()` 将资源分配和链表登记分开，登记与唤醒放在关中断临界区内，并在中途失败时回收 PCB 和内核栈。
+- `copy_thread()` 把 Trap frame 放在栈顶，设置 `a0=0`、`context.ra=forkret` 和 `context.sp=frame`，确保首次切换能进入恢复链。
+
+##### 第二次迭代：修复静态函数声明顺序
+
+第一次编译时，`do_fork()` 位于 `copy_thread()` 和 `copy_mm()` 定义之前，编译器先按隐式声明处理调用，之后遇到 `static` 定义时报告“static declaration follows non-static declaration”。这不是接口逻辑错误，而是 C 文件中辅助函数声明顺序不符合当前编译选项的要求。
+
+修复方法是在 `do_fork()` 前增加：
+
+```c
+static void copy_thread(struct proc_struct *proc, uintptr_t esp,
+                        struct trapframe *tf);
+static int copy_mm(uint32_t clone_flags, struct proc_struct *proc);
+```
+
+修复后重新编译 `proc.c`，不再出现隐式声明和类型冲突。`git diff --check` 也通过，说明本次报告对应的代码修改没有引入空白错误。
+
+##### 验证结果与边界
+
+当前模块的源文件单独编译通过。仓库提供的完整 Lab4 链接仍依赖模块一的 `page_insert()`/`page_remove()` 和模块三的 `cpu_idle()` 等函数；这些函数属于其他任务，本次没有修改，因此不能把完整链接结果误写成模块二独立实现的测试结果。模块二的可验证结果是：PCB 初始化字段完整、`idleproc` 使用 PID 0 和 `bootstack`、`initproc` 具备 PID 1 和有效首次运行 context、失败路径包含资源回收。
 
 ---
 
@@ -499,6 +665,34 @@ Sv32、Sv39、Sv48 用的是同一套页表项，差别是虚拟地址有多长�
 
 ### 6.1 对操作系统的理解
 
+1. **进程是资源和执行状态的统一管理对象。** `struct proc_struct` 不只是保存一个 PID，它同时关联了状态、父进程、页表、内核栈、Trap frame、上下文和管理链表。操作系统通过 PCB 把一个执行流的身份、资源和恢复现场组织在一起，调度器才能只面对统一的进程接口。
+
+2. **内核线程和用户进程共享管理框架，但地址空间语义不同。** 本实验中的内核线程都运行在内核态并共享 `boot_pgdir_pa`，`mm` 通常为 `NULL`；用户进程则需要独立的用户虚拟地址空间、用户栈和权限边界。uCore 用统一的 PCB 和调度接口描述两者，是为了让后续用户进程可以复用本实验的创建和切换框架。
+
+3. **上下文和 Trap frame 解决的是两个层次的问题。** `context` 只保存函数调用边界上需要切换的 `ra`、`sp` 和 `s0`～`s11`，用于 `switch_to()` 在内核线程之间切换；Trap frame 保存完整通用寄存器和 `sstatus`、`sepc` 等控制状态，用于 Trap 返回或新线程首次 `sret`。把两者混为一谈会导致首次运行链或异常返回现场错误。
+
+4. **进程创建必须同时满足资源一致性和状态一致性。** PCB、内核栈、Trap frame、PID、链表和运行状态是一个整体。`do_fork()` 先分配资源，再登记身份，最后唤醒；如果在资源不足时只返回错误而不释放已分配对象，就会造成内核内存泄漏；如果在 PCB 尚未完成登记时就设为可运行，调度器可能观察到不完整对象。
+
+5. **首次运行是一次人为构造的控制流恢复。** 新线程没有可以直接返回的历史调用点，因此 `copy_thread()` 把 `context.ra` 设为 `forkret`，再通过 `forkrets` 设置 Trap frame 栈指针，最后由 `__trapret` 和 `sret` 跳到 `kernel_thread_entry`。这说明操作系统可以通过预先布置栈和寄存器，把一个普通 C 函数包装成可调度的执行流。
+
+6. **中断屏蔽是进程管理临界区的必要保护。** PID 分配、进程链表登记和唤醒必须作为一个不可被打断的整体完成。`local_intr_save()` 保存原来的中断使能状态并关闭中断，`local_intr_restore()` 按原状态恢复，既保护了临界区，也避免嵌套临界区无条件重新开启中断。
+
+7. **调度器依赖创建模块提供的明确不变量。** 调度器只需要遍历 `proc_list` 并选择 `PROC_RUNNABLE`，但这个简单行为成立的前提是：链表节点已经初始化，PCB 的 context 有效，内核栈可访问，父子关系和页表字段已经设置。模块之间通过这些不变量连接，而不是依赖某个函数内部的隐含状态。
+
+8. **本实验仍处于内核线程阶段。** 虽然已经出现了进程控制块、页表根和地址空间接口，但本实验还没有真正实现用户态隔离、写时复制、缺页异常、页面置换和进程退出回收。它提供的是后续进程实验的骨架，而不是完整的 Unix 进程模型。
+
 ### 6.2 AI 协作开发的经验
 
----
+1. **先确认实际仓库和任务边界，再开始写代码或报告。** 本次工作中，实验手册同时描述了页表、进程创建和调度三个模块，而用户只负责模块二。将函数清单和模块标记对照后，才能避免误改 `pmm.c`、`sched.c` 或 `switch.S`。
+
+2. **提示词要同时写清接口、依赖和禁止修改范围。** 仅说“实现进程创建”容易让生成结果遗漏失败清理或修改调度逻辑。本次提示词明确列出六个函数、PCB 字段、首次运行链、`sstatus` 位和 `//LAB4 function2 2411622` 标记，生成代码才能与仓库真实接口对齐。
+
+3. **把生命周期顺序写成可检查的不变量。** 对 `do_fork()`，提示词按 `alloc_proc → setup_kstack → copy_mm → copy_thread → 登记 → wakeup_proc` 列出步骤，并要求失败时释放前置资源。这比只描述“创建一个线程”更容易发现 PCB 过早进入可运行状态、内核栈泄漏等问题。
+
+4. **架构细节需要和源码中的恢复链一起描述。** `kernel_thread()` 的 `s0/s1/epc` 设置不能脱离 `entry.S` 解释；`copy_thread()` 的 `context.ra=forkret` 和 `context.sp=trapframe` 也必须结合 `forkret`、`forkrets`、`__trapret` 验证。将 C 结构、汇编入口和 RISC-V 调用约定放在同一条链上，能够减少“代码能编译但线程无法首次运行”的风险。
+
+5. **编译错误是验证接口契约的有效反馈。** 第一次编译出现静态函数声明冲突，说明实现逻辑之外还存在 C 语言声明顺序问题。根据编译器信息在 `do_fork()` 前补充辅助函数原型后，`proc.c` 单独编译通过。这个过程说明 AI 生成代码必须经过实际编译，不能只凭文本检查判断完成。
+
+6. **报告中的测试结论必须区分已验证和未验证部分。** 当前完整 Lab4 链接还依赖模块一、模块三，因此报告只记录了模块二源文件编译和差异检查的结果，没有把整套 QEMU 或自动评分结果写成已经通过。对于操作系统实验，准确说明验证边界比填入一个未经运行的“全部通过”更可靠。
+
+7. **代码实现与实验报告应互相校对。** 报告中的 PID、栈、状态、错误路径和首次运行链都可以回到 `proc.c`、`proc.h`、`entry.S` 和测试代码逐项核对。这样既能减少报告与代码不一致，也能在整理报告时发现实现遗漏。

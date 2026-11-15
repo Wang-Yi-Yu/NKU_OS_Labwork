@@ -373,10 +373,10 @@ struct Page *get_page(pde_t *pgdir, uintptr_t la, pte_t **ptep_store) {
 }
 
 /**
- * @brief [LAB4 exercise, to be implemented here] Contract of page mapping maintenance.
+ * @brief [LAB4 exercise] Contract of page mapping maintenance, implemented below.
  *
- * The student implements page_insert(), page_remove() and page_remove_pte() in this
- * area (docs/instruction.md, "虚拟内存页操作功能" and "使用多级页表实现虚拟存储").
+ * page_insert(), page_remove() and page_remove_pte() follow this block
+ * (docs/instruction.md, "虚拟内存页操作功能" and "使用多级页表实现虚拟存储").
  * Requirements that the implementation must satisfy:
  *
  * - page_remove_pte(pgdir, la, ptep): remove an existing mapping whose leaf PTE is
@@ -396,7 +396,7 @@ struct Page *get_page(pde_t *pgdir, uintptr_t la, pte_t **ptep_store) {
  *   invalidate the TLB entry of la after changing the PTE.
  *
  * Invariants: PTE contents, page reference counts and TLB state must stay consistent.
- * check_pgdir() tests these cases. Only the contract is documented here; no code.
+ * check_pgdir() tests these cases.
  */
 //LAB4 function1 2414015
 

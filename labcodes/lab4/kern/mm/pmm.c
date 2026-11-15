@@ -440,8 +440,9 @@ void page_remove(pde_t *pgdir, uintptr_t la) {
  * @brief Map page at la with permission perm, replacing any previous mapping.
  *
  * The new reference is counted before an old mapping of the same page is considered, so that
- * page is not freed and then reused. A leaf that grants R, W or X also gets A and D: QEMU 8
- * does not set those bits in hardware, and a store through the mapping would fault.
+ * page is not freed and then reused. A leaf that grants R, W or X also gets A and D. That is
+ * not required on QEMU 8.2.2 (it updates them itself), but an implementation may fault on
+ * A = 0 or D = 0 instead, so they are set up front to stay portable.
  * @param pgdir root page directory (kernel virtual address)
  * @param page  physical page to map
  * @param la    linear address

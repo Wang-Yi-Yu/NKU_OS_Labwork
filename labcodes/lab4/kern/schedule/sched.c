@@ -1,9 +1,3 @@
-#include <list.h>
-#include <sync.h>
-#include <proc.h>
-#include <sched.h>
-#include <assert.h>
-
 /**
  * @file   sched.c
  * @brief  Round-robin scheduler: wakeup_proc() and the schedule() exercise.

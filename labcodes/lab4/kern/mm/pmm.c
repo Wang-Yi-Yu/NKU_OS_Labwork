@@ -449,19 +449,25 @@ void page_remove(pde_t *pgdir, uintptr_t la) {
  * @return 0, or -E_NO_MEM if an intermediate page table cannot be allocated
  */
 int page_insert(pde_t *pgdir, struct Page *page, uintptr_t la, uint32_t perm) {
+    // Allocate missing intermediate tables first: on failure nothing has been modified yet.
     pte_t *ptep = get_pte(pgdir, la, 1);
     if (ptep == NULL) {
         return -E_NO_MEM;
     }
+    // Count the new reference before touching the old mapping, so that remapping the same page
+    // never drops its count to 0.
     page_ref_inc(page);
     if (*ptep & PTE_V) {
         struct Page *mapped = pte2page(*ptep);
         if (mapped == page) {
+            // Same page: only the permission changes, undo the extra reference.
             page_ref_dec(page);
         } else {
+            // Different page: unmap the old one (frees it if this was its last reference).
             page_remove_pte(pgdir, la, ptep);
         }
     }
+    // W without R is a reserved encoding in RISC-V.
     if (perm & PTE_W) {
         perm |= PTE_R;
     }

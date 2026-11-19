@@ -75,7 +75,6 @@ SYS_getpid      : get the process's pid
  * @brief The list of all process control blocks (linked through proc_struct::list_link).
  * @note Every PCB that is alive must be in this list; schedule() scans it for PROC_RUNNABLE.
  */
-// the process set's list
 list_entry_t proc_list;
 
 /** @brief log2 of the number of hash buckets used by hash_list. */
@@ -89,26 +88,22 @@ list_entry_t proc_list;
  * @brief Hash buckets indexed by pid_hashfn(pid); each process is linked via proc_struct::hash_link.
  * @note Gives find_proc() O(1) average lookup by PID. Static: only this file touches it.
  */
-// has list for process set based on pid
 static list_entry_t hash_list[HASH_LIST_SIZE];
 
 /**
  * @brief The idle process (PID assigned by proc_init()); runs cpu_idle() when nothing else is runnable.
  * @note Created from the boot context, not by do_fork(), so it has no parent.
  */
-// idle proc
 struct proc_struct *idleproc = NULL;
 /**
  * @brief The first real kernel thread, created by proc_init() to run init_main().
  */
-// init proc
 struct proc_struct *initproc = NULL;
 /**
  * @brief The PCB of the thread that currently owns the CPU.
  * @note Changed only by proc_run(), with interrupts disabled. Read by trap-time code such as
  *       forkret() and by do_fork() (as the parent).
  */
-// current proc
 struct proc_struct *current = NULL;
 
 /**
@@ -144,7 +139,6 @@ void switch_to(struct context *from, struct context *to);
  * @warning memcpy reads PROC_NAME_LEN bytes from @p name even if the string is shorter, so a
  *          short literal is read past its terminator. This matches the original design.
  */
-// set_proc_name - set the name of proc
 char *set_proc_name(struct proc_struct *proc, const char *name) {
     memset(proc->name, 0, sizeof(proc->name));
     return memcpy(proc->name, name, PROC_NAME_LEN);
@@ -157,7 +151,6 @@ char *set_proc_name(struct proc_struct *proc, const char *name) {
  * @note The buffer is shared by all callers and overwritten by every call; copy it if it is needed
  *       across another call. Not reentrant.
  */
-// get_proc_name - get the name of proc
 char *get_proc_name(struct proc_struct *proc) {
     static char name[PROC_NAME_LEN + 1];
     memset(name, 0, sizeof(name));
@@ -175,7 +168,6 @@ char *get_proc_name(struct proc_struct *proc) {
  * @note Called from do_fork() (exercise). Should run with interrupts disabled, so that the scan
  *       of proc_list and the insertion of the new PCB are not interleaved with another creator.
  */
-// get_pid - alloc a unique pid for process
 static int get_pid(void) {
     static_assert(MAX_PID > MAX_PROCESS);
     struct proc_struct *proc;
@@ -219,9 +211,6 @@ static int get_pid(void) {
  * @note Runs with the new thread as current, on its own kernel stack, with interrupts still
  *       disabled by proc_run(); the sret of the trap frame restores the interrupt state.
  */
-// forkret -- the first kernel entry point of a new thread/process
-// NOTE: the addr of forkret is setted in copy_thread function
-//       after switch_to, the current proc will execute here.
 static void forkret(void) {
     forkrets(current->tf);
 }
@@ -230,7 +219,6 @@ static void forkret(void) {
  * @brief Link a process into hash_list under its PID.
  * @param proc process to add; its pid must already be assigned
  */
-// hash_proc - add proc into proc hash_list
 static void hash_proc(struct proc_struct *proc) {
     list_add(hash_list + pid_hashfn(proc->pid), &(proc->hash_link));
 }
@@ -240,7 +228,6 @@ static void hash_proc(struct proc_struct *proc) {
  * @param pid PID to search for
  * @return the PCB with that PID, or NULL if pid is out of range (not in (0, MAX_PID)) or not found
  */
-// find_proc - find proc frome proc hash_list according to pid
 struct proc_struct *find_proc(int pid) {
     if (0 < pid && pid < MAX_PID) {
         list_entry_t *list = hash_list + pid_hashfn(pid), *le = list;
@@ -262,7 +249,6 @@ struct proc_struct *find_proc(int pid) {
  * @note The stack is KSTACKSIZE bytes and is not managed by the MM; it is freed by put_kstack().
  *       Trap frames and the initial context of a new thread live at the top of this stack.
  */
-// setup_kstack - alloc pages with size KSTACKPAGE as process kernel stack
 static int setup_kstack(struct proc_struct *proc) {
     struct Page *page = alloc_pages(KSTACKPAGE);
     if (page != NULL) {
@@ -277,7 +263,6 @@ static int setup_kstack(struct proc_struct *proc) {
  * @param proc PCB whose proc->kstack was returned by setup_kstack()
  * @note Only valid for a stack that is no longer in use (the thread has exited or was never run).
  */
-// put_kstack - free the memory space of process kernel stack
 static void put_kstack(struct proc_struct *proc) {
     free_pages(kva2page((void *)(proc->kstack)), KSTACKPAGE);
 }
@@ -294,10 +279,6 @@ static void put_kstack(struct proc_struct *proc) {
  * @param error_code exit status of the process (unused in lab4)
  * @return never returns
  */
-// do_exit - called by sys_exit
-//   1. call exit_mmap & put_pgdir & mm_destroy to free the almost all memory space of process
-//   2. set process' state as PROC_ZOMBIE, then call wakeup_proc(parent) to ask parent reclaim itself.
-//   3. call scheduler to switch to other process
 int do_exit(int error_code) {
     panic("process exit!!.\n");
 }
@@ -311,7 +292,6 @@ int do_exit(int error_code) {
  * @param arg a `const char *` message printed as "To U: ..."
  * @return 0; returning hands control to kernel_thread_entry(), which calls do_exit()
  */
-// init_main - the second kernel thread used to create user_main kernel threads
 static int init_main(void *arg) {
     cprintf("this initproc, pid = %d, name = \"%s\"\n", current->pid, get_proc_name(current));
     cprintf("To U: \"%s\".\n", (const char *)arg);

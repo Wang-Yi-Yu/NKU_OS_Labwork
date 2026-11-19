@@ -29,8 +29,6 @@ struct mm_struct;
  * @var vma_struct::vm_flags   VM_READ / VM_WRITE / VM_EXEC bits
  * @var vma_struct::list_link  node of mm_struct::mmap_list; the list is sorted by vm_start
  */
-// the virtual continuous memory area(vma), [vm_start, vm_end),
-// addr belong to a vma means  vma.vm_start<= addr <vma.vm_end
 struct vma_struct {
     struct mm_struct *vm_mm;  // the set of vma using the same PDT
     uintptr_t vm_start;       // start addr of vma
@@ -64,7 +62,6 @@ struct vma_struct {
  * @var mm_struct::map_count  number of VMAs in mmap_list
  * @var mm_struct::sm_priv    private data of the swap manager (NULL here)
  */
-// the control struct for a set of vma using the same PDT
 struct mm_struct {
     list_entry_t mmap_list;         // linear list link which sorted by start addr of vma
     struct vma_struct *mmap_cache;  // current accessed vma, used for speed purpose

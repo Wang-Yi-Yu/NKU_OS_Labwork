@@ -47,7 +47,6 @@
  * @brief Index of the root page directory (level 2, VPN2) of a virtual address.
  * @param la virtual address
  */
-// page directory index
 #define PDX1(la) ((((uintptr_t)(la)) >> PDX1SHIFT) & 0x1FF)
 #define PDX0(la) ((((uintptr_t)(la)) >> PDX0SHIFT) & 0x1FF)
 
@@ -55,7 +54,6 @@
  * @brief Index into the leaf page table (level 0, VPN0) of a virtual address.
  * @param la virtual address
  */
-// page table index
 #define PTX(la) ((((uintptr_t)(la)) >> PTXSHIFT) & 0x1FF)
 
 /**
@@ -65,14 +63,12 @@
  * the same value as PGSHIFT (12).
  * @param la address
  */
-// page number field of address
 #define PPN(la) (((uintptr_t)(la)) >> PTXSHIFT)
 
 /**
  * @brief Offset of an address inside its 4 KiB page (low 12 bits).
  * @param la address
  */
-// offset in page
 #define PGOFF(la) (((uintptr_t)(la)) & 0xFFF)
 
 /**
@@ -83,7 +79,6 @@
  * @param o  offset within the page
  * @return the virtual address
  */
-// construct linear address from indexes and offset
 #define PGADDR(d1, d0, t, o) \
     ((uintptr_t)((d1) << PDX1SHIFT | (d0) << PDX0SHIFT | (t) << PTXSHIFT | (o)))
 
@@ -96,7 +91,6 @@
  * @param pte PTE or PDE value
  * @return physical address, page aligned
  */
-// address in page table or page directory entry
 #define PTE_ADDR(pte) (((uintptr_t)(pte) & ~0x3FF) << (PTXSHIFT - PTE_PPN_SHIFT))
 #define PDE_ADDR(pde) PTE_ADDR(pde)
 

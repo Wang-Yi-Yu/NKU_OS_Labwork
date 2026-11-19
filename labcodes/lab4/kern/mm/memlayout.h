@@ -194,7 +194,6 @@ struct Page {
  * @param member name of the node inside struct Page, normally `page_link`
  * @return pointer to the enclosing struct Page
  */
-// convert list entry to page
 #define le2page(le, member) to_struct((le), struct Page, member)
 
 /**

@@ -82,7 +82,6 @@ static void check_pgfault(void);
  * @return the new mm_struct, or NULL if kmalloc() failed. The list is empty, map_count is 0,
  *         and pgdir, mmap_cache and sm_priv are NULL.
  */
-// mm_create -  alloc a mm_struct & initialize it.
 struct mm_struct *mm_create(void) {
     struct mm_struct *mm = kmalloc(sizeof(struct mm_struct));
 
@@ -103,7 +102,6 @@ struct mm_struct *mm_create(void) {
  * @param vm_flags VM_READ / VM_WRITE / VM_EXEC bits
  * @return the new VMA, or NULL if kmalloc() failed. Not yet linked into an mm.
  */
-// vma_create - alloc a vma_struct & initialize it. (addr range: vm_start~vm_end)
 struct vma_struct *vma_create(uintptr_t vm_start, uintptr_t vm_end, uint32_t vm_flags) {
     struct vma_struct *vma = kmalloc(sizeof(struct vma_struct));
 
@@ -124,7 +122,6 @@ struct vma_struct *vma_create(uintptr_t vm_start, uintptr_t vm_end, uint32_t vm_
  * @param addr virtual address
  * @return the VMA with vm_start <= addr < vm_end, or NULL
  */
-// find_vma - find a vma  (vma->vm_start <= addr <= vma_vm_end)
 struct vma_struct *find_vma(struct mm_struct *mm, uintptr_t addr) {
     struct vma_struct *vma = NULL;
     if (mm != NULL) {
@@ -156,7 +153,6 @@ struct vma_struct *find_vma(struct mm_struct *mm, uintptr_t addr) {
  * @param next VMA that should come after prev
  * @note Local helper of insert_vma_struct(). Uses assert(), so a violation panics.
  */
-// check_vma_overlap - check if vma1 overlaps vma2 ?
 static inline void check_vma_overlap(struct vma_struct *prev, struct vma_struct *next) {
     assert(prev->vm_start < prev->vm_end);
     assert(prev->vm_end <= next->vm_start);
@@ -173,7 +169,6 @@ static inline void check_vma_overlap(struct vma_struct *prev, struct vma_struct 
  * @param vma VMA to insert; sets vma->vm_mm
  * @note Overlapping VMAs cause an assert failure.
  */
-// insert_vma_struct -insert vma in mm's list link
 void insert_vma_struct(struct mm_struct *mm, struct vma_struct *vma) {
     assert(vma->vm_start < vma->vm_end);
     list_entry_t *list = &(mm->mmap_list);
@@ -210,7 +205,6 @@ void insert_vma_struct(struct mm_struct *mm, struct vma_struct *vma) {
  *           the pages mapped through the VMAs are not released here.
  * @note The `mm = NULL` at the end only clears the local parameter.
  */
-// mm_destroy - free mm and mm internal fields
 void mm_destroy(struct mm_struct *mm) {
     list_entry_t *list = &(mm->mmap_list), *le;
     while ((le = list_next(list)) != list) {
@@ -224,8 +218,6 @@ void mm_destroy(struct mm_struct *mm) {
 /**
  * @brief Initialise virtual memory management; currently only runs check_vmm().
  */
-// vmm_init - initialize virtual memory management
-//          - now just call check_vmm to check correctness of vmm
 void vmm_init(void) {
     check_vmm();
 }
@@ -234,7 +226,6 @@ void vmm_init(void) {
  * @brief Self test of the VMA functions; prints a success message.
  * @note check_pgfault() is commented out, so the page fault tests are not run.
  */
-// check_vmm - check correctness of vmm
 static void check_vmm(void) {
     check_vma_struct();
     // check_pgfault();

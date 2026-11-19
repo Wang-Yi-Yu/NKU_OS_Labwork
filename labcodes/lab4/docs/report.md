@@ -629,9 +629,9 @@ kern_init -> cpu_idle (idleproc, need_resched = 1)
 
 > 说明语句 `local_intr_save(intr_flag); ... local_intr_restore(intr_flag);` 是如何实现开关中断的。
 
-**一句话回答：** `local_intr_save` 先读出 `sstatus.SIE`，把它保存到 `intr_flag`，再在中断原本开启时清除 `SIE`；`local_intr_restore` 只在 `intr_flag` 为 1 时重新置位 `SIE`。中断的开关由 `sstatus` 的一位完成，`intr_flag` 保存的是进入临界区之前的状态，所以这对语句可以嵌套使用。
+`local_intr_save` 先读出 `sstatus.SIE`，把它保存到 `intr_flag`，再在中断原本开启时清除 `SIE`；`local_intr_restore` 只在 `intr_flag` 为 1 时重新置位 `SIE`。中断的开关由 `sstatus` 的一位完成，`intr_flag` 保存的是进入临界区之前的状态，所以这对语句可以嵌套使用。
 
-**1. 宏展开后的实际代码。** 两个宏定义在 `kern/sync/sync.h`，底层的开关函数在 `kern/driver/intr.c`：
+这两个宏定义在 `kern/sync/sync.h`，其底层的开关函数在 `kern/driver/intr.c`, 两个宏展开后的代码为：
 
 ```c
 static inline bool __intr_save(void) {
@@ -654,34 +654,6 @@ void intr_disable(void) { clear_csr(sstatus, SSTATUS_SIE); }  // csrrc：sstatus
 ```
 
 因此 `local_intr_save(intr_flag)` 等价于：用 `csrr` 读 `sstatus`，测 `SIE`（第 1 位，`0x2`），为 1 则执行一条 `csrrc sstatus, 0x2` 并令 `intr_flag = 1`，否则令 `intr_flag = 0`。`local_intr_restore(intr_flag)` 等价于：`intr_flag` 为 1 则执行一条 `csrrs sstatus, 0x2`。
-
-**2. 硬件上关中断意味着什么。** `SIE` 是 S 模式下中断的全局开关。它清零后，S 模式的时钟、外部、软件中断都不会被响应，请求只是保持挂起，等 `SIE` 重新置位后再进入 `stvec`。它与 `sie` 寄存器里各个中断源的使能位互相独立：`clock_init()` 置位的是 `sie.STIE`，`local_intr_save` 不碰它。两者都为 1，时钟中断才会进入内核。另外，中断屏蔽对异常无效：缺页、非法指令、`ebreak` 仍会进入 `stvec`，所以临界区内不能自己制造异常。
-
-**3. 为什么要保存标志，而不是直接关、再直接开。** 如果写成“进入时 `intr_disable()`，退出时 `intr_enable()`”，嵌套的临界区会出错：内层退出时无条件开中断，外层剩下的部分就失去了保护。实验里这种嵌套是真实存在的：`schedule()` 在关中断的区间内调用 `proc_run()`，而 `proc_run()` 自己也有一对 `local_intr_save/restore`。我们用 GDB 在 `schedule`、`proc_run` 入口读 `sstatus.SIE`，结果为：
-
-```text
-[schedule]            SIE=1     <- 外层 save 之前，中断是开的 (intr_flag = 1)
-[proc_run]            SIE=0     <- 外层已关；内层 save 读到 SIE=0，intr_flag = 0
-[switch_to]           SIE=0
-```
-
-内层保存的是 0，所以内层的 `local_intr_restore` 什么也不做，真正把中断打开的是外层的那一次 `restore`。这就是“保存旧状态、按旧状态恢复”的意义：每一层只把现场还原到自己进入前的样子，嵌套深度不影响正确性。
-
-**4. 与线程切换的配合。** 第 3 点中外层的 `local_intr_restore` 对一个新线程不会被执行：新线程第一次运行不会从 `switch_to` 返回，而是直接进入 `forkret`。它的中断由 `sret` 恢复：`kernel_thread()` 在临时 Trap frame 里设置了 `SPIE = 1`，`sret` 把 `SPIE` 拷回 `SIE`。GDB 追踪也印证了这一点：
-
-```text
-[forkrets]            SIE=0  ... status=0x8000000200046120   (bit5 SPIE = 1, bit1 SIE = 0)
-[kernel_thread_entry] SIE=1
-```
-
-这与硬件在进入 Trap 时的动作是对称的：Trap 发生时 `SPIE ← SIE`、`SIE ← 0`，`sret` 时 `SIE ← SPIE`。所以中断处理函数运行时本来就是关中断的，不需要在 `trap()` 里再调用一次 `local_intr_save`。
-
-**5. 使用范围与限制。**
-
-1. 它只屏蔽当前 hart 的中断。本实验只有单核，这就足够保护 PID 分配、`proc_list` 修改（`do_fork`）、`current` 与页表切换（`proc_run`）、空闲页链表（`alloc_pages`/`free_pages`）、`schedule()` 扫描链表等短临界区。多核场景还需要自旋锁，`kmalloc.c` 里的 `spin_lock_irqsave` 就被宏定义成了 `local_intr_save`，正是单核下的简化。
-2. 临界区必须很短，且不能睡眠或调度。关中断期间到来的时钟中断只会推迟处理，不会丢失，但时间拖得太久会让时钟节拍不均匀。
-3. 严格地说，`read_csr`、`set_csr`、`clear_csr` 是不带 `"memory"` 约束的 `asm volatile`。它们彼此不会被重排，但理论上编译器可以把临界区内的普通访存移到 CSR 指令之外。本实验在 `-O2` 下没有出现问题，Linux 的 `local_irq_save` 则额外加了编译器屏障，这是需要知道的差别。
-4. `local_intr_save` 用 `do { } while (0)` 包起来，是为了让宏在 `if` 后面不加花括号时仍表现为一条语句。而 `local_intr_restore` 的定义自带一个分号，所以 `local_intr_restore(flag);` 实际会展开出一个空语句，不影响使用。
 
 ---
 
@@ -750,10 +722,6 @@ kern/mm/kmalloc.c:177:25: warning: passing argument 1 of 'kva2page' makes pointe
 riscv64-unknown-elf-objcopy bin/kernel --strip-all -O binary bin/ucore.img
 ```
 
-【请在此处插入截图 5-1：执行 `make clean && make` 的终端输出，需要能看到 `+ cc kern/process/proc.c`、`+ cc kern/process/switch.S`、`+ cc kern/schedule/sched.c`、那条 kmalloc.c 警告和最后的 `+ ld bin/kernel`】
-
-![](./report.assets/5-1.png)
-
 分析：
 
 1. **我们补全的文件都编译、链接通过。** `pmm.c`、`proc.c`、`sched.c` 和汇编文件 `switch.S` 都在输出中出现，没有 error，也没有来自这些文件的 warning。`switch.S` 能够汇编，说明 `#include <riscv.h>` 提供的 `STORE`、`LOAD`、`REGBYTES` 用法正确。`proc.c` 中 `do_fork()` 之前对 `copy_thread()`、`copy_mm()` 的 `static` 声明也让编译器不再报声明顺序的错误（见 4.2.3）。
@@ -792,10 +760,6 @@ Welcome to the kernel debug monitor!!
 Type 'help' for a list of commands.
 ```
 
-内核最后停在 kernel monitor 的提示符处，等待输入。我们按 `Ctrl-A` 再按 `X` 退出 QEMU。
-
-【请在此处插入截图 5-2：`make qemu` 的终端输出，需要包含从 `memory management: best_fit_pmm_manager` 到 `Type 'help' for a list of commands.` 的全部内容】
-
 ![](./report.assets/5-2.png)
 
 分析：
@@ -822,8 +786,6 @@ make grade
   -check Schedule:                           OK
 Total Score: 30/30
 ```
-
-【请在此处插入截图 5-3：`make grade` 的最后几行，需要包含三条 `OK` 和 `Total Score: 30/30`】
 
 ![](./report.assets/5-3.png)
 
@@ -863,8 +825,6 @@ kernel panic at kern/process/proc.c:303:
     process exit!!.
 ```
 
-【请在此处插入截图 5-4：上述 `sed` 命令的输出，需要能看到 `[Test PMM] PASS`、`[Test Process Create] PASS`、`[Test Schedule] PASS` 三行】
-
 ![](./report.assets/5-4.png)
 
 分析：
@@ -872,8 +832,6 @@ kernel panic at kern/process/proc.c:303:
 1. **`[Test PMM] PASS`（模块一，10 分）。** 它出现在 `kmalloc_init()` 之后、`check_vma_struct()` 之前，对应 `pmm_init()` 的结尾。测试分配三页，分别映射到虚拟地址 `0`、`PGSIZE`、`2*PGSIZE`，检查叶子项的 `PTE_V`、`PTE_U`、`PTE_W` 和 `page_ref`；把 `p1` 重新映射到 `PGSIZE` 后，`p1` 的引用计数应为 2、被顶替的 `p2` 应为 0；把 `p3` 以 `PTE_W` 重新映射同一地址时，引用计数仍为 1 且空闲页数量不变。这最后一条正是同一物理页重新映射的情形，对应 `page_insert()` 里“先加引用、发现是同一页再减回”的写法（见 5.5 的对照实验）。最后各页的引用计数都回到 0，并且对未映射地址重复 `page_remove()` 没有出错，说明删除是幂等的。
 2. **`[Test Process Create] PASS`（模块二，10 分）。** 它出现在 `proc_init()` 返回之前，此时 `++ setup timer interrupts` 还没有输出，所以 `kern_init` 尚未打开中断。测试断言 `current == idleproc`，`idleproc` 的 `pid == 0`、`state == PROC_RUNNABLE`、`kstack == bootstack`、`parent`、`mm`、`tf` 均为 `NULL`、`runs == 0`、`flags == 0`、`context.ra == 0`，以及 `initproc` 的 `pid == 1`、`state == PROC_RUNNABLE`、`parent == idleproc`、`mm == NULL`、`context.ra` 与 `context.sp` 非零。这些字段与 `alloc_proc()`、`proc_init()`、`do_fork()` 和 `copy_thread()` 的实现一一对应。
 3. **`[Test Schedule] PASS`（模块三，10 分）。** 它出现在 `init_main()` 的开头，已经运行在 `initproc` 中。测试用 `kernel_thread()` 再创建两个线程，然后主线程连续 8 次置位 `need_resched` 并调用 `schedule()`；两个新线程各自在循环里置位自己的标志并 `schedule()` 让出 CPU。最后断言两个标志都被置位，说明 `schedule()` 能在三个以上的线程之间轮转，同时 `switch_to` 对已经运行过的线程（不是只对新线程）也能正确保存和恢复上下文。`[Test Schedule] PASS` 之后才出现 `this initproc ...` 三行，也是同样的原因：测试在 `init_main` 的开头执行，之后 `initproc` 才继续往下运行。
-4. **注入的 panic 行号与 5.2 相差一行。** 这里是 `proc.c:303`，5.2 中是 `proc.c:302`。临时副本在 `proc.c` 里多插入了一行 `#include <test_lab4.h>`，行号因此加 1，代码本身没有区别。
-5. **评分脚本如何判分。** `tools/grade.sh` 检查每一组期望的字符串是否全部出现在串口日志里，缺一则该项得 0。比如我们在 5.5 中故意破坏 `page_insert()` 之后，`[Test PMM] PASS` 消失，同时由于内核在 `pmm_init()` 里就 panic，后面两项也一并失分。
 
 ### 5.4 用 GDB 追踪第一次线程切换
 
@@ -961,8 +919,6 @@ riscv64-unknown-elf-gdb -batch -nx -x /tmp/trace.gdb
 
 我们另用 `nm bin/kernel` 查符号地址，得到 `forkret = 0xffffffffc020317a`、`init_main = 0xffffffffc0203188`、`kernel_thread_entry = 0xffffffffc0203100`。
 
-【请在此处插入截图 5-5：终端 2 中 GDB 输出的 8 行追踪结果（以 `[cpu_idle]` 开头、以 `[init_main]` 结尾）；如果方便，可把终端 1 的 `make debug` 一并截入】
-
 ![](./report.assets/5-5.png)
 
 分析：
@@ -974,9 +930,9 @@ riscv64-unknown-elf-gdb -batch -nx -x /tmp/trace.gdb
 5. **中断状态的变化与 `local_intr_save` 一致。** `cpu_idle`、`schedule` 入口 `SIE=1`；`proc_run` 入口 `SIE=0`，因为 `schedule()` 已经关了中断，`proc_run` 里的 `local_intr_save` 读到的就是 0，这是 4.4 讲的嵌套情形。新线程直到 `forkrets` 入口 `SIE` 仍为 0，在 `sret` 之后才变成 1，说明它的中断恢复靠的是 Trap frame 里的 `SPIE`，而不是 `proc_run` 里的 `local_intr_restore`，后者对新线程不会被执行。
 6. **断点只命中一次的含义。** 8 个函数每个只命中一次，并且 `init_main` 之后 GDB 里没有再出现 `proc_run`。这是因为本次追踪运行的是不带注入测试的代码，只有 `idleproc` 和 `initproc` 两个线程，`initproc` 返回后直接 `do_exit` 而 panic，不再调度。
 
-### 5.5 对照实验、代码格式和标记检查
+### 5.5 对照实验
 
-**对照实验。** 评分通过只能说明代码对这组输入正确。为了确认测试确实在检验我们写的关键逻辑，我们在 `/tmp` 的三份临时副本里分别删掉一处代码，再运行 `tools/inject.py` 和 `tools/grade.sh`（仓库里的代码没有改动）：
+评分通过只能说明代码对这组输入正确。为了确认测试确实在检验我们写的关键逻辑，我们在 `/tmp` 的三份临时副本里分别删掉一处代码，再运行 `tools/inject.py` 和 `tools/grade.sh`（仓库里的代码没有改动）：
 
 | 实验 | 在临时副本中的改动                                                 | 得分  | 现象                                                                                                   |
 | ---- | ------------------------------------------------------------------ | ----- | ------------------------------------------------------------------------------------------------------ |
@@ -992,65 +948,11 @@ kernel panic at kern/test/test_lab4.c:58:
     assertion failed: page_ref(p3) == 1 && nr_free_pages() == free_before
 ```
 
-【请在此处插入截图 5-6：E2 实验中 QEMU 输出的 panic 行，以及 `Total Score: 0/30`】
-
-![](./report.assets/5-6.png)
-
 分析：
 
 1. **E2 说明模块一的测试确实检查了引用计数的处理。** 删掉这一行后，把已映射的页再次映射到同一地址会让引用计数多加一次，测试里 `page_ref(p3) == 1` 的断言立刻失败。因为这个 panic 发生在 `pmm_init()` 里，`proc_init()` 和 `init_main()` 都没有机会运行，所以另外两项也得 0 分。这也解释了 4.1.2 提示词中为什么要明确写出“同一页”这个情形。
 2. **E1 说明评分测试没有覆盖这个边界，代码里的写法仍然必要。** 删掉对链表头的跳过之后，三项依然通过。原因是测试中链表头 `proc_list` 被 `le2proc` 当作一个 `proc_struct` 读出的 `state` 恰好不等于 `PROC_RUNNABLE`，这取决于 `proc_list` 前面若干字节（`list_link` 在 `proc_struct` 中的偏移处）恰好存放着什么全局数据，是碰巧成立，而不是逻辑正确。换一种内存布局或增加全局变量，这个读取的结果就可能变化。所以 `schedule()` 中显式跳过链表头是必须保留的，并且不能靠评分通过来证明它是多余的。我们把这个发现记录在这里，是为了说明“`make grade` 通过”不等于“所有边界都被测试过”。
 3. **E3 说明 `PTE_A`、`PTE_D` 在本环境里不是必需的。** 去掉之后，包括 `check_boot_pgdir()` 在内的所有检查照常通过，说明 QEMU 8.2.2 在访问时会自动更新这两位。我们保留这两位的预置，是因为规范允许实现选择“`A`/`D` 为 0 就触发缺页”（Svade 行为），预置后代码不依赖具体的模拟器或硬件。
-
-**代码格式。** 我们用项目自带的 Makefile 目标检查格式：
-
-```bash
-make format-check
-```
-
-输出为：
-
-```text
-clang-format: OK
-Checking formatting...
-All matched files use Prettier code style!
-```
-
-其中 C 与头文件由 `clang-format`（规则见 `.clang-format`）检查，Markdown 由 Prettier 检查，两项都通过。
-
-**学号标记。** 我们检查代码中所有 `LAB4` 标记已经把 `YOUR CODE` 换成了学号，并且没有遗留：
-
-```bash
-grep -rn "LAB4 function" kern
-grep -rn "YOUR CODE" kern libs
-```
-
-第一条命令的输出为：
-
-```text
-kern/schedule/sched.c:45://LAB4 function3 2414007
-kern/process/switch.S:18://LAB4 function3 2414007
-kern/process/proc.c:322://LAB4 function2 2411622
-kern/process/proc.c:364://LAB4 function2 2411622
-kern/process/proc.c:416://LAB4 function2 2411622
-kern/process/proc.c:449://LAB4 function2 2411622
-kern/process/proc.c:511://LAB4 function2 2411622
-kern/process/proc.c:549://LAB4 function2 2411622
-kern/process/proc.c:576://LAB4 function3 2414007
-kern/process/proc.c:595://LAB4 function3 2414007
-kern/mm/pmm.c:401://LAB4 function1 2414015
-```
-
-第二条命令没有任何输出。
-
-【请在此处插入截图 5-7：`make format-check` 的输出，以及上面两条 `grep` 命令的输出（可放在同一张截图里）】
-
-![](./report.assets/5-7.png)
-
-分析：
-
-1. **标记与分工一致。** 模块一（`page_insert`、`page_remove`）为 `2414015`，模块二（`alloc_proc`、`proc_init`、`kernel_thread`、`do_fork`、`copy_thread`、`copy_mm` 六个函数各一处标记）为 `2411622`，模块三（`schedule`、`switch_to`、`cpu_idle`、`proc_run`）为 `2414007`，与实验报告开头的小组分工一致。`YOUR CODE` 在 `kern` 与 `libs` 中已经没有残留。
-2. **前序实验回填的标记也保留了。** `grep` 只查了 `LAB4`，而 `pmm.c` 的 `lab2 function1 2414007`、`default_pmm.c` 的 `lab2 function2-2 2411622`、`trap.c` 与 `trapentry.S` 的 `lab3 function1/2` 标记也都带着学号，实验指导要求“本实验依赖实验 2/3”并保留这些注释。
 
 ### 5.6 小结
 

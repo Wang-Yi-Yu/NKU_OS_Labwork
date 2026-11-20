@@ -229,7 +229,10 @@ void interrupt_handler(struct trapframe *tf) {
  * forever. The request is then handed to syscall(), which reads the number and the arguments from
  * the saved registers of current->tf and writes the result into a0 of that frame.
  *
- * Any other exception is dumped with print_trapframe().
+ * Any other exception (for example a page fault, which this lab cannot repair) is dumped with
+ * print_trapframe(). If it happened in kernel mode the kernel panics; if it happened in user mode
+ * the process is terminated with do_exit(-E_KILLED). Merely returning would re-execute the
+ * faulting instruction forever.
  *
  * @param tf trap frame of the exception
  */
@@ -249,7 +252,15 @@ void exception_handler(struct trapframe *tf) {
         tf->epc += 4;
         syscall();
     } else {
+        // Any other exception cannot be repaired here (there is no page fault handler), and
+        // returning would re-execute the faulting instruction forever. Kernel mode: fatal.
+        // User mode: terminate the offending process.
         print_trapframe(tf);
+        if (trap_in_kernel(tf)) {
+            panic("unhandled exception in kernel mode");
+        }
+        cprintf("killed by kernel.\n");
+        do_exit(-E_KILLED);
     }
 }
 

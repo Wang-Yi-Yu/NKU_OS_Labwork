@@ -6,6 +6,17 @@ Tests are intentionally inserted only at function boundaries:
 
 The injector does not depend on implementation-specific statements such as
 "ret = 0", comments, labels, or a particular final call in a function.
+
+Usage: python3 tools/inject.py <temporary grading copy>
+This script is run by the "grade" target of the Makefile on a copy of the student tree
+(never on the working tree). It makes these changes in that copy:
+  1. copies tools/test_lab6.c and test_lab6.h into kern/test/;
+  2. adds "kern/test" to KINCLUDE and KSRCDIR in the Makefile so the tests are built;
+  3. adds an #include of test_lab6.h to kern/schedule/sched.c (after default_sched.h);
+  4. inserts test_lab6_rr_scheduler() and test_lab6_stride_scheduler() before the end of
+     sched_init(), where both scheduling classes are already linked in.
+It stops with an error if a function or include anchor is missing or appears more than once, or if
+the tree already contains test hooks (duplicate injection) or a leftover --wrap option.
 """
 
 import os
@@ -15,32 +26,52 @@ import sys
 
 
 def die(message):
+    """Print an error prefixed with "[lab6 inject] ERROR:" and exit with status 1.
+
+    Args:
+        message: Text describing the problem.
+    """
     print("[lab6 inject] ERROR: " + message)
     raise SystemExit(1)
 
 
+# The script takes exactly one argument: the root of the temporary grading copy.
 if len(sys.argv) != 2:
     die("Usage: inject.py <temporary grading copy>")
 
+# root: absolute path of the grading copy to modify; tools: directory that holds the test sources.
 root = os.path.abspath(sys.argv[1])
 tools = os.path.dirname(os.path.abspath(__file__))
 
 
 def read_text(path):
+    """Return the whole content of a UTF-8 text file."""
     with open(path, "r", encoding="utf-8") as f:
         return f.read()
 
 
 def write_text(path, text):
+    """Overwrite a UTF-8 text file with @p text."""
     with open(path, "w", encoding="utf-8") as f:
         f.write(text)
 
 
 def find_function(text, name):
-    """Return (declaration_start, opening_brace, closing_brace_end).
+    """Locate the definition of function @p name in the C source @p text.
 
     The brace scan ignores comments, strings, and character literals, so the
     matching brace remains correct in functions containing nested blocks.
+
+    Args:
+        text: Full C source text to search.
+        name: Name of the function to find; it must have exactly one definition.
+
+    Returns:
+        A tuple (declaration_start, opening_brace, closing_brace_end) of character
+        offsets in text. closing_brace_end is the offset just after the closing brace.
+
+    Exits with an error if the function is missing, defined more than once, or
+    its closing brace cannot be found.
     """
     pattern = re.compile(
         r"(?ms)^[ \t]*"
@@ -106,6 +137,15 @@ def find_function(text, name):
 
 
 def insert_include(path, header, anchor):
+    """Add "#include <header>" on the line after the single "#include" of @p anchor.
+
+    Args:
+        path: C source file to modify in place.
+        header: Header name to add, without the angle brackets.
+        anchor: Header name whose #include line is the insertion point.
+
+    Exits with an error if the anchor include is missing or appears more than once.
+    """
     text = read_text(path)
     pattern = re.compile(
         r"(?m)^(?P<line>[ \t]*#include[ \t]*[<\"]"
@@ -121,10 +161,25 @@ def insert_include(path, header, anchor):
 
 
 def indent_code(code):
+    """Indent each line of @p code by four spaces and surround it with newlines.
+
+    Args:
+        code: One or more lines of C code.
+
+    Returns:
+        The indented block, ready to insert inside a function body.
+    """
     return "\n" + "\n".join("    " + line for line in code.splitlines()) + "\n"
 
 
 def insert_at_function_start(path, name, code):
+    """Insert @p code as the first statements of function @p name.
+
+    Args:
+        path: C source file to modify in place.
+        name: Name of the function that receives the code.
+        code: C statements to insert, one per line.
+    """
     text = read_text(path)
     _, body_start, _ = find_function(text, name)
     insertion = indent_code(code)
@@ -132,12 +187,20 @@ def insert_at_function_start(path, name, code):
 
 
 def insert_at_function_end(path, name, code):
+    """Insert @p code as the last statements of function @p name, before its closing brace.
+
+    Args:
+        path: C source file to modify in place.
+        name: Name of the function that receives the code.
+        code: C statements to insert, one per line.
+    """
     text = read_text(path)
     _, _, body_end = find_function(text, name)
     insertion = indent_code(code)
     write_text(path, text[:body_end - 1] + insertion + text[body_end - 1:])
 
 
+# Steps 1 and 2: copy the test sources and add kern/test to the Makefile source directories.
 makefile = os.path.join(root, "Makefile")
 make = read_text(makefile)
 if "kern/test" in make or "test_lab6.h" in make:
@@ -160,10 +223,9 @@ for variable in ("KINCLUDE", "KSRCDIR"):
     make = make[:match.end()] + "\n" + variable + "\t+= kern/test" + make[match.end():]
 write_text(makefile, make)
 
+# Steps 3 and 4: hook the tests into sched.c (include, then the calls at the end of sched_init).
 sched = os.path.join(root, "kern", "schedule", "sched.c")
 insert_include(sched, "test_lab6.h", "default_sched.h")
 insert_at_function_end(sched, "sched_init", "test_lab6_rr_scheduler();\ntest_lab6_stride_scheduler();")
 
 print("lab6 injection complete")
-
-

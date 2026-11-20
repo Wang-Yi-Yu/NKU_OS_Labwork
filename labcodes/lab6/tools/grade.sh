@@ -1,4 +1,15 @@
 #!/bin/sh
+#
+# Lab6 autograder.
+#
+# Usage: tools/grade.sh [-v]
+#   -v  verbose: show the build and QEMU output on the terminal, and stop at the first failed check.
+#
+# Flow: build the kernel (with the tests from tools/inject.py), run QEMU until the kernel reaches
+# readline() (kernel monitor), then check the serial log saved in $qemu_out against a list of
+# expected lines for each user program. A check passes only if every expected line is found.
+# The score is the sum over checks, and the script exits with status 1 if it is not full marks.
+# Lines with a leading "!" must NOT appear, and lines after "-" are regular expressions.
 
 verbose=false
 if [ "x$1" = "x-v" ]; then
@@ -62,6 +73,7 @@ total=0
 total_pos=0
 
 ## default functions
+# update_score: add the current part to the running totals and reset the part.
 update_score() {
     total=`expr $total + $part`
     total_pos=`expr $total_pos + $part_pos`
@@ -79,6 +91,7 @@ show_part() {
     update_score
 }
 
+# show_final: print the total score and exit with status 1 if it is not full marks.
 show_final() {
     update_score
     echo "Total Score: $total/$total_pos"
@@ -110,20 +123,21 @@ show_msg() {
     fi
 }
 
+# pass: record a passed check, worth $pts points.
 pass() {
     show_msg OK "$@"
     part=`expr $part + $pts`
     part_pos=`expr $part_pos + $pts`
 }
 
+# fail: record a failed check (the points are added to the maximum score, not to the earned score).
 fail() {
     show_msg WRONG "$@"
     part_pos=`expr $part_pos + $pts`
 }
 
+# run_qemu: start QEMU in the background and, if a break function is set, wait for it in gdb.
 run_qemu() {
-    # Run qemu with serial output redirected to $qemu_out. If $brkfun is non-empty,
-    # wait until $brkfun is reached or $timeout expires, then kill QEMU
     qemuextra=
     if [ "$brkfun" ]; then
         qemuextra="-S $qemugdb"
@@ -140,11 +154,9 @@ run_qemu() {
     ) > $out 2> $err &
     pid=$!
 
-    # wait for QEMU to start
     sleep 1
 
     if [ -n "$brkfun" ]; then
-        # find the address of the kernel $brkfun function
         brkaddr=`$grep " $brkfun\$" $sym_table | $sed -e's/ .*$//g'`
         brkaddr_phys=`echo $brkaddr | sed "s/^c0/00/g"`
         (
@@ -158,14 +170,12 @@ run_qemu() {
 
         $gdb -batch -nx -x $gdb_in > /dev/null 2>&1
 
-        # make sure that QEMU is dead
-        # on OS X, exiting gdb doesn't always exit qemu
         kill $pid > /dev/null 2>&1
     fi
 }
 
+# build_run: build the kernel (with optional DEFS), run it under QEMU and save the log.
 build_run() {
-    # usage: build_run <tag> <args>
     show_build_tag "$1"
     shift
 
@@ -179,7 +189,6 @@ build_run() {
         exit 1
     fi
 
-    # now run qemu and save the output
     run_qemu
 
     show_time
@@ -188,11 +197,9 @@ build_run() {
 }
 
 check_result() {
-    # usage: check_result <tag> <check> <check args...>
     show_check_tag "$1"
     shift
 
-    # give qemu some time to run (for asynchronous mode)
     if [ ! -s $qemu_out ]; then
         sleep 4
     fi
@@ -207,6 +214,8 @@ check_result() {
     fi
 }
 
+# check_regexps: check each expected line in $qemu_out; '!' negates the next pattern and '-'
+# makes it a regular expression (grep -E) instead of a fixed string (grep -F).
 check_regexps() {
     okay=yes
     not=0
@@ -251,8 +260,8 @@ check_regexps() {
     fi
 }
 
+# run_test: build one user program (-prog NAME), run it and check the output with -check.
 run_test() {
-    # usage: run_test [-tag <tag>] [-prog <prog>] [-Ddef...] [-check <check>] checkargs ...
     tag=
     prog=
     check=check_regexps
@@ -296,8 +305,8 @@ run_test() {
     check_result 'check result' "$check" "$@"
 }
 
+# quick_run: build and run the kernel without checking the output.
 quick_run() {
-    # usage: quick_run <tag> [-Ddef...]
     tag="$1"
     shift
     defs=
@@ -310,8 +319,8 @@ quick_run() {
     build_run "$tag" "$defs"
 }
 
+# quick_check: check the current $qemu_out against the given expected lines.
 quick_check() {
-    # usage: quick_check <tag> checkargs ...
     tag="$1"
     shift
     check_result "$tag" check_regexps "$@"
@@ -324,12 +333,14 @@ osimg=$(make_print ucoreimg)
 swapimg=$(make_print swapimg)
 
 ## set default qemu-options
-# qemuopts="-hda $osimg -drive file=$swapimg,media=disk,cache=writeback"
-qemuopts="-machine virt -nographic -bios default -device loader,file=bin/ucore.img,addr=0x80200000"
+qemuopts="-machine virt -nographic -bios default -kernel bin/ucore.img"
 
 ## set break-function, default is readline
 brkfun=readline
 
+# default_check: check the lines every test must print: the injected [Test RR Scheduler] and
+# [Test Stride Scheduler] PASS lines (printed at the end of sched_init()), the program's own
+# expected lines, the memory-management check messages and the timer setup line.
 default_check() {
     pts=10
     quick_check 'RR Scheduler'                                  \
@@ -354,7 +365,8 @@ default_check() {
     '++ setup timer interrupts'
 }
 
-## check now!!
+## check now!! priority runs five children with priorities 1..5 under the scheduler that
+## sched_init() selected; the expected lines only check that the run completes.
 run_test -prog 'priority'      -check default_check             \
         'kernel_execve: pid = 2, name = "priority".'            \
         'main: fork ok,now need to wait pids.'                  \

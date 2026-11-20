@@ -13,10 +13,10 @@
 |   lab1   | [Here](labcodes/lab1/) | [Here](labcodes/lab1/docs/report.md) |                  -                   |
 |   lab2   | [Here](labcodes/lab2/) | [Here](labcodes/lab2/docs/report.md) | [Here](labcodes/lab2/docs/prompt.md) |
 |   lab3   | [Here](labcodes/lab3/) | [Here](labcodes/lab3/docs/report.md) | [Here](labcodes/lab3/docs/prompt.md) |
-|   lab4   | [Here](labcodes/lab4/) |                  -                   |                  -                   |
-|   lab5   | [Here](labcodes/lab5/) |                  -                   |                  -                   |
+|   lab4   | [Here](labcodes/lab4/) | [Here](labcodes/lab4/docs/report.md) | [Here](labcodes/lab4/docs/prompt.md) |
+|   lab5   | [Here](labcodes/lab5/) | [Here](labcodes/lab5/docs/report.md) | [Here](labcodes/lab5/docs/prompt.md) |
 
-# 3. QEMU 8.2+OpenSBI v1.3 环境下的适配修改
+## 3. QEMU 8.2+OpenSBI v1.3 环境下的适配修改
 
 lab 框架原本针对 QEMU 4.x + OpenSBI v0.4 编写。本仓库的实验环境是 QEMU 8.2.x + OpenSBI v1.3（以及较新的 binutils），直接运行会出现内核不启动、静默卡死或汇编报错的问题。下面按出现的顺序列出需要做的适配修改，后续实验遇到框架回退成旧写法时可对照修改。
 

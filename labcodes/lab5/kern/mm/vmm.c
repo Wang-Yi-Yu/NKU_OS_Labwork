@@ -234,7 +234,44 @@ out:
     return ret;
 }
 
-//lab5 function3 YOUR CODE
+//lab5 function3 2414007
+/**
+ * @fn int dup_mmap(struct mm_struct *to, struct mm_struct *from)
+ * @brief Copy the virtual memory areas and the mapped pages of one address space into another.
+ *
+ * Used by fork (through copy_mm()): the child gets a VMA with the same range and flags for every
+ * VMA of the parent, and its own physical copy of every page that is mapped in that VMA, so parent
+ * and child can no longer see each other's writes.
+ *
+ * The VMAs are visited in the order of from->mmap_list (ascending addresses). For each of them a
+ * new VMA is created, inserted into @p to (insert_vma_struct() keeps the list sorted and
+ * rejects overlaps) and then its pages are copied with copy_range() in copy mode (share = 0).
+ *
+ * @param to   destination address space; freshly created, with its page directory already set up
+ *             and no VMA yet
+ * @param from source address space (the parent's); the caller holds from->mm_lock
+ * @return 0 on success; -E_NO_MEM if a VMA or a page (or page table) could not be allocated. On
+ *         failure the part already copied stays in @p to; the caller undoes it with exit_mmap().
+ */
+int dup_mmap(struct mm_struct *to, struct mm_struct *from) {
+    assert(to != NULL && from != NULL);
+    list_entry_t *list = &(from->mmap_list), *le = list;
+    while ((le = list_next(le)) != list) {
+        struct vma_struct *vma = le2vma(le, list_link);
+        struct vma_struct *nvma = vma_create(vma->vm_start, vma->vm_end, vma->vm_flags);
+        if (nvma == NULL) {
+            return -E_NO_MEM;
+        }
+        insert_vma_struct(to, nvma);
+
+        // Plain fork: every page is copied, nothing is shared (copy-on-write is the challenge).
+        bool share = 0;
+        if (copy_range(to->pgdir, from->pgdir, vma->vm_start, vma->vm_end, share) != 0) {
+            return -E_NO_MEM;
+        }
+    }
+    return 0;
+}
 
 /**
  * @brief Release the pages and page tables behind every VMA of an address space (used by exit).

@@ -438,14 +438,67 @@ void exit_range(pde_t *pgdir, uintptr_t start, uintptr_t end) {
     } while (d1start != 0 && d1start < end);
 }
 
-//lab5 function3 YOUR CODE
-// Contract of int copy_range(pde_t *to, pde_t *from, uintptr_t start, uintptr_t end, bool share):
-// copy the user pages of [start, end) (page aligned, user addresses) from the page table `from`
-// into the page table `to`. For every valid PTE of `from` in the range, allocate a page, copy the
-// 4 KiB content from the source page, and map the new page in `to` at the same address with the
-// permissions of the source PTE (PTE_U included); create missing page tables in `to` with
-// get_pte(). `share` selects sharing instead of copying and is 0 for the plain fork of this lab.
-// Return 0 on success, -E_NO_MEM if an allocation fails. Called by dup_mmap() (vmm.c).
+//lab5 function3 2414007
+/**
+ * @fn int copy_range(pde_t *to, pde_t *from, uintptr_t start, uintptr_t end, bool share)
+ * @brief Copy the user pages of [start, end) from one page table into another.
+ *
+ * Walks the range page by page in the source table. For every valid leaf PTE it takes a new
+ * physical page, copies the 4 KiB content of the source page into it and maps the copy at the same
+ * virtual address in the destination with the permission bits of the source PTE (PTE_U included).
+ * Missing page tables in the destination are created by get_pte() / page_insert(). A source
+ * address without a page table lets the walk skip to the next PTSIZE boundary, and an address with
+ * an invalid PTE is simply left unmapped in the destination.
+ *
+ * With @p share set the destination maps the very same physical page instead of a copy
+ * (page_insert() counts the extra reference); the plain fork of this lab always passes 0.
+ *
+ * @param to    destination root page directory (kernel virtual address)
+ * @param from  source root page directory (kernel virtual address)
+ * @param start page-aligned first address, must be a user address
+ * @param end   page-aligned end address (exclusive), must be a user address
+ * @param share non-zero to share the pages instead of copying them
+ * @return 0 on success; -E_NO_MEM if a page or a page table cannot be allocated. Pages copied so
+ *         far stay mapped in @p to; the caller releases them with exit_mmap().
+ */
+int copy_range(pde_t *to, pde_t *from, uintptr_t start, uintptr_t end, bool share) {
+    assert(start % PGSIZE == 0 && end % PGSIZE == 0);
+    assert(USER_ACCESS(start, end));
+
+    do {
+        pte_t *ptep = get_pte(from, start, 0);
+        if (ptep == NULL) {
+            // No page table here: nothing is mapped up to the next PTSIZE boundary.
+            start = ROUNDDOWN(start + PTSIZE, PTSIZE);
+            continue;
+        }
+        if (*ptep & PTE_V) {
+            // Make sure the destination PTE slot (and its page tables) exists before copying.
+            if (get_pte(to, start, 1) == NULL) {
+                return -E_NO_MEM;
+            }
+            uint32_t perm = (*ptep & PTE_USER);
+            struct Page *page = pte2page(*ptep);
+            struct Page *npage = page;
+            if (!share) {
+                npage = alloc_page();
+                if (npage == NULL) {
+                    return -E_NO_MEM;
+                }
+                memcpy(page2kva(npage), page2kva(page), PGSIZE);
+            }
+            int ret = page_insert(to, npage, start, perm);
+            if (ret != 0) {
+                if (!share) {
+                    free_page(npage);
+                }
+                return ret;
+            }
+        }
+        start += PGSIZE;
+    } while (start != 0 && start < end);
+    return 0;
+}
 
 //LAB4 function1 2414015
 /**
@@ -686,7 +739,7 @@ static void check_boot_pgdir(void) {
  * PTE_W is set else `-`, e.g. "ur-" or "-rw"; this is a string such as "ur-".
  * @param perm PTE permission bits (PTE_U and PTE_W are examined)
  * @return pointer to a static buffer; overwritten by the next call (not reentrant)
- * @note Currently unused in this lab (static helper for the page table dump).
+ * @note Used by print_pgdir().
  */
 static const char *perm2str(int perm) {
     static char str[4];
@@ -738,4 +791,69 @@ static int get_pgtable_items(size_t left, size_t right, size_t start, uintptr_t 
         return perm;
     }
     return 0;
+}
+
+/**
+ * @brief Sign-extend an Sv39 virtual address (bit 38 is copied into bits 63..39).
+ * @param va 39-bit virtual address assembled from the table indices
+ * @return the canonical 64-bit form of the address
+ */
+static uintptr_t sv39_canonical(uintptr_t va) {
+    return (va & ((uintptr_t)1 << 38)) ? (va | 0xFFFFFF8000000000UL) : va;
+}
+
+//lab5 function1 2414007
+/**
+ * @fn void print_pgdir(void)
+ * @brief Print the page table that is currently active (the one in satp), run by run.
+ *
+ * The three levels of the Sv39 table are walked from the root. At each level, consecutive valid
+ * entries with the same permission are printed as one line "<level>(<count>) <from>-<to> <size>
+ * <perm>", indented by level, using get_pgtable_items() and perm2str(). An entry that grants
+ * R/W/X is a leaf (a gigapage, megapage or page); an entry without them points to the next-level
+ * table and is followed. Called by sys_pgdir() for the user program that wants to see its mapping.
+ * @note The active table is found through satp, so the output is the caller's table when it is
+ *       called from a system call, and the boot table in a kernel thread.
+ */
+void print_pgdir(void) {
+    pde_t *root = (pde_t *)KADDR((uintptr_t)(read_csr(satp) & 0xFFFFFFFFFFFUL) << PGSHIFT);
+    size_t l2, r2 = 0, l1, r1, l0, r0;
+    int perm;
+
+    cprintf("-------------------- BEGIN --------------------\n");
+    while ((perm = get_pgtable_items(0, NPDEENTRY, r2, root, &l2, &r2)) != 0) {
+        cprintf("PDE2(%03x) %016lx-%016lx %09lx %s\n", (int)(r2 - l2),
+                sv39_canonical((uintptr_t)l2 << PDX1SHIFT),
+                sv39_canonical((uintptr_t)r2 << PDX1SHIFT), (unsigned long)(r2 - l2) << PDX1SHIFT,
+                perm2str(perm));
+        if (perm & (PTE_R | PTE_W | PTE_X)) {
+            continue;  // a gigapage: no lower level
+        }
+        for (size_t i2 = l2; i2 < r2; i2++) {
+            pde_t *pd1 = (pde_t *)KADDR(PDE_ADDR(root[i2]));
+            r1 = 0;
+            while ((perm = get_pgtable_items(0, NPDEENTRY, r1, pd1, &l1, &r1)) != 0) {
+                uintptr_t base = (uintptr_t)i2 << PDX1SHIFT;
+                cprintf("  PDE1(%03x) %016lx-%016lx %09lx %s\n", (int)(r1 - l1),
+                        sv39_canonical(base + ((uintptr_t)l1 << PDX0SHIFT)),
+                        sv39_canonical(base + ((uintptr_t)r1 << PDX0SHIFT)),
+                        (unsigned long)(r1 - l1) << PDX0SHIFT, perm2str(perm));
+                if (perm & (PTE_R | PTE_W | PTE_X)) {
+                    continue;  // a megapage
+                }
+                for (size_t i1 = l1; i1 < r1; i1++) {
+                    pte_t *pt = (pte_t *)KADDR(PDE_ADDR(pd1[i1]));
+                    r0 = 0;
+                    while ((perm = get_pgtable_items(0, NPTEENTRY, r0, pt, &l0, &r0)) != 0) {
+                        uintptr_t base0 = base + ((uintptr_t)i1 << PDX0SHIFT);
+                        cprintf("    PTE(%03x) %016lx-%016lx %09lx %s\n", (int)(r0 - l0),
+                                sv39_canonical(base0 + ((uintptr_t)l0 << PTXSHIFT)),
+                                sv39_canonical(base0 + ((uintptr_t)r0 << PTXSHIFT)),
+                                (unsigned long)(r0 - l0) << PTXSHIFT, perm2str(perm));
+                    }
+                }
+            }
+        }
+    }
+    cprintf("--------------------- END ---------------------\n");
 }

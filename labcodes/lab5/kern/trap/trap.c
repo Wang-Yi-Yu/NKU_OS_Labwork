@@ -1,3 +1,16 @@
+/**
+ * @file   trap.c
+ * @brief  C part of trap handling for kernel and user mode: trap vector setup, frame printing,
+ *         dispatch, interrupt and exception handlers and the return path of user traps.
+ *
+ * Flow of one trap: hardware jumps to stvec (= __alltraps) -> SAVE_ALL builds a struct trapframe
+ * -> trap() -> trap_dispatch() -> interrupt_handler() or exception_handler() -> back in assembly
+ * RESTORE_ALL + sret. Bit 63 of scause tells interrupts and exceptions apart. interrupt_handler()
+ * and exception_handler() are the lab3 exercise 2 task, each with its own `lab3 function2` marker
+ * below. lab5 extends exception_handler() with the system call (ecall from U mode) path, and
+ * trap() with the checks that run before a trap from user mode returns (kill, reschedule). The
+ * first run of a new process does not come through trap() but through forkrets() in trapentry.S.
+ */
 #include <defs.h>
 #include <mmu.h>
 #include <memlayout.h>
@@ -16,10 +29,15 @@
 #include <sync.h>
 #include <sbi.h>
 
+/** @brief Number of timer interrupts between two "100 ticks" lines (100 ticks = 1 second at 10 ms per tick). */
 #define TICK_NUM 100
 
-static void print_ticks()
-{
+/**
+ * @brief Print the "100 ticks" line.
+ *
+ * If DEBUG_GRADE is defined it also prints "End of Test." and panics, which ends the run.
+ */
+static void print_ticks() {
     cprintf("%d ticks\n", TICK_NUM);
 #ifdef DEBUG_GRADE
     cprintf("End of Test.\n");
@@ -28,8 +46,15 @@ static void print_ticks()
 }
 
 /* idt_init - initialize IDT to each of the entry points in kern/trap/vectors.S */
-void idt_init(void)
-{
+/**
+ * @brief Set up the trap vector and let the kernel touch user memory.
+ *
+ * sscratch is set to 0, which tells the trap entry that the CPU is currently in the kernel (while
+ * a user program runs, sscratch holds the kernel stack pointer, see trapentry.S). stvec is set to
+ * __alltraps (Direct mode, 4-byte aligned). sstatus.SUM is set so that S-mode code may read and
+ * write U-mode pages, which system calls need for their pointer arguments.
+ */
+void idt_init(void) {
     extern void __alltraps(void);
     /* Set sscratch register to 0, indicating to exception vector that we are
      * presently executing in the kernel */
@@ -40,14 +65,15 @@ void idt_init(void)
     set_csr(sstatus, SSTATUS_SUM);
 }
 
-/* trap_in_kernel - test if trap happened in kernel */
-bool trap_in_kernel(struct trapframe *tf)
-{
-    return (tf->status & SSTATUS_SPP) != 0;
-}
-
-void print_trapframe(struct trapframe *tf)
-{
+/**
+ * @brief Print the trap frame address, all general-purpose registers and the four CSRs.
+ *
+ * This is also the fallback output for traps without a dedicated handler. The scause line has
+ * the form "  cause    0x%08x".
+ *
+ * @param tf trap frame to print
+ */
+void print_trapframe(struct trapframe *tf) {
     cprintf("trapframe at %p\n", tf);
     // cprintf("trapframe at 0x%x\n", tf);
     print_regs(&tf->gpr);
@@ -57,8 +83,11 @@ void print_trapframe(struct trapframe *tf)
     cprintf("  cause    0x%08x\n", tf->cause);
 }
 
-void print_regs(struct pushregs *gpr)
-{
+/**
+ * @brief Print the 32 general-purpose registers, one per line, in the order of struct pushregs.
+ * @param gpr register block of a trap frame
+ */
+void print_regs(struct pushregs *gpr) {
     cprintf("  zero     0x%08x\n", gpr->zero);
     cprintf("  ra       0x%08x\n", gpr->ra);
     cprintf("  sp       0x%08x\n", gpr->sp);
@@ -93,22 +122,131 @@ void print_regs(struct pushregs *gpr)
     cprintf("  t6       0x%08x\n", gpr->t6);
 }
 
+/**
+ * @brief Pointer to the mm_struct used by the VMM self-test (vmm.h).
+ * @note Declared only: this file never defines or dereferences it, so it is a harmless leftover
+ *       from the VMM test code.
+ */
 extern struct mm_struct *check_mm_struct;
 
-//lab3 请补充你在lab3中的代码
+//lab3 function2 2414015
+
+/**
+ * @brief Handle an interrupt. The low bits of tf->cause select the source.
+ *
+ * A supervisor timer interrupt arms the next event, counts it and, every TICK_NUM ticks, prints one
+ * line and (lab5) sets need_resched of the current process so that it is preempted when the trap
+ * returns. Other known sources print one line.
+ * The trap frame is left unchanged, so sret resumes the interrupted instruction.
+ *
+ * @param tf trap frame of the interrupt
+ */
+void interrupt_handler(struct trapframe *tf) {
+    /* Bit 63 marks "interrupt". The source number is the rest, and a direct call may or may not have set the bit. */
+    uintptr_t cause = tf->cause << 1 >> 1;
+
+    switch (cause) {
+        case IRQ_S_TIMER:
+            clock_set_next_event();
+            ticks++;
+            if (ticks % TICK_NUM == 0) {
+                print_ticks();
+                // lab5: a user process only gives up the CPU when it asks for it or is preempted,
+                // so the timer has to request a reschedule (checked in trap() on the way out)
+                if (current != NULL) {
+                    current->need_resched = 1;
+                }
+            }
+            break;
+        case IRQ_U_SOFT:
+            cprintf("User software interrupt\n");
+            break;
+        case IRQ_S_SOFT:
+            cprintf("Supervisor software interrupt\n");
+            break;
+        case IRQ_H_SOFT:
+            cprintf("Hypervisor software interrupt\n");
+            break;
+        case IRQ_M_SOFT:
+            cprintf("Machine software interrupt\n");
+            break;
+        case IRQ_U_TIMER:
+            cprintf("User timer interrupt\n");
+            break;
+        case IRQ_H_TIMER:
+            cprintf("Hypervisor timer interrupt\n");
+            break;
+        case IRQ_M_TIMER:
+            cprintf("Machine timer interrupt\n");
+            break;
+        case IRQ_U_EXT:
+            cprintf("User external interrupt\n");
+            break;
+        case IRQ_S_EXT:
+            cprintf("Supervisor external interrupt\n");
+            break;
+        case IRQ_H_EXT:
+            cprintf("Hypervisor external interrupt\n");
+            break;
+        case IRQ_M_EXT:
+            cprintf("Machine external interrupt\n");
+            break;
+        case IRQ_COP:
+            cprintf("Coprocessor interrupt\n");
+            break;
+        case IRQ_HOST:
+            cprintf("Host interrupt\n");
+            break;
+        default:
+            cprintf("Unknown interrupt: cause %d\n", (int)cause);
+            break;
+    }
+}
+
+//lab3 function2 2411622
+
+/**
+ * @brief Handle an exception (scause bit 63 clear).
+ *
+ * An illegal instruction or a breakpoint prints one line with the address of the faulting
+ * instruction and advances tf->epc past it, so that sret resumes at the next instruction instead
+ * of re-executing the one that trapped. The length is read from the instruction itself: the low
+ * two bits are 0b11 for a 32-bit instruction, anything else is a 16-bit compressed one (for
+ * example c.ebreak). Any other exception is dumped with print_trapframe().
+ *
+ * @param tf trap frame of the exception
+ */
+void exception_handler(struct trapframe *tf) {
+    if (tf->cause == CAUSE_ILLEGAL_INSTRUCTION || tf->cause == CAUSE_BREAKPOINT) {
+        uint16_t instruction = *(uint16_t *)(uintptr_t)tf->epc;
+        uintptr_t instruction_length = ((instruction & 0x3) == 0x3) ? 4 : 2;
+
+        if (tf->cause == CAUSE_ILLEGAL_INSTRUCTION) {
+            cprintf("Illegal instruction at 0x%08x\n", tf->epc);
+        } else {
+            cprintf("Breakpoint at 0x%08x\n", tf->epc);
+        }
+        tf->epc += instruction_length;
+    } else {
+        print_trapframe(tf);
+    }
+}
 
 //lab5 function1 YOUR CODE update exception_handler
+// Contract: extend exception_handler() above with the case CAUSE_USER_ECALL. An ecall from user mode
+// has to advance tf->epc past the 4-byte ecall instruction (otherwise sret would execute it again)
+// and then hand the request to syscall() in kern/syscall/syscall.c. The lab3 cases stay unchanged.
 
 
-static inline void trap_dispatch(struct trapframe *tf)
-{
-    if ((intptr_t)tf->cause < 0)
-    {
+/**
+ * @brief Route a trap to interrupt_handler() or exception_handler() by the top bit of scause.
+ * @param tf trap frame of the trap
+ */
+static inline void trap_dispatch(struct trapframe *tf) {
+    if ((intptr_t)tf->cause < 0) {
         // interrupts
         interrupt_handler(tf);
-    }
-    else
-    {
+    } else {
         // exceptions
         exception_handler(tf);
     }
@@ -119,16 +257,25 @@ static inline void trap_dispatch(struct trapframe *tf)
  * the code in kern/trap/trapentry.S restores the old CPU state saved in the
  * trapframe and then uses the iret instruction to return from the exception.
  * */
-void trap(struct trapframe *tf)
-{
+/**
+ * @brief Handle or dispatch an exception/interrupt (provided by the lab framework).
+ *
+ * Before the first process exists (current == NULL) the trap is only dispatched. Afterwards
+ * current->tf is pointed at the new frame for the duration of the trap (system calls and
+ * do_fork() read it) and restored afterwards. For a trap that came from user mode the function
+ * additionally runs two checks before returning to the user program: a process that was marked
+ * PF_EXITING (do_kill) exits with -E_KILLED, and a process with need_resched set (timer tick,
+ * yield) calls schedule(). If and when trap() returns, kern/trap/trapentry.S restores the CPU
+ * state from the trap frame and returns with sret.
+ *
+ * @param tf trap frame built by SAVE_ALL
+ */
+void trap(struct trapframe *tf) {
     // dispatch based on what type of trap occurred
     //    cputs("some trap");
-    if (current == NULL)
-    {
+    if (current == NULL) {
         trap_dispatch(tf);
-    }
-    else
-    {
+    } else {
         struct trapframe *otf = current->tf;
         current->tf = tf;
 
@@ -137,14 +284,11 @@ void trap(struct trapframe *tf)
         trap_dispatch(tf);
 
         current->tf = otf;
-        if (!in_kernel)
-        {
-            if (current->flags & PF_EXITING)
-            {
+        if (!in_kernel) {
+            if (current->flags & PF_EXITING) {
                 do_exit(-E_KILLED);
             }
-            if (current->need_resched)
-            {
+            if (current->need_resched) {
                 schedule();
             }
         }

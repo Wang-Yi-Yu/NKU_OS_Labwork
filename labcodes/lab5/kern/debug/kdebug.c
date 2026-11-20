@@ -1,29 +1,50 @@
+/**
+ * @file   kdebug.c
+ * @brief  Kernel debugging helpers: kernel layout printout and the (unimplemented) stack backtrace.
+ */
 #include <assert.h>
 #include <defs.h>
 #include <stdio.h>
 
+/**
+ * @brief Print the key kernel symbol addresses and the kernel's memory footprint.
+ *
+ * Prints the virtual addresses of kern_init (entry), etext, edata and end (linker symbols
+ * defined in kernel.ld), then the footprint in KB computed as (end - kern_init) rounded up.
+ * The footprint is measured from kern_init, not from the start of the kernel image.
+ *
+ * @note Uses cprintf, so output goes to the console. Takes no arguments and returns nothing.
+ */
 /* *
  * print_kerninfo - print the information about kernel, including the location
  * of kernel entry, the start addresses of data and text segements, the start
  * address of free memory and how many memory that kernel has used.
  * */
-void print_kerninfo(void)
-{
+void print_kerninfo(void) {
     extern char etext[], edata[], end[], kern_init[];
     cprintf("Special kernel symbols:\n");
     cprintf("  entry  0x%08x (virtual)\n", kern_init);
     cprintf("  etext  0x%08x (virtual)\n", etext);
     cprintf("  edata  0x%08x (virtual)\n", edata);
     cprintf("  end    0x%08x (virtual)\n", end);
-    cprintf("Kernel executable memory footprint: %dKB\n",
-            (end - kern_init + 1023) / 1024);
+    cprintf("Kernel executable memory footprint: %dKB\n", (end - kern_init + 1023) / 1024);
 }
 
+/**
+ * @brief Print a stack backtrace (saved return addresses). Not implemented in lab4.
+ *
+ * The student is expected to implement this with the frame-pointer chain described below.
+ * The current implementation only calls panic("Not Implemented!"), so calling it halts the kernel.
+ *
+ * @note The long comment below is the original reference description of the x86 stack/ebp convention.
+ */
 /* *
  * print_debuginfo - read and print the stat information for the address @eip,
  * and info.eip_fn_addr should be the first address of the related function.
  * */
-void print_debuginfo(uintptr_t eip) { panic("Not Implemented!"); }
+void print_debuginfo(uintptr_t eip) {
+    panic("Not Implemented!");
+}
 
 /* *
  * print_stackframe - print a list of the saved eip values from the nested
@@ -74,7 +95,6 @@ void print_debuginfo(uintptr_t eip) { panic("Not Implemented!"); }
  * to the kernel entry, the value of ebp has been set to zero, that's the
  * boundary.
  * */
-void print_stackframe(void)
-{
+void print_stackframe(void) {
     panic("Not Implemented!");
 }

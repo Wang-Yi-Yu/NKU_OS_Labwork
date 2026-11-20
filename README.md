@@ -34,8 +34,7 @@ lab 框架原本针对 QEMU 4.x + OpenSBI v0.4 编写。本仓库的实验环境
    - lab4 的 `libs/riscv.h` 里 `lsatp()` 是 RV32 写法（`SATP32_MODE`），lab5 的 `proc_run` 和 `load_icode` 真正依赖它切换页表，必须使用 lab5 骨架里的 RV64 版本（`0x8000000000000000 | (pgdir >> RISCV_PGSHIFT)`）。
    - `trap_in_kernel()`、`print_pgdir()` 等：前者是骨架提供的函数，合并代码时不要丢；后者在骨架里只有声明、没有定义，而 `sys_pgdir` 需要它，要自己补上。
    - lab3 的时钟中断处理只打印 `100 ticks`，lab5 需要在每 `TICK_NUM` 个 tick 时设置 `current->need_resched = 1`，否则一个死循环的用户进程（`spin` 用例）永远不会被抢占。
-9. **lab6 骨架把前面实验已修好的文件又换回了旧版本，要用 lab5 的版本覆盖（lab6 起）。** lab6 压缩包里的 `kern/init/entry.S`（缺 `0x80000000` 恒等映射）、`kern/mm/pmm.c`（`get_pte()` 又写回 `PTE_U | PTE_V`，`check_pgdir()` 又断言 `PTE_U`）、`user/divzero.c`（又是 `1 / zero`）、`user/libs/syscall.c`（内联汇编又用 `lw/sw`，64 位参数被截断）都回到了第 1 项到第 7 项修改之前的样子。直接用已经适配过的 lab5 版本覆盖，不要在 lab6 骨架上重新补。lab6 本身没有新增 QEMU 8.2 / GCC 15 的不兼容：补回前序代码并按下面两点写好调度器后，`make grade` 在 QEMU 8.2.2 上可以通过，Stride 的 `make qemu` 输出也与文档一致（`sched result: 1 1 2 2 3`）。
-10. **lab6 评分脚本对时钟中断和 RR 的两个隐含要求（与 QEMU 版本无关）。**
-    - `tools/grade.sh` 带 `-DDEBUG_GRADE` 编译，此时 `print_ticks()` 在第一个 100 ticks（约 1 秒）处打印 `End of Test.` 并 panic。`priority` 要跑约 2 秒，所以 lab6 的 `interrupt_handler()` 里不能再调用 `print_ticks()`，要像任务书写的那样每个 tick 都调用 `sched_class_proc_tick(current)`。lab5 的时钟代码（每 100 个 tick 打印并置位 `need_resched`）原样带过来会让 `priority` 的检查全部失败。
-    - 注入的测试 `tools/test_lab6.c` 在一个被 `memset` 清零的运行队列上调用 `default_sched_class.init()`，随后断言 `rq->max_time_slice == MAX_TIME_SLICE`，再断言入队后 `time_slice == MAX_TIME_SLICE`。所以 `RR_init()` 必须自己把 `max_time_slice` 设成 `MAX_TIME_SLICE`（`sched_init()` 在调用 `init` 之前设置过，但测试不经过它）。任务书对 `RR_init` 的描述里没有这一条。
-    - lab6 的 `schedule()` 不能再沿用 lab4/lab5 扫描 `proc_list` 的写法：`wakeup_proc()` 已经把进程放进运行队列，扫描链表会绕过调度类。要改成 "当前进程仍可运行则入队 → `pick_next` → `dequeue` → 为空则选 idleproc"。
+9. **lab6 评分脚本对时钟中断和 RR 的两个隐含要求（与 QEMU 版本无关）。**
+   - `tools/grade.sh` 带 `-DDEBUG_GRADE` 编译，此时 `print_ticks()` 在第一个 100 ticks（约 1 秒）处打印 `End of Test.` 并 panic。`priority` 要跑约 2 秒，所以 lab6 的 `interrupt_handler()` 里不能再调用 `print_ticks()`，要像任务书写的那样每个 tick 都调用 `sched_class_proc_tick(current)`。lab5 的时钟代码（每 100 个 tick 打印并置位 `need_resched`）原样带过来会让 `priority` 的检查全部失败。
+   - 注入的测试 `tools/test_lab6.c` 在一个被 `memset` 清零的运行队列上调用 `default_sched_class.init()`，随后断言 `rq->max_time_slice == MAX_TIME_SLICE`，再断言入队后 `time_slice == MAX_TIME_SLICE`。所以 `RR_init()` 必须自己把 `max_time_slice` 设成 `MAX_TIME_SLICE`（`sched_init()` 在调用 `init` 之前设置过，但测试不经过它）。任务书对 `RR_init` 的描述里没有这一条。
+   - lab6 的 `schedule()` 不能再沿用 lab4/lab5 扫描 `proc_list` 的写法：`wakeup_proc()` 已经把进程放进运行队列，扫描链表会绕过调度类。要改成 "当前进程仍可运行则入队 → `pick_next` → `dequeue` → 为空则选 idleproc"。

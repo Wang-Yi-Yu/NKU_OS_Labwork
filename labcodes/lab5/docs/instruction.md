@@ -4,9 +4,9 @@
 
 ## 实验目的
 
--   了解第一个用户进程创建过程
--   了解系统调用框架的实现机制
--   了解ucore如何实现系统调用sys_fork/sys_exec/sys_exit/sys_wait来进行进程管理
+- 了解第一个用户进程创建过程
+- 了解系统调用框架的实现机制
+- 了解ucore如何实现系统调用sys_fork/sys_exec/sys_exit/sys_wait来进行进程管理
 
 ## 实验内容
 
@@ -29,12 +29,12 @@ void exception_handler(struct trapframe *tf) (kern/trap/trap.c)
 void syscall(void) (kern/syscall/syscall.c)
 static int sys_exit(uint64_t arg[]) (kern/syscall/syscall.c)
 static int sys_fork(uint64_t arg[]) (kern/syscall/syscall.c)
-static int sys_wait(uint64_t arg[]) (kern/syscall/syscall.c)  
-static int sys_exec(uint64_t arg[]) (kern/syscall/syscall.c)  
-static int sys_yield(uint64_t arg[]) (kern/syscall/syscall.c)  
-static int sys_kill(uint64_t arg[]) (kern/syscall/syscall.c)  
-static int sys_getpid(uint64_t arg[]) (kern/syscall/syscall.c)  
-static int sys_putc(uint64_t arg[]) (kern/syscall/syscall.c) 
+static int sys_wait(uint64_t arg[]) (kern/syscall/syscall.c)
+static int sys_exec(uint64_t arg[]) (kern/syscall/syscall.c)
+static int sys_yield(uint64_t arg[]) (kern/syscall/syscall.c)
+static int sys_kill(uint64_t arg[]) (kern/syscall/syscall.c)
+static int sys_getpid(uint64_t arg[]) (kern/syscall/syscall.c)
+static int sys_putc(uint64_t arg[]) (kern/syscall/syscall.c)
 static int sys_pgdir(uint64_t arg[]) (kern/syscall/syscall.c)
 ```
 
@@ -53,13 +53,13 @@ static int sys_pgdir(uint64_t arg[]) (kern/syscall/syscall.c)
 需要更新和完善的函数有：
 
 ```c
-static int init_main(void *arg) (kern/process/proc.c)  
-static struct proc_struct *alloc_proc(void) (kern/process/proc.c)  
-int kernel_thread(int (*fn)(void *), void *arg, uint32_t clone_flags) (kern/process/proc.c)  
-int do_wait(int pid, int *code_store) (kern/process/proc.c)  
-static int user_main(void *arg) (kern/process/proc.c)  
-static int kernel_execve(const char *name, unsigned char *binary, size_t size) (kern/process/proc.c)  
-int do_execve(const char *name, size_t len, unsigned char *binary, size_t size) (kern/process/proc.c)  
+static int init_main(void *arg) (kern/process/proc.c)
+static struct proc_struct *alloc_proc(void) (kern/process/proc.c)
+int kernel_thread(int (*fn)(void *), void *arg, uint32_t clone_flags) (kern/process/proc.c)
+int do_wait(int pid, int *code_store) (kern/process/proc.c)
+static int user_main(void *arg) (kern/process/proc.c)
+static int kernel_execve(const char *name, unsigned char *binary, size_t size) (kern/process/proc.c)
+int do_execve(const char *name, size_t len, unsigned char *binary, size_t size) (kern/process/proc.c)
 static int load_icode(unsigned char *binary, size_t size) (kern/process/proc.c)
 ```
 
@@ -78,9 +78,9 @@ static int load_icode(unsigned char *binary, size_t size) (kern/process/proc.c)
 需要更新和完善的函数有：
 
 ```c
-int do_fork(uint32_t clone_flags, uintptr_t stack, struct trapframe *tf) (kern/process/proc.c)  
-static int copy_mm(uint32_t clone_flags, struct proc_struct *proc) (kern/process/proc.c)  
-int dup_mmap(struct mm_struct *to, struct mm_struct *from) (kern/mm/vmm.c)  
+int do_fork(uint32_t clone_flags, uintptr_t stack, struct trapframe *tf) (kern/process/proc.c)
+static int copy_mm(uint32_t clone_flags, struct proc_struct *proc) (kern/process/proc.c)
+int dup_mmap(struct mm_struct *to, struct mm_struct *from) (kern/mm/vmm.c)
 int copy_range(pde_t *to, pde_t *from, uintptr_t start, uintptr_t end, bool share) (kern/mm/pmm.c)
 ```
 
@@ -99,8 +99,8 @@ int copy_range(pde_t *to, pde_t *from, uintptr_t start, uintptr_t end, bool shar
 要求实现的函数有：
 
 ```c
-int do_exit(int error_code) (kern/process/proc.c)  
-int do_yield(void) (kern/process/proc.c)  
+int do_exit(int error_code) (kern/process/proc.c)
+int do_yield(void) (kern/process/proc.c)
 int do_kill(int pid) (kern/process/proc.c)
 ```
 
@@ -182,9 +182,9 @@ int do_kill(int pid) (kern/process/proc.c)
 
 我们在 lab1 中已经讲解过 RISC-V 的特权级。这里简要回顾一下：
 
--   M态（Machine）：最高权限，运行固件OpenSBI，负责早期引导并向 S 态提供服务接口。
--   S态（Supervisor）：内核态，操作系统内核运行在此级别，管理内存、中断等。
--   U态（User）：用户态，运行普通用户程序，权限受限。
+- M态（Machine）：最高权限，运行固件OpenSBI，负责早期引导并向 S 态提供服务接口。
+- S态（Supervisor）：内核态，操作系统内核运行在此级别，管理内存、中断等。
+- U态（User）：用户态，运行普通用户程序，权限受限。
 
 之前我们已经实现了内存的管理和内核进程的建立，但是那都是在内核态，接下来我们将在用户态运行一些程序。
 
@@ -488,13 +488,13 @@ static int kernel_execve(const char *name, unsigned char *binary, size_t size) {
     #sp为0，说明之前是内核态，我们刚才把内核栈指针换到了sscratch, 需要再拿回来
     #sp不为0 时，说明之前是用户态，sp里现在存的就是内核栈指针，sscratch里现在是用户栈指针
     #sp不为0，就跳到_save_context, 跳过_restore_kernel_sp的代码
-    bnez sp, _save_context     
+    bnez sp, _save_context
 
 _restore_kernel_sp:
     csrr sp, sscratch #刚才把内核栈指针换到了sscratch, 需要再拿回来
 _save_context:
     #分配栈帧
-    addi sp, sp, -36 * REGBYTES 
+    addi sp, sp, -36 * REGBYTES
     # save x registers
     STORE x0, 0*REGBYTES(sp)
     STORE x1, 1*REGBYTES(sp)
@@ -639,9 +639,9 @@ forkrets:
 
 本次我们使用的双重gdb方案和lab2中调试地址翻译流程的操作流程都是基本相同的。我们先分析一下**调试思路**。
 
->   **思考**
+> **思考**
 >
->   回想一下我们之前调试地址翻译流程的调试思路，我们是找到了一个地址，并且知道这个地址一定会被访问，并且第一次访问的时候一定需要查找页表，我们直接在必经之路上打上**条件断点**来判断当前传入的地址是否是我们要观测的地址，然后直接启动内核执行就可以了，当ucore访问到这个地址的时候，qemu就会自动停下，我们就可以跟踪代码的执行。
+> 回想一下我们之前调试地址翻译流程的调试思路，我们是找到了一个地址，并且知道这个地址一定会被访问，并且第一次访问的时候一定需要查找页表，我们直接在必经之路上打上**条件断点**来判断当前传入的地址是否是我们要观测的地址，然后直接启动内核执行就可以了，当ucore访问到这个地址的时候，qemu就会自动停下，我们就可以跟踪代码的执行。
 
 那么系统调用的观测是不是也可以这么做呢？
 
@@ -705,15 +705,15 @@ Breakpoint 1 at 0x8000f8: file user/libs/syscall.c, line 19.
 (gdb) si
 0x0000000000800104      19          asm volatile (
 1: x/7i $pc
-=> 0x800104 <syscall+44>:       ecall  
+=> 0x800104 <syscall+44>:       ecall
    0x800108 <syscall+48>:
     sd  a0,28(sp)
    0x80010c <syscall+52>:
     lw  a0,28(sp)
    0x80010e <syscall+54>:
     addi        sp,sp,144
-   0x800110 <syscall+56>:       ret    
-   0x800112 <sys_exit>: mv      a1,a0  
+   0x800110 <syscall+56>:       ret
+   0x800112 <sys_exit>: mv      a1,a0
    0x800114 <sys_exit+2>:
     li  a0,1
 (gdb) i r $pc
@@ -726,9 +726,9 @@ pc             0x800104 0x800104 <syscall+44>
 
 到此，我们就完整的观测了一个从U态触发系统调用进入到S态，并在S态进行系统调用的处理，处理结束之后返回U态的过程，尤其是，我们细致的观测了qemu是如何模拟硬件进行`ecall`和`sret`两个指令的处理的。
 
->   **最后的小建议**
+> **最后的小建议**
 >
->   调试过程中可能会遇到各种奇怪的问题，比如断点不触发、程序跑飞等等。别慌！ 这正是学习的机会。把错误信息、你的操作步骤、以及你的困惑一起扔给大模型，它会给你提供排查思路。记住，大模型不只是帮你写代码的工具，更是你学习的智能助手。用好它，你就能在复杂系统的探索路上走得更远。
+> 调试过程中可能会遇到各种奇怪的问题，比如断点不触发、程序跑飞等等。别慌！ 这正是学习的机会。把错误信息、你的操作步骤、以及你的困惑一起扔给大模型，它会给你提供排查思路。记住，大模型不只是帮你写代码的工具，更是你学习的智能助手。用好它，你就能在复杂系统的探索路上走得更远。
 
 ### 调试要求
 

@@ -208,7 +208,6 @@
 #define EXT_IO_BASE 0x40000000
 #define DRAM_BASE 0x80000000
 
-// page table entry (PTE) fields
 /**
  * @brief Page table entry flag bits (Sv39 / Sv32 layout).
  *

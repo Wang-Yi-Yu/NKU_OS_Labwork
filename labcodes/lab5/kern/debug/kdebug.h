@@ -11,7 +11,7 @@
 
 /** @brief Print the addresses of the kernel entry, etext, edata and end, and the kernel memory footprint. */
 void print_kerninfo(void);
-/** @brief Print a stack backtrace. Not implemented in lab4: it panics. */
+/** @brief Print a stack backtrace. Not implemented in the skeleton: it panics. */
 void print_stackframe(void);
 void print_debuginfo(uintptr_t eip);
 

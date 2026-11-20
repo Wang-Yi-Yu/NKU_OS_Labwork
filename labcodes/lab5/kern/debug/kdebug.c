@@ -15,11 +15,6 @@
  *
  * @note Uses cprintf, so output goes to the console. Takes no arguments and returns nothing.
  */
-/* *
- * print_kerninfo - print the information about kernel, including the location
- * of kernel entry, the start addresses of data and text segements, the start
- * address of free memory and how many memory that kernel has used.
- * */
 void print_kerninfo(void) {
     extern char etext[], edata[], end[], kern_init[];
     cprintf("Special kernel symbols:\n");
@@ -31,17 +26,13 @@ void print_kerninfo(void) {
 }
 
 /**
- * @brief Print a stack backtrace (saved return addresses). Not implemented in lab4.
+ * @brief Print a stack backtrace (saved return addresses). Not implemented in the skeleton: it panics.
  *
  * The student is expected to implement this with the frame-pointer chain described below.
  * The current implementation only calls panic("Not Implemented!"), so calling it halts the kernel.
  *
  * @note The long comment below is the original reference description of the x86 stack/ebp convention.
  */
-/* *
- * print_debuginfo - read and print the stat information for the address @eip,
- * and info.eip_fn_addr should be the first address of the related function.
- * */
 void print_debuginfo(uintptr_t eip) {
     panic("Not Implemented!");
 }

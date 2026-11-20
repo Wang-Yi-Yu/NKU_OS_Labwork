@@ -2,8 +2,7 @@
  * @file   stdlib.h
  * @brief  General utility declarations: the RAND_MAX limit, rand/srand and hash32.
  *
- * rand and srand are declared for compatibility, but libs/rand.c is not part of lab4,
- * so they have no definition. Only hash32 (implemented in libs/hash.c) is usable.
+ * rand and srand are implemented in libs/rand.c, hash32 in libs/hash.c.
  */
 
 #ifndef __LIBS_STDLIB_H__
@@ -12,24 +11,21 @@
 #include <defs.h>
 
 /** @brief The largest number rand() will return. */
-/* the largest number rand will return */
 #define RAND_MAX 2147483647UL
 
-/* libs/rand.c */
 /**
  * @brief Return a pseudo-random integer in [0, RAND_MAX].
  * @return A pseudo-random value.
- * @note Declared only; no definition is provided in lab4.
+ * @note Defined in libs/rand.c.
  */
 int rand(void);
 /**
  * @brief Seed the pseudo-random number generator used by rand().
  * @param[in] seed  New seed value.
- * @note Declared only; no definition is provided in lab4.
+ * @note Defined in libs/rand.c.
  */
 void srand(unsigned int seed);
 
-/* libs/hash.c */
 /**
  * @brief Hash a 32-bit value into a range of 2^bits values; see libs/hash.c.
  * @param[in] val   Input value.

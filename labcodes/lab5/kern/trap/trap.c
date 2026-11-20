@@ -45,7 +45,6 @@ static void print_ticks() {
 #endif
 }
 
-/* idt_init - initialize IDT to each of the entry points in kern/trap/vectors.S */
 /**
  * @brief Set up the trap vector and let the kernel touch user memory.
  *
@@ -63,6 +62,15 @@ void idt_init(void) {
     write_csr(stvec, &__alltraps);
     /* Allow kernel to access user memory */
     set_csr(sstatus, SSTATUS_SUM);
+}
+
+/**
+ * @brief Tell whether a trap was taken from kernel mode (provided by the lab framework).
+ * @param tf trap frame of the trap
+ * @return true if sstatus.SPP is set in the frame (the trap came from S mode), false for U mode
+ */
+bool trap_in_kernel(struct trapframe *tf) {
+    return (tf->status & SSTATUS_SPP) != 0;
 }
 
 /**
@@ -252,11 +260,6 @@ static inline void trap_dispatch(struct trapframe *tf) {
     }
 }
 
-/* *
- * trap - handles or dispatches an exception/interrupt. if and when trap() returns,
- * the code in kern/trap/trapentry.S restores the old CPU state saved in the
- * trapframe and then uses the iret instruction to return from the exception.
- * */
 /**
  * @brief Handle or dispatch an exception/interrupt (provided by the lab framework).
  *

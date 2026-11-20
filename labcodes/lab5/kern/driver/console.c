@@ -4,7 +4,7 @@
  *
  * Only cons_putc and cons_getc do real work; they call sbi_console_putchar / sbi_console_getchar
  * with interrupts disabled around the call. The keyboard and serial interrupt hooks and cons_init
- * are empty stubs in lab4, since input comes through SBI and not through a UART driver.
+ * are empty stubs, since input comes through SBI and not through a UART driver.
  */
 #include <sbi.h>
 #include <sync.h>
@@ -12,21 +12,18 @@
 #include <console.h>
 
 /**
- * @brief Feed keyboard input into the console buffer. Empty stub in lab4.
+ * @brief Feed keyboard input into the console buffer. Empty stub.
  */
-/* kbd_intr - try to feed input characters from keyboard */
 void kbd_intr(void) {}
 
 /**
- * @brief Feed serial-port input into the console buffer. Empty stub in lab4.
+ * @brief Feed serial-port input into the console buffer. Empty stub.
  */
-/* serial_intr - try to feed input characters from serial port */
 void serial_intr(void) {}
 
 /**
- * @brief Initialise the console devices. Empty stub in lab4 (the SBI console needs no setup).
+ * @brief Initialise the console devices. Empty stub (the SBI console needs no setup).
  */
-/* cons_init - initializes the console devices */
 void cons_init(void) {}
 
 /**
@@ -37,7 +34,6 @@ void cons_init(void) {}
  *
  * @param[in] c  Character to print; only the low 8 bits are used.
  */
-/* cons_putc - print a single character @c to console devices */
 void cons_putc(int c) {
     bool intr_flag;
     local_intr_save(intr_flag);
@@ -53,10 +49,6 @@ void cons_putc(int c) {
  *
  * @return The character read, or -1 if no input is waiting.
  */
-/* *
- * cons_getc - return the next input character from console,
- * or 0 if none waiting.
- * */
 int cons_getc(void) {
     int c = 0;
     bool intr_flag;

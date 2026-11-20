@@ -68,7 +68,7 @@ int kern_init(void) {
 
 /**
  * @brief Leftover from lab1: count how many times it was called (static round counter).
- * @note Not called anywhere in lab4. Kept as it was in the template.
+ * @note Not called anywhere. Kept as it was in the template.
  */
 static void lab1_print_cur_status(void) {
     static int round = 0;

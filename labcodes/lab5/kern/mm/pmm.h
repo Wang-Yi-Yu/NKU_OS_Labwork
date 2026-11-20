@@ -2,10 +2,10 @@
  * @file   pmm.h
  * @brief  Interface of physical memory management (PMM): the pmm_manager
  *         "class", the page allocation/free entry points, the page mapping
- *         helpers used by the lab4 exercises, and address/descriptor conversions.
+ *         helpers used by the lab4 and lab5 exercises, and address/descriptor conversions.
  *
  * C has no classes, so struct pmm_manager (a table of function pointers) is the
- * interface. An allocation algorithm (First-Fit in default_pmm.c, Best-Fit, ...)
+ * interface. An allocation algorithm (Best-Fit in default_pmm.c, First-Fit, ...)
  * implements the methods and exports an XXX_pmm_manager instance; the instance
  * is selected in init_pmm_manager() (pmm.c).
  *
@@ -27,7 +27,7 @@
 /** @name Clone flags for do_fork()
  *  @{ */
 /** @brief Share the parent's address space (mm_struct / page directory) instead of copying it. */
-#define CLONE_VM     0x00000100  // set if VM shared between processes
+#define CLONE_VM 0x00000100  // set if VM shared between processes
 /** @brief Thread group flag; defined for completeness, not used in this lab. */
 #define CLONE_THREAD 0x00000200  // thread group
 
@@ -148,14 +148,6 @@ void load_esp0(uintptr_t esp0);
  */
 void tlb_invalidate(pde_t *pgdir, uintptr_t la);
 /**
- * @brief Allocate a page and map it at la (alloc_page() + page_insert()).
- * @param pgdir root page directory
- * @param la    linear address to map
- * @param perm  permission bits of the mapping
- * @return the new page, or NULL if memory is insufficient
- * @warning Declared here but not defined in this lab's pmm.c; it is not called yet.
- */
-/**
  * @brief Allocate a page and map it at la with permission perm (lab5).
  * @param pgdir root page directory
  * @param la    linear address to map
@@ -190,7 +182,9 @@ int copy_range(pde_t *to, pde_t *from, uintptr_t start, uintptr_t end, bool shar
 
 /**
  * @brief Print the page directory and its mappings (debugging aid).
- * @warning Declared here but not defined in this lab's pmm.c.
+ * @warning Declared here but not defined anywhere in the lab5 skeleton. sys_pgdir() (syscall.c)
+ *          and the user program user/pgdir.c need it, so the implementation has to be added.
+ *          pmm.c already contains the static helpers perm2str() and get_pgtable_items() for it.
  */
 void print_pgdir(void);
 
@@ -202,11 +196,6 @@ void print_pgdir(void);
  * @param kva kernel virtual address
  * @return the corresponding physical address
  */
-/* *
- * PADDR - takes a kernel virtual address (an address that points above KERNBASE),
- * where the machine's maximum 256MB of physical memory is mapped and returns the
- * corresponding physical address.  It panics if you pass it a non-kernel virtual address.
- * */
 #define PADDR(kva)                                                 \
     ({                                                             \
         uintptr_t __m_kva = (uintptr_t)(kva);                      \
@@ -224,10 +213,6 @@ void print_pgdir(void);
  * @param pa physical address
  * @return the kernel virtual address
  */
-/* *
- * KADDR - takes a physical address and returns the corresponding kernel virtual
- * address. It panics if you pass an invalid physical address.
- * */
 #define KADDR(pa)                                                \
     ({                                                           \
         uintptr_t __m_pa = (pa);                                 \

@@ -58,10 +58,6 @@ static uint64_t timebase;
  * @note The event is armed before MIP_STIP is set in sie; the interrupt cannot be taken until
  *       sstatus.SIE is set, so this order is safe.
  */
-/* *
- * clock_init - initialize 8253 clock to interrupt 100 times per second,
- * and then enable IRQ_TIMER.
- * */
 void clock_init(void) {
     // divided by 500 when using Spike(2MHz)
     // divided by 100 when using QEMU(10MHz)

@@ -66,7 +66,6 @@
  * Equals KERNEL_BEGIN_PADDR (0x80200000) + PHYSICAL_MEMORY_OFFSET
  * (0xFFFFFFFF40000000). PADDR() panics on any virtual address below this value.
  */
-/* All physical memory mapped at this address */
 #define KERNBASE 0xFFFFFFFFC0200000
 /**
  * @brief Maximum amount of physical memory (in bytes) the kernel manages: 0x7E00000 = 126 MiB.
@@ -95,12 +94,6 @@
  * The same value is stored at run time in the global va_pa_offset (pmm.c).
  */
 #define PHYSICAL_MEMORY_OFFSET 0xFFFFFFFF40000000
-/* *
- * Virtual page table. Entry PDX[VPT] in the PD (Page Directory) contains
- * a pointer to the page directory itself, thereby turning the PD into a page
- * table, which maps all the PTEs (Page Table Entry) containing the page mappings
- * for the entire virtual address space into that 4 Meg region starting at VPT.
- * */
 
 /**
  * @brief Number of pages in one kernel stack.
@@ -167,11 +160,6 @@ typedef pte_t swap_entry_t;  //the pte can also be a swap entry
  *  - pra_page_link, pra_vaddr: used by the page replacement (swap) algorithm;
  *                  not touched by the allocator.
  */
-/* *
- * struct Page - Page descriptor structures. Each Page describes one
- * physical page. In kern/mm/pmm.h, you can find lots of useful functions
- * that convert Page to other data types, such as physical address.
- * */
 struct Page {
     int ref;                     // page frame's reference counter
     uint64_t flags;              // array of flags that describe the status of the page frame
@@ -183,7 +171,6 @@ struct Page {
 
 /** @name Bit numbers of struct Page::flags
  *  @{ */
-/* Flags describing the status of a page frame */
 /**
  * @brief Reserved bit (bit number, not a mask).
  *
@@ -235,7 +222,6 @@ struct Page {
  * linked through Page::page_link; nr_free is the total number of free pages in
  * all blocks on the list (not the number of blocks).
  */
-/* free_area_t - maintains a doubly linked list to record free (unused) pages */
 typedef struct {
     list_entry_t free_list;  // the list header
     unsigned int nr_free;    // # of free pages in this free list

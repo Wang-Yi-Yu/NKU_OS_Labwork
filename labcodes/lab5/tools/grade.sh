@@ -1,4 +1,15 @@
 #!/bin/sh
+#
+# Lab5 autograder.
+#
+# Usage: tools/grade.sh [-v]
+#   -v  verbose: show the build and QEMU output on the terminal, and stop at the first failed check.
+#
+# Flow: build the kernel (with the tests from tools/inject.py), run QEMU until the kernel reaches
+# readline() (kernel monitor), then check the serial log saved in $qemu_out against a list of
+# expected lines for each user program. A check passes only if every expected line is found.
+# The score is the sum over checks, and the script exits with status 1 if it is not full marks.
+# Lines with a leading "!" must NOT appear, and lines after "-" are regular expressions.
 
 verbose=false
 if [ "x$1" = "x-v" ]; then
@@ -63,6 +74,7 @@ total=0
 total_pos=0
 
 ## default functions
+# update_score: add the current part to the running totals and reset the part.
 update_score() {
     total=`expr $total + $part`
     total_pos=`expr $total_pos + $part_pos`
@@ -80,6 +92,7 @@ show_part() {
     update_score
 }
 
+# show_final: print the total score and exit with status 1 if it is not full marks.
 show_final() {
     update_score
     echo "Total Score: $total/$total_pos"
@@ -111,17 +124,20 @@ show_msg() {
     fi
 }
 
+# pass: record a passed check, worth $pts points.
 pass() {
     show_msg OK "$@"
     part=`expr $part + $pts`
     part_pos=`expr $part_pos + $pts`
 }
 
+# fail: record a failed check (the points are added to the maximum score, not to the earned score).
 fail() {
     show_msg WRONG "$@"
     part_pos=`expr $part_pos + $pts`
 }
 
+# run_qemu: start QEMU in the background and, if a break function is set, wait for it in gdb.
 run_qemu() {
     qemuextra=
     if [ "$brkfun" ]; then
@@ -159,6 +175,7 @@ run_qemu() {
     fi
 }
 
+# build_run: build the kernel (with optional DEFS), run it under QEMU and save the log.
 build_run() {
     show_build_tag "$1"
     shift
@@ -198,6 +215,8 @@ check_result() {
     fi
 }
 
+# check_regexps: check each expected line in $qemu_out; '!' negates the next pattern and '-'
+# makes it a regular expression (grep -E) instead of a fixed string (grep -F).
 check_regexps() {
     okay=yes
     not=0
@@ -242,6 +261,7 @@ check_regexps() {
     fi
 }
 
+# run_test: build one user program (-prog NAME), run it and check the output with -check.
 run_test() {
     tag=
     prog=
@@ -286,6 +306,7 @@ run_test() {
     check_result 'check result' "$check" "$@"
 }
 
+# quick_run: build and run the kernel without checking the output.
 quick_run() {
     tag="$1"
     shift
@@ -299,6 +320,7 @@ quick_run() {
     build_run "$tag" "$defs"
 }
 
+# quick_check: check the current $qemu_out against the given expected lines.
 quick_check() {
     tag="$1"
     shift
@@ -317,6 +339,8 @@ qemuopts="-machine virt -nographic -bios default -kernel bin/ucore.img"
 ## set break-function, default is readline
 brkfun=readline
 
+# default_check: check the lines every test must print: the injected [Test ...] PASS lines,
+# the memory-management check messages and the timer setup line.
 default_check() {
     pts=7
     check_regexps "$@"
@@ -335,7 +359,8 @@ default_check() {
     '++ setup timer interrupts'
 }
 
-## check now!!
+## check now!! Each run_test runs one user program from user/ and checks its output.
+## The -check default_check adds the common kernel lines to every program's own expected lines.
 
 run_test -prog 'badsegment' -check default_check                \
         'kernel_execve: pid = 2, name = "badsegment".'          \

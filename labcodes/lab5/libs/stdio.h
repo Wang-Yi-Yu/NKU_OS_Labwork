@@ -12,7 +12,6 @@
 #include <defs.h>
 #include <stdarg.h>
 
-/* kern/libs/stdio.c */
 /**
  * @brief Format and print to the console, printf style.
  * @param[in] fmt  Format string.
@@ -45,7 +44,6 @@ int cputs(const char *str);
  */
 int getchar(void);
 
-/* kern/libs/readline.c */
 /**
  * @brief Print a prompt and read one edited line from the console.
  * @param[in] prompt  String printed first; NULL prints nothing.
@@ -54,7 +52,6 @@ int getchar(void);
  */
 char *readline(const char *prompt);
 
-/* libs/printfmt.c */
 /**
  * @brief Format a string and send each character to a caller-supplied output function.
  * @param[in] putch   Called once per output character as putch(ch, putdat).

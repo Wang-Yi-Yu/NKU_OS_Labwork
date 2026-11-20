@@ -32,10 +32,6 @@ static bool is_panic = 0;
  * @param[in] fmt   printf-style format string for the message.
  * @param[in] ...   Arguments matching @p fmt.
  */
-/* *
- * __panic - __panic is called on unresolvable fatal errors. it prints
- * "panic: 'message'", and then enters the kernel monitor.
- * */
 void __panic(const char *file, int line, const char *fmt, ...) {
     if (is_panic) {
         goto panic_dead;
@@ -70,7 +66,6 @@ panic_dead:
  * @param[in] fmt   printf-style format string for the message.
  * @param[in] ...   Arguments matching @p fmt.
  */
-/* __warn - like panic, but don't */
 void __warn(const char *file, int line, const char *fmt, ...) {
     va_list ap;
     va_start(ap, fmt);

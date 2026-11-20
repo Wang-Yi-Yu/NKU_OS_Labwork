@@ -2,13 +2,12 @@
  * @file   stdio.c
  * @brief  High-level kernel console I/O: cprintf, vcprintf, cputchar and getchar.
  *
- * All output goes through cons_putc in the console driver. There is no cputs in lab4.
+ * All output goes through cons_putc in the console driver. cputs writes a string followed by a newline.
  */
 #include <defs.h>
 #include <stdio.h>
 #include <console.h>
 
-/* HIGH level console I/O */
 
 /**
  * @brief Output callback for vprintfmt: write one character and count it.
@@ -16,10 +15,6 @@
  * @param[in]     c    Character to print.
  * @param[in,out] cnt  Pointer to the running count of characters printed; incremented by one.
  */
-/* *
- * cputch - writes a single character @c to stdout, and it will
- * increace the value of counter pointed by @cnt.
- * */
 static void cputch(int c, int *cnt) {
     cons_putc(c);
     (*cnt)++;
@@ -33,15 +28,6 @@ static void cputch(int c, int *cnt) {
  * @return The number of characters printed (the length the output would have).
  * @note Call this if you already hold a va_list; otherwise use cprintf().
  */
-/* *
- * vcprintf - format a string and writes it to stdout
- *
- * The return value is the number of characters which would be
- * written to stdout.
- *
- * Call this function if you are already dealing with a va_list.
- * Or you probably want cprintf() instead.
- * */
 int vcprintf(const char *fmt, va_list ap) {
     int cnt = 0;
     vprintfmt((void *)cputch, &cnt, fmt, ap);
@@ -55,12 +41,6 @@ int vcprintf(const char *fmt, va_list ap) {
  * @param[in] ...  Arguments matching @p fmt.
  * @return The number of characters printed.
  */
-/* *
- * cprintf - formats a string and writes it to stdout
- *
- * The return value is the number of characters which would be
- * written to stdout.
- * */
 int cprintf(const char *fmt, ...) {
     va_list ap;
     int cnt;
@@ -75,7 +55,6 @@ int cprintf(const char *fmt, ...) {
  *
  * @param[in] c  Character to print.
  */
-/* cputchar - writes a single character to stdout */
 void cputchar(int c) {
     cons_putc(c);
 }
@@ -86,10 +65,6 @@ void cputchar(int c) {
  * @param[in] str  NUL-terminated string to print.
  * @return The number of characters printed, including the newline.
  */
-/* *
- * cputs- writes the string pointed by @str to stdout and
- * appends a newline character.
- * */
 int cputs(const char *str) {
     int cnt = 0;
     char c;
@@ -109,7 +84,6 @@ int cputs(const char *str) {
  *
  * @return The character read (non-zero), or a negative value if no input is available.
  */
-/* getchar - reads a single non-zero character from stdin */
 int getchar(void) {
     int c;
     while ((c = cons_getc()) == 0)

@@ -101,7 +101,7 @@ struct proc_struct {
  * @brief wait_state value of a process sleeping in do_wait() for a child; WT_INTERRUPTED means
  *        that wakeup_proc() (for example from do_kill) may wake it up.
  */
-#define WT_CHILD       (0x00000001 | WT_INTERRUPTED)
+#define WT_CHILD (0x00000001 | WT_INTERRUPTED)
 /** @brief Bit of proc_struct::wait_state: the wait may be interrupted. */
 #define WT_INTERRUPTED 0x80000000  // the wait state could be interrupted
 

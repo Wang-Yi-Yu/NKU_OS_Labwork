@@ -19,7 +19,7 @@
 #include <memlayout.h>
 #include <sync.h>
 
-// pre define
+/** @brief Forward declaration: vma_struct refers to mm_struct before it is defined. */
 struct mm_struct;
 
 /**
@@ -49,11 +49,11 @@ struct vma_struct {
  *  VM_READ: readable; VM_WRITE: writable; VM_EXEC: executable.
  *  @{ */
 /** @brief The area is readable (bit 0). */
-#define VM_READ  0x00000001
+#define VM_READ 0x00000001
 /** @brief The area is writable (bit 1). */
 #define VM_WRITE 0x00000002
 /** @brief The area is executable (bit 2). */
-#define VM_EXEC  0x00000004
+#define VM_EXEC 0x00000004
 /** @brief The area is a user stack (bit 3, lab5); used by load_icode() for the user stack VMA. */
 #define VM_STACK 0x00000008
 

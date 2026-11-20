@@ -19,7 +19,6 @@
  *
  * e_magic must equal ELF_MAGIC. e_entry is the virtual address where execution starts.
  */
-/* file header */
 struct elfhdr {
     uint32_t e_magic;  // must equal ELF_MAGIC
     uint8_t e_elf[12];
@@ -44,7 +43,6 @@ struct elfhdr {
  * A loader copies p_filesz bytes from p_offset to virtual address p_va and zero-fills
  * up to p_memsz (the difference is .bss).
  */
-/* program section header */
 struct proghdr {
     uint32_t p_type;    // loadable code or data, dynamic linking info,etc.
     uint32_t p_flags;   // read/write/execute bits
@@ -56,11 +54,9 @@ struct proghdr {
     uint64_t p_align;   // required alignment, invariably hardware page size
 };
 
-/* values for Proghdr::p_type */
 /** @brief Segment type: loadable segment that must be mapped into memory. */
 #define ELF_PT_LOAD 1
 
-/* flag bits for Proghdr::p_flags */
 /** @name Segment permission bits (Proghdr::p_flags). @{ */
 /** @brief Segment is executable. */
 #define ELF_PF_X 1

@@ -85,7 +85,6 @@ void __noreturn __panic(const char *file, int line, const char *fmt, ...);
         }                                      \
     } while (0)
 
-// static_assert(x) will generate a compile-time error if 'x' is false.
 /**
  * @brief Compile-time assertion: compilation fails if @p x is 0.
  *

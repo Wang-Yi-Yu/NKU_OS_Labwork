@@ -23,10 +23,8 @@
 #define __noreturn __attribute__((noreturn))
 
 /** @brief Boolean type: 0 is false, non-zero is true. */
-/* Represents true-or-false values */
 typedef long long bool;
 
-/* Explicitly-sized versions of integer types */
 /** @name Fixed-width integer types. @{ */
 typedef char int8_t;
 typedef unsigned char uint8_t;
@@ -46,28 +44,17 @@ typedef uint32_t uint_t;
 typedef int32_t sint_t;
 #endif
 
-/* *
- * Pointers and addresses are 32 bits long.
- * We use pointer types to represent addresses,
- * uintptr_t to represent the numerical values of addresses.
- * */
 /** @brief Signed integer big enough to hold a pointer value. */
 typedef sint_t intptr_t;
 /** @brief Unsigned integer big enough to hold a pointer value; used for address arithmetic. */
 typedef uint_t uintptr_t;
 
-/* size_t is used for memory object sizes */
 /** @brief Unsigned type used for memory object sizes and counts. */
 typedef uintptr_t size_t;
 
-/* used for page numbers */
 /** @brief Physical or virtual page number. */
 typedef size_t ppn_t;
 
-/* *
- * Rounding operations (efficient when n is a power of 2)
- * Round down to the nearest multiple of n
- * */
 /**
  * @brief Round @p a down to the nearest multiple of @p n.
  *
@@ -92,7 +79,6 @@ typedef size_t ppn_t;
  * @param[in] n  Alignment, normally a power of two.
  * @return The smallest multiple of @p n that is not less than @p a.
  */
-/* Round up to the nearest multiple of n */
 #define ROUNDUP(a, n)                                       \
     ({                                                      \
         size_t __n = (size_t)(n);                           \
@@ -105,15 +91,8 @@ typedef size_t ppn_t;
  * @param[in] member  Name of the member.
  * @return The offset in bytes, as size_t.
  */
-/* Return the offset of 'member' relative to the beginning of a struct type */
 #define offsetof(type, member) ((size_t)(&((type *)0)->member))
 
-/* *
- * to_struct - get the struct from a ptr
- * @ptr:    a struct pointer of member
- * @type:   the type of the struct this is embedded in
- * @member: the name of the member within the struct
- * */
 /**
  * @brief Recover the enclosing struct from a pointer to one of its members (container_of).
  *

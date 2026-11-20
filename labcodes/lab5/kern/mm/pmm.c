@@ -30,27 +30,20 @@
 #include <riscv.h>
 
 /** @brief Virtual address of the Page descriptor array; `pages[i]` describes page number `i + nbase`. Set by page_init(). */
-// virtual address of physical page array
 struct Page *pages;
 /** @brief Exclusive upper bound of the managed physical page numbers (end of usable DRAM / PGSIZE). Set by page_init(). */
-// amount of physical memory (in pages)
 size_t npage = 0;
 /** @brief Offset of the kernel linear mapping (`va = pa + va_pa_offset`); set to PHYSICAL_MEMORY_OFFSET by page_init(). */
-// The kernel image is mapped at VA=KERNBASE and PA=info.base
 uint_t va_pa_offset;
 /** @brief Page number of the start of DRAM (DRAM_BASE / PGSIZE, 0x80000 on RISC-V); the index base of ::pages. */
-// memory starts at 0x80000000 in RISC-V
 const size_t nbase = DRAM_BASE / PGSIZE;
 
 /** @brief Virtual address of the boot page directory (boot_page_table_sv39 in entry.S); set in pmm_init(). */
-// virtual address of boot-time page directory
 pde_t *boot_pgdir_va = NULL;
 /** @brief Physical address of the boot page directory, PADDR(boot_pgdir_va). */
-// physical address of boot-time page directory
 uintptr_t boot_pgdir_pa;
 
 /** @brief The physical memory manager in use, assigned by init_pmm_manager(). */
-// physical memory management
 const struct pmm_manager *pmm_manager;
 
 static void check_alloc_page(void);

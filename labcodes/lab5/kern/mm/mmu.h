@@ -98,7 +98,6 @@
 
 /** @name Page directory / page table geometry
  *  @{ */
-/* page directory and page table constants */
 #define NPDEENTRY 512  // page directory entries per page directory
 #define NPTEENTRY 512  // page table entries per page table
 
@@ -112,7 +111,7 @@
 #define PTSIZE  (PGSIZE * NPTEENTRY)  // bytes mapped by a page directory entry
 #define PTSHIFT 21                    // log2(PTSIZE)
 /** @brief Bytes mapped by one level-1 page directory (PTSIZE * 512 = 1 GiB); used by exit_range(). */
-#define PDSIZE  (PTSIZE * NPDEENTRY)  // bytes mapped by a page directory
+#define PDSIZE (PTSIZE * NPDEENTRY)  // bytes mapped by a page directory
 
 /** @} */
 
@@ -132,7 +131,6 @@
  *  (R/W/X all 0 marks a pointer to the next-level table); U: user accessible;
  *  G: global; A: accessed; D: dirty; SOFT: reserved for software.
  *  @{ */
-// page table entry (PTE) fields
 #define PTE_V    0x001  // Valid
 #define PTE_R    0x002  // Read
 #define PTE_W    0x004  // Write

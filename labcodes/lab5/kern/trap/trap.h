@@ -5,9 +5,10 @@
  * A trap (interrupt or exception) enters the kernel at __alltraps in trapentry.S, which pushes a
  * struct trapframe on the kernel stack and calls trap(). The assembly macros SAVE_ALL/RESTORE_ALL
  * and the structs below must agree: x0..x31 are stored at offsets 0..31 words, followed by the
- * four CSRs status, epc, badvaddr, cause at words 32..35, 36 words in total. Lab4 also uses
- * forkrets(), which builds the first return of a new kernel thread from a trap frame, so the
- * same layout is required for threads that were never trapped.
+ * four CSRs status, epc, tval, cause at words 32..35, 36 words in total. forkrets() also uses
+ * it: the first return of a new thread or process is built from a trap frame, so the same layout
+ * is required for threads that were never trapped. In lab5 a trap frame can describe a return to
+ * user mode as well.
  */
 #ifndef __KERN_TRAP_TRAP_H__
 #define __KERN_TRAP_TRAP_H__
@@ -65,7 +66,8 @@ struct trapframe {
     struct pushregs gpr; /**< General-purpose registers. */
     uintptr_t status;    /**< sstatus: saved privilege and interrupt-enable bits. */
     uintptr_t epc; /**< sepc: address to return to (the trapping or interrupted instruction). */
-    uintptr_t tval; /**< stval: extra trap information, e.g. faulting address or instruction bits. */
+    uintptr_t
+        tval; /**< stval: extra trap information, e.g. faulting address or instruction bits. */
     uintptr_t cause; /**< scause: top bit set for an interrupt, the low bits give the cause code. */
 };
 

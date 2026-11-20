@@ -4,7 +4,7 @@
  *
  * The kernel debugger can understand some debugging information in the STABS format; see
  * http://sources.redhat.com/gdb/onlinedocs/stabs_toc.html. The kernel only uses the N_SO,
- * N_SOL, N_FUN and N_SLINE types. Nothing in the current lab4 code reads a STABS table
+ * N_SOL, N_FUN and N_SLINE types. Nothing in the current code reads a STABS table
  * (print_debuginfo() is not implemented), the header is kept for completeness.
  */
 #ifndef __KERN_DEBUG_STAB_H__

@@ -3,7 +3,7 @@
  * @brief  PC keyboard controller register and command definitions (i8042 / NetBSD kbdreg.h).
  *
  * These constants come from the PC keyboard controller and are not used by the RISC-V
- * console path in lab4, which reads input through SBI. They are kept for reference.
+ * console path, which reads input through SBI. They are kept for reference.
  */
 
 #ifndef __KERN_DRIVER_KBDREG_H__
@@ -103,7 +103,6 @@
  * @brief Commands sent to the keyboard itself through the data port.
  * @{
  */
-/* keyboard commands */
 #define KBC_RESET      0xFF  // reset the keyboard
 #define KBC_RESEND     0xFE  // request the keyboard resend the last byte
 #define KBC_SETDEFAULT 0xF6  // resets keyboard to its power-on defaults
@@ -120,7 +119,6 @@
  * @brief Bytes the keyboard sends back to the controller (acknowledgements, prefixes, errors).
  * @{
  */
-/* keyboard responses */
 #define KBR_EXTENDED 0xE0  // extended key sequence
 #define KBR_RESEND   0xFE  // needs resend of command
 #define KBR_ACK      0xFA  // received a valid command

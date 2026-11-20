@@ -66,7 +66,6 @@
  *  local_intr_restore(f) from sync.h. The lock argument is discarded, so the
  *  names slob_lock and block_lock used below need not be defined.
  *  @{ */
-// some helper
 #define spin_lock_irqsave(l, f)      local_intr_save(f)
 #define spin_unlock_irqrestore(l, f) local_intr_restore(f)
 /** @brief Allocation flags type, kept for Linux-style signatures. Ignored: kmalloc() always passes 0. */

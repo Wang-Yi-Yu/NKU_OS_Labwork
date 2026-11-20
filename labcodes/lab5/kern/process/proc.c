@@ -136,10 +136,7 @@ void forkrets(struct trapframe *tf);
  */
 void switch_to(struct context *from, struct context *to);
 
-//lab5 function2 YOUR CODE update alloc_proc
-// lab5 requirement: the lab4 version below only sets the lab4 fields. Also give the new fields of
-// struct proc_struct an empty value (exit_code 0, wait_state 0, cptr/yptr/optr NULL); kmalloc()
-// does not zero the memory, so reading them uninitialised in do_wait()/set_links() is a bug.
+//lab5 function2 2414007 update alloc_proc
 //LAB4 function2 2411622
 /**
  * @fn static struct proc_struct *alloc_proc(void)
@@ -152,7 +149,10 @@ void switch_to(struct context *from, struct context *to);
  *    tf NULL, context zeroed, flags 0, name empty;
  *  - pgdir is the physical address of the kernel's boot page directory (boot_pgdir_pa), because
  *    kernel threads run in the shared kernel address space;
- *  - list_link and hash_link are not linked into any list yet (do_fork links the PCB later).
+ *  - list_link and hash_link are not linked into any list yet (do_fork links the PCB later);
+ *  - (lab5) the fields added for user processes also start empty: exit_code 0, wait_state 0, and
+ *    no relatives (cptr, yptr, optr NULL). kmalloc() does not zero the memory, so reading them
+ *    before this initialisation, as set_links() and do_wait() do, would be a bug.
  * @return the new PCB, or NULL if the allocation failed
  * @note The returned PCB must still be PROC_UNINIT: wakeup_proc() asserts on any other state.
  */
@@ -179,6 +179,10 @@ static struct proc_struct *alloc_proc(void) {
     // Self-linked nodes mean "not in any list yet"; do_fork() links the PCB later.
     list_init(&proc->list_link);
     list_init(&proc->hash_link);
+    // lab5: the exit/wait state and the process tree links start out empty as well.
+    proc->exit_code = 0;
+    proc->wait_state = 0;
+    proc->cptr = proc->yptr = proc->optr = NULL;
     return proc;
 }
 
@@ -382,11 +386,7 @@ struct proc_struct *find_proc(int pid) {
     return NULL;
 }
 
-//lab5 function2 YOUR CODE update kernel_thread
-// lab5 requirement: the lab4 version below starts a kernel thread. Check that it still fits the
-// lab5 trap return path, and that the frame it builds makes sret enter kernel_thread_entry in S
-// mode with interrupts enabled (SSTATUS_SPP and SSTATUS_SPIE set, SSTATUS_SIE cleared). It is also
-// used by init_main to create user_main.
+//lab5 function2 2414007 update kernel_thread
 //LAB4 function2 2411622
 /**
  * @fn int kernel_thread(int (*fn)(void *), void *arg, uint32_t clone_flags)
@@ -399,6 +399,10 @@ struct proc_struct *find_proc(int pid) {
  *    with interrupts enabled afterwards: set SPP and SPIE, clear SIE, starting from the current sstatus;
  *  - create the thread with do_fork(clone_flags | CLONE_VM, 0, <frame>). A kernel thread shares
  *    the kernel address space (CLONE_VM) and has no user stack (stack argument 0).
+ *
+ * lab5 check: the same frame is returned through the extended RESTORE_ALL. SPP = 1 makes it take
+ * the kernel branch (sscratch stays 0, sp is the frame), SPIE = 1 / SIE = 0 give interrupts-on
+ * after sret. init_main() also uses this function to create user_main.
  * @param fn          function executed by the new thread
  * @param arg         argument passed to fn
  * @param clone_flags extra clone flags, OR-ed with CLONE_VM
@@ -474,38 +478,69 @@ static void put_pgdir(struct mm_struct *mm) {
 static void copy_thread(struct proc_struct *proc, uintptr_t esp, struct trapframe *tf);
 static int copy_mm(uint32_t clone_flags, struct proc_struct *proc);
 
-//lab5 function3 YOUR CODE update copy_mm
-// lab5 requirement: the lab4 version below only handles kernel threads (current->mm == NULL) and
-// CLONE_VM sharing. For a plain fork of a user process it must create a new mm_struct, give it a
-// page directory with setup_pgdir(), copy the parent's address space with dup_mmap() while holding
-// lock_mm() of the parent, set the reference count with mm_count_inc(), and store the result in
-// proc->mm and proc->pgdir (physical address). Undo the partial work on failure (mm_destroy,
-// put_pgdir). With CLONE_VM it shares the parent's mm and increments its counter.
+//lab5 function3 2414007 update copy_mm
 //LAB4 function2 2411622
 /**
  * @fn static int copy_mm(uint32_t clone_flags, struct proc_struct *proc)
- * @brief Give the child an address space: share the parent's or duplicate it (lab4 version).
+ * @brief Give the child an address space: share the parent's or duplicate it (lab5 version).
  *
- * The lab4 version only supports kernel threads (current->mm == NULL, nothing to copy) and
- * CLONE_VM sharing; duplicating the address space for fork is the lab5 update (see the marker).
- * Contract: if the parent has no mm, leave child->mm NULL and return 0; with CLONE_VM share the
- * parent's mm; without it duplicate the mm (lab5).
+ * Contract:
+ *  - the parent has no mm (a kernel thread): the child gets none either (proc->mm stays NULL and
+ *    proc->pgdir stays the boot page table) and the call succeeds;
+ *  - CLONE_VM: the child shares the parent's mm_struct and page table;
+ *  - otherwise (plain fork): create a new mm_struct and page directory and copy the parent's
+ *    VMAs and pages into it with dup_mmap(), holding the parent's mm lock while the copy runs;
+ *  - in both cases the mm's reference count is incremented, proc->mm is set, and proc->pgdir is set
+ *    to the physical address of the mm's page directory (that is what proc_run() loads into satp);
+ *  - on failure, what was created here is released again (page directory, mm, copied pages).
  * @param clone_flags CLONE_* flags passed by do_fork()
  * @param proc        the child PCB
- * @return 0 on success, or a negative error code
+ * @return 0 on success, -E_NO_MEM if memory runs out
  */
 static int copy_mm(uint32_t clone_flags, struct proc_struct *proc) {
+    struct mm_struct *mm, *oldmm = current->mm;
+
     // Kernel threads have no user address space: nothing to share or copy.
-    if (current->mm == NULL) {
+    if (oldmm == NULL) {
         proc->mm = NULL;
         return 0;
     }
-    // CLONE_VM: share the parent's mm. Duplicating it (fork) is the lab5 update.
+
+    int ret = -E_NO_MEM;
     if (clone_flags & CLONE_VM) {
-        proc->mm = current->mm;
-        return 0;
+        // Thread-like creation: both processes use the same address space.
+        mm = oldmm;
+        goto good_mm;
     }
-    return -E_NO_MEM;
+
+    // Plain fork: build a private copy of the address space.
+    if ((mm = mm_create()) == NULL) {
+        goto bad_mm;
+    }
+    if (setup_pgdir(mm) != 0) {
+        goto bad_pgdir_cleanup_mm;
+    }
+    lock_mm(oldmm);
+    { ret = dup_mmap(mm, oldmm); }
+    unlock_mm(oldmm);
+    if (ret != 0) {
+        goto bad_dup_cleanup_mmap;
+    }
+
+good_mm:
+    mm_count_inc(mm);
+    proc->mm = mm;
+    proc->pgdir = PADDR(mm->pgdir);
+    return 0;
+
+bad_dup_cleanup_mmap:
+    // mm_count is still 0 here, as exit_mmap() requires.
+    exit_mmap(mm);
+    put_pgdir(mm);
+bad_pgdir_cleanup_mm:
+    mm_destroy(mm);
+bad_mm:
+    return ret;
 }
 
 //LAB4 function2 2411622
@@ -546,38 +581,261 @@ static void copy_thread(struct proc_struct *proc, uintptr_t esp, struct trapfram
     proc->context.sp = (uintptr_t)frame;
 }
 
-//lab5 function2 YOUR CODE
-// Module 2 (first user process), not carried over from lab4:
-//   static int load_icode(unsigned char *binary, size_t size)
-//     Replace the address space of the current process by the ELF image `binary`: new mm_struct and
-//     page directory, VMAs and pages for every PT_LOAD segment (copy file content, zero the bss),
-//     a user stack VMA (VM_STACK, USTACKSIZE below USTACKTOP) with its pages, mm_count and
-//     pgdir/satp updated, and current->tf set so that sret enters user mode: sp = USTACKTOP,
-//     epc = e_entry, status without SSTATUS_SPP and with SSTATUS_SPIE. Returns 0 or a negative
-//     error code (-E_INVAL_ELF for a bad ELF magic).
-//   int do_execve(const char *name, size_t len, unsigned char *binary, size_t size)
-//     Check that name is readable in the caller's address space, copy it to a kernel buffer,
-//     release the old mm (exit_mmap, put_pgdir, mm_destroy once mm_count_dec reaches 0) and
-//     switch to the kernel page table first, call load_icode(), then set the process name.
+//lab5 function2 2414007
+/**
+ * @fn static int load_icode(unsigned char *binary, size_t size)
+ * @brief Build a new user address space for the current process from an ELF image and prepare the
+ *        trap frame that starts it.
+ *
+ * Precondition: current->mm is NULL (do_execve() released the old one) and current->tf points to
+ * the trap frame at the top of the kernel stack.
+ *
+ * Steps:
+ *  1. create an mm_struct and a page directory (setup_pgdir() copies the kernel mappings);
+ *  2. check the ELF magic; for every PT_LOAD program header create a VMA with the permissions of
+ *     the segment (mm_map()), allocate its pages and copy p_filesz bytes from the image; the rest
+ *     up to p_memsz (the bss) is zero-filled. Pages carry PTE_U so user mode may access them;
+ *  3. create the user stack VMA of USTACKSIZE bytes below USTACKTOP (VM_STACK, readable and
+ *     writable) and back its top pages with memory;
+ *  4. make the new mm current: reference count 1, current->mm, current->pgdir and satp;
+ *  5. rewrite the trap frame so that sret enters user mode: sp = USTACKTOP, epc = ELF entry point,
+ *     SPP cleared (return to U mode) and SPIE set (interrupts on after sret), all other registers 0.
+ * @param binary start of the ELF image in kernel memory
+ * @param size   size of the image in bytes (the header fields are trusted, as in the original lab)
+ * @return 0 on success; -E_NO_MEM if memory runs out, -E_INVAL_ELF for a bad magic number or an
+ *         inconsistent segment. On failure everything built here is released again.
+ */
+static int load_icode(unsigned char *binary, size_t size) {
+    if (current->mm != NULL) {
+        panic("load_icode: current->mm must be NULL.\n");
+    }
 
+    int ret = -E_NO_MEM;
+    struct mm_struct *mm;
+    // (1) a new, empty address space with a page directory that already maps the kernel
+    if ((mm = mm_create()) == NULL) {
+        goto bad_mm;
+    }
+    if (setup_pgdir(mm) != 0) {
+        goto bad_pgdir_cleanup_mm;
+    }
 
-//lab5 function3 YOUR CODE update do_fork
-// lab5 requirement: the lab4 version below creates a process but does not know about the process
-// tree. Update it so that the child gets its relation links (set_links() instead of linking
-// proc_list by hand), a parent whose wait_state is 0, and a copy of the address space through the
-// updated copy_mm(). Keep steps 5 and 6 in one critical section with interrupts disabled.
+    // (2) the ELF header and the program headers
+    struct elfhdr *elf = (struct elfhdr *)binary;
+    if (elf->e_magic != ELF_MAGIC) {
+        ret = -E_INVAL_ELF;
+        goto bad_elf_cleanup_pgdir;
+    }
+    struct proghdr *ph = (struct proghdr *)(binary + elf->e_phoff);
+    struct proghdr *ph_end = ph + elf->e_phnum;
+    struct Page *page = NULL;
+    uint32_t vm_flags, perm;
+
+    for (; ph < ph_end; ph++) {
+        if (ph->p_type != ELF_PT_LOAD) {
+            continue;
+        }
+        if (ph->p_filesz > ph->p_memsz) {
+            ret = -E_INVAL_ELF;
+            goto bad_cleanup_mmap;
+        }
+        if (ph->p_memsz == 0) {
+            continue;
+        }
+
+        // Segment flags -> VMA flags and PTE permission bits (RISC-V: W needs R as well).
+        vm_flags = 0;
+        perm = PTE_U | PTE_V;
+        if (ph->p_flags & ELF_PF_X) {
+            vm_flags |= VM_EXEC;
+        }
+        if (ph->p_flags & ELF_PF_W) {
+            vm_flags |= VM_WRITE;
+        }
+        if (ph->p_flags & ELF_PF_R) {
+            vm_flags |= VM_READ;
+        }
+        if (vm_flags & VM_READ) {
+            perm |= PTE_R;
+        }
+        if (vm_flags & VM_WRITE) {
+            perm |= (PTE_W | PTE_R);
+        }
+        if (vm_flags & VM_EXEC) {
+            perm |= PTE_X;
+        }
+        if ((ret = mm_map(mm, ph->p_va, ph->p_memsz, vm_flags, NULL)) != 0) {
+            goto bad_cleanup_mmap;
+        }
+
+        unsigned char *from = binary + ph->p_offset;
+        size_t off, copy_size;
+        uintptr_t start = ph->p_va, end, la = ROUNDDOWN(start, PGSIZE);
+        ret = -E_NO_MEM;
+
+        // Copy the part that exists in the file (text and initialised data), page by page.
+        end = ph->p_va + ph->p_filesz;
+        while (start < end) {
+            if ((page = pgdir_alloc_page(mm->pgdir, la, perm)) == NULL) {
+                goto bad_cleanup_mmap;
+            }
+            off = start - la;
+            copy_size = PGSIZE - off;
+            la += PGSIZE;
+            if (end < la) {
+                copy_size -= la - end;
+            }
+            memcpy(page2kva(page) + off, from, copy_size);
+            start += copy_size;
+            from += copy_size;
+        }
+
+        // The bss: memory beyond p_filesz up to p_memsz is zero. First finish the page that the
+        // file data ended in, which was already allocated above (alloc_page() content is not zero).
+        end = ph->p_va + ph->p_memsz;
+        if (start < la) {
+            if (start == end) {
+                continue;
+            }
+            off = start + PGSIZE - la;
+            copy_size = PGSIZE - off;
+            if (end < la) {
+                copy_size -= la - end;
+            }
+            memset(page2kva(page) + off, 0, copy_size);
+            start += copy_size;
+            assert((end < la && start == end) || (end >= la && start == la));
+        }
+        // Then whole new zero pages for the rest of the bss.
+        while (start < end) {
+            if ((page = pgdir_alloc_page(mm->pgdir, la, perm)) == NULL) {
+                goto bad_cleanup_mmap;
+            }
+            off = start - la;
+            copy_size = PGSIZE - off;
+            la += PGSIZE;
+            if (end < la) {
+                copy_size -= la - end;
+            }
+            memset(page2kva(page) + off, 0, copy_size);
+            start += copy_size;
+        }
+    }
+
+    // (3) the user stack: the VMA covers USTACKSIZE bytes, only the top pages are backed now
+    vm_flags = VM_READ | VM_WRITE | VM_STACK;
+    if ((ret = mm_map(mm, USTACKTOP - USTACKSIZE, USTACKSIZE, vm_flags, NULL)) != 0) {
+        goto bad_cleanup_mmap;
+    }
+    ret = -E_NO_MEM;
+    for (int i = 1; i <= 4; i++) {
+        if (pgdir_alloc_page(mm->pgdir, USTACKTOP - i * PGSIZE, PTE_USER) == NULL) {
+            goto bad_cleanup_mmap;
+        }
+    }
+
+    // (4) the new address space becomes the one of the current process
+    mm_count_inc(mm);
+    current->mm = mm;
+    current->pgdir = PADDR(mm->pgdir);
+    lsatp(PADDR(mm->pgdir));
+    flush_tlb();
+
+    // (5) the trap frame that makes sret land at the program entry in user mode
+    struct trapframe *tf = current->tf;
+    uintptr_t sstatus = tf->status;
+    memset(tf, 0, sizeof(struct trapframe));
+    tf->gpr.sp = USTACKTOP;
+    tf->epc = elf->e_entry;
+    tf->status = (sstatus | SSTATUS_SPIE) & ~SSTATUS_SPP;
+    return 0;
+
+bad_cleanup_mmap:
+    exit_mmap(mm);
+bad_elf_cleanup_pgdir:
+    put_pgdir(mm);
+bad_pgdir_cleanup_mm:
+    mm_destroy(mm);
+bad_mm:
+    return ret;
+}
+
+//lab5 function2 2414007
+/**
+ * @fn int do_execve(const char *name, size_t len, unsigned char *binary, size_t size)
+ * @brief Replace the program of the current process by the ELF image @p binary.
+ *
+ * The name is first checked with user_mem_check() in the caller's address space (a kernel thread
+ * has no mm, so any kernel address is accepted) and copied into a kernel buffer, because the old
+ * address space, which may hold the name, is destroyed next. The old mm is then released: the
+ * CPU switches to the kernel page table first so that it is not running on the page tables that are
+ * freed, the reference count is decremented, and when the last user is gone the pages, page tables,
+ * page directory and the mm_struct are freed. Finally load_icode() builds the new image and the
+ * process is renamed.
+ *
+ * @param name   program name (readable in the caller's address space)
+ * @param len    length of the name; truncated to PROC_NAME_LEN
+ * @param binary start of the ELF image in kernel memory
+ * @param size   size of the image
+ * @return 0 on success: the trap frame of current now describes the new program, and the caller
+ *         has to return through the trap path (kernel_execve() or the system call return) to start
+ *         it. -E_INVAL if the name is not readable. If loading fails after the old image is gone the
+ *         process cannot continue, so it exits with the error code.
+ */
+int do_execve(const char *name, size_t len, unsigned char *binary, size_t size) {
+    struct mm_struct *mm = current->mm;
+    if (!user_mem_check(mm, (uintptr_t)name, len, 0)) {
+        return -E_INVAL;
+    }
+    if (len > PROC_NAME_LEN) {
+        len = PROC_NAME_LEN;
+    }
+
+    // Keep a kernel copy of the name: the user copy disappears with the old address space.
+    char local_name[PROC_NAME_LEN + 1];
+    memset(local_name, 0, sizeof(local_name));
+    memcpy(local_name, name, len);
+
+    if (mm != NULL) {
+        // Leave the page tables that are about to be freed before freeing them.
+        lsatp(boot_pgdir_pa);
+        flush_tlb();
+        current->pgdir = boot_pgdir_pa;
+        if (mm_count_dec(mm) == 0) {
+            exit_mmap(mm);
+            put_pgdir(mm);
+            mm_destroy(mm);
+        }
+        current->mm = NULL;
+    }
+
+    int ret;
+    if ((ret = load_icode(binary, size)) != 0) {
+        goto execve_exit;
+    }
+    set_proc_name(current, local_name);
+    return 0;
+
+execve_exit:
+    do_exit(ret);
+    panic("already exit: %e.\n", ret);
+}
+
+//lab5 function3 2414007 update do_fork
 //LAB4 function2 2411622
 /**
  * @fn int do_fork(uint32_t clone_flags, uintptr_t stack, struct trapframe *tf)
  * @brief Create a child process or thread that copies the current one (exercise, module 2).
  *
  * Contract, in this order. Each failing step must release what the earlier steps obtained:
- *  1. alloc_proc(): new PCB, still PROC_UNINIT;
+ *  0. refuse when MAX_PROCESS processes exist (-E_NO_FREE_PROC);
+ *  1. alloc_proc(): new PCB, still PROC_UNINIT; its parent is current, which must not be waiting
+ *     (wait_state 0);
  *  2. setup_kstack(): kernel stack for the child;
  *  3. copy_mm(clone_flags, child): address space (a no-op for kernel threads; lab5 duplicates the mm of a user process);
  *  4. copy_thread(child, stack, tf): trap frame and initial context on the child's stack;
- *  5. assign a PID with get_pid(), set parent = current, and link the child into proc_list and
- *     hash_list (nr_process is updated here as well);
+ *  5. assign a PID with get_pid() and link the child into hash_list and, with set_links(), into
+ *     proc_list and the process tree (parent's child list, sibling links, nr_process);
  *  6. wakeup_proc(child): the child becomes PROC_RUNNABLE. This is the only step that makes it runnable;
  *  7. return the child's PID.
  * Steps 5 and 6 are the critical section: interrupts must be disabled around them.
@@ -594,10 +852,17 @@ int do_fork(uint32_t clone_flags, uintptr_t stack, struct trapframe *tf) {
     if (tf == NULL || current == NULL) {
         return -E_INVAL;
     }
+    // The process table has a fixed capacity.
+    if (nr_process >= MAX_PROCESS) {
+        return -E_NO_FREE_PROC;
+    }
     // 1. PCB. Nothing has been acquired yet, so a failure needs no cleanup.
     if ((proc = alloc_proc()) == NULL) {
         return -E_NO_MEM;
     }
+    // The new process is a child of the running one, which cannot be sleeping in do_wait().
+    proc->parent = current;
+    assert(current->wait_state == 0);
     // 2. Kernel stack. On failure only the PCB has to be released.
     if ((ret = setup_kstack(proc)) != 0) {
         kfree(proc);
@@ -618,31 +883,130 @@ int do_fork(uint32_t clone_flags, uintptr_t stack, struct trapframe *tf) {
     bool intr_flag;
     local_intr_save(intr_flag);
     proc->pid = get_pid();
-    proc->parent = current;
-    list_add(&proc_list, &proc->list_link);
     hash_proc(proc);
-    nr_process++;
+    set_links(proc);
     wakeup_proc(proc);
     local_intr_restore(intr_flag);
     // 7. The parent sees the child's PID; the child sees a0 == 0 (set in copy_thread()).
     return proc->pid;
 }
 
-//lab5 function4 YOUR CODE
-// Module 4 (process control), not carried over from lab4:
-//   int do_exit(int error_code)
-//     Never for idleproc/initproc (panic). Switch to the kernel page table, drop the mm reference and
-//     free the address space (exit_mmap, put_pgdir, mm_destroy) when the last user is gone, set
-//     state PROC_ZOMBIE and exit_code, wake the parent if it waits for a child (wait_state ==
-//     WT_CHILD), hand all children to initproc (wake initproc if a handed-over child is a zombie),
-//     all with interrupts disabled, then schedule(). Never returns.
-//   int do_yield(void)
-//     Set current->need_resched = 1 and return 0.
-//   int do_kill(int pid)
-//     find_proc(pid); if it exists and PF_EXITING is not set yet, set PF_EXITING, wake the process
-//     if its wait_state has WT_INTERRUPTED set, return 0. Return -E_INVAL if pid does not exist and
-//     -E_KILLED if it is already exiting.
+//lab5 function4 2414007
+/**
+ * @fn int do_exit(int error_code)
+ * @brief Terminate the current process: free what it can free itself and become a zombie.
+ *
+ * The process still runs on its own kernel stack and PCB, so those two can only be freed by the
+ * parent in do_wait(). Everything else is released here:
+ *  - idleproc and initproc must never exit (panic);
+ *  - the user address space: the CPU first switches to the kernel page table, then the mm's
+ *    reference count is dropped and, if no other process shares it, the pages, page tables, page
+ *    directory and mm_struct are freed;
+ *  - the state becomes PROC_ZOMBIE and the exit code is recorded for the parent;
+ *  - with interrupts disabled (so the process tree is not seen half-updated): a parent that sleeps
+ *    in do_wait() (wait_state == WT_CHILD) is woken up, and all children are handed over to
+ *    initproc, which is woken if one of them is already a zombie and it is waiting;
+ *  - finally schedule() gives the CPU away. A zombie is never scheduled again.
+ * @param error_code exit status, read by the parent through do_wait()
+ * @return does not return
+ */
+int do_exit(int error_code) {
+    if (current == idleproc) {
+        panic("idleproc exit.\n");
+    }
+    if (current == initproc) {
+        panic("initproc exit.\n");
+    }
 
+    struct mm_struct *mm = current->mm;
+    if (mm != NULL) {
+        // Stop using the page tables that are about to be freed.
+        lsatp(boot_pgdir_pa);
+        flush_tlb();
+        current->pgdir = boot_pgdir_pa;
+        if (mm_count_dec(mm) == 0) {
+            exit_mmap(mm);
+            put_pgdir(mm);
+            mm_destroy(mm);
+        }
+        current->mm = NULL;
+    }
+    current->state = PROC_ZOMBIE;
+    current->exit_code = error_code;
+
+    bool intr_flag;
+    struct proc_struct *proc;
+    local_intr_save(intr_flag);
+    {
+        // Tell a parent that waits in do_wait() that a child has become a zombie.
+        proc = current->parent;
+        if (proc->wait_state == WT_CHILD) {
+            wakeup_proc(proc);
+        }
+        // Give the children to initproc, which reaps them (do_wait loop of init_main()).
+        while (current->cptr != NULL) {
+            proc = current->cptr;
+            current->cptr = proc->optr;
+
+            proc->yptr = NULL;
+            if ((proc->optr = initproc->cptr) != NULL) {
+                initproc->cptr->yptr = proc;
+            }
+            proc->parent = initproc;
+            initproc->cptr = proc;
+            if (proc->state == PROC_ZOMBIE) {
+                if (initproc->wait_state == WT_CHILD) {
+                    wakeup_proc(initproc);
+                }
+            }
+        }
+    }
+    local_intr_restore(intr_flag);
+
+    schedule();
+    panic("do_exit will not return!! pid %d.\n", current->pid);
+}
+
+//lab5 function4 2414007
+/**
+ * @fn int do_yield(void)
+ * @brief Offer the CPU to other processes.
+ *
+ * Only sets current->need_resched. trap() checks the flag on the way back to user mode and calls
+ * schedule(), so the process is switched out at the end of the system call, not inside it.
+ * @return 0
+ */
+int do_yield(void) {
+    current->need_resched = 1;
+    return 0;
+}
+
+//lab5 function4 2414007
+/**
+ * @fn int do_kill(int pid)
+ * @brief Ask a process to terminate.
+ *
+ * The victim is not stopped here: PF_EXITING is set in its flags, and trap() makes it call
+ * do_exit(-E_KILLED) the next time it is about to return to user mode. If the victim sleeps in an
+ * interruptible wait (WT_INTERRUPTED, for example in do_wait()) it is woken up so that it notices
+ * the flag soon.
+ * @param pid PID of the victim
+ * @return 0 on success; -E_INVAL if no process has this PID; -E_KILLED if it was already marked
+ */
+int do_kill(int pid) {
+    struct proc_struct *proc;
+    if ((proc = find_proc(pid)) != NULL) {
+        if (!(proc->flags & PF_EXITING)) {
+            proc->flags |= PF_EXITING;
+            if (proc->wait_state & WT_INTERRUPTED) {
+                wakeup_proc(proc);
+            }
+            return 0;
+        }
+        return -E_KILLED;
+    }
+    return -E_INVAL;
+}
 
 /**
  * @brief Run kernel_execve() for the user program embedded in the kernel image under the name x.
@@ -686,43 +1050,174 @@ int do_fork(uint32_t clone_flags, uintptr_t stack, struct trapframe *tf) {
  */
 #define KERNEL_EXECVE2(x, xstart, xsize) __KERNEL_EXECVE2(x, xstart, xsize)
 
-//lab5 function2 YOUR CODE
-// Module 2 (first user process), not carried over from lab4:
-//   static int kernel_execve(const char *name, unsigned char *binary, size_t size)
-//     Call do_execve(); on success do not return to the caller's C code but enter user mode: the
-//     trap frame that load_icode() built is at the top of the kernel stack, so point sp at it and
-//     jump to __trapret (inline assembly), which restores the registers and executes sret.
-//   static int user_main(void *arg)
-//     Kernel thread created by init_main: with TEST defined (make build-x) run
-//     KERNEL_EXECVE2(TEST, TESTSTART, TESTSIZE), otherwise KERNEL_EXECVE(exit); panic if it returns.
-//   int do_wait(int pid, int *code_store)
-//     pid == 0: any child, otherwise that child (must be a child of current, else -E_BAD_PROC);
-//     check code_store with user_mem_check (-E_INVAL). Look for a PROC_ZOMBIE child; if there is none
-//     but children exist, sleep (state PROC_SLEEPING, wait_state WT_CHILD), schedule(), and retry
-//     after the wakeup (exit with do_exit(-E_KILLED) if PF_EXITING is set). Never reclaim idleproc or
-//     initproc. When a zombie is found: store its exit_code, unhash_proc and remove_links it, free
-//     its kernel stack and PCB, return 0.
+//lab5 function2 2414007
+/**
+ * @fn static int kernel_execve(const char *name, unsigned char *binary, size_t size)
+ * @brief Turn the current kernel thread into a user process running the program @p binary.
+ *
+ * do_execve() only prepares the new image and the trap frame; the CPU is still in S mode, in the
+ * kernel thread. There is no real trap to return from, so the return path is entered by hand:
+ * sp is pointed at the trap frame that load_icode() wrote at the top of the kernel stack
+ * (current->tf) and the code jumps to __trapret, which restores the registers from the frame, puts
+ * the kernel stack top into sscratch and executes sret. sret then lands in user mode at the entry
+ * point of the program. Calling do_execve() alone and returning would leave the thread in the
+ * kernel.
+ * @param name   program name
+ * @param binary start of the ELF image
+ * @param size   size of the image
+ * @return does not return on success; the negative error code of do_execve() otherwise
+ */
+static int kernel_execve(const char *name, unsigned char *binary, size_t size) {
+    int64_t ret = 0, len = strlen(name);
+    ret = do_execve(name, len, binary, size);
+    if (ret != 0) {
+        return ret;
+    }
+    asm volatile("mv sp, %0\n"
+                 "j __trapret\n"
+                 :
+                 : "r"(current->tf)
+                 : "memory");
+    // Not reached: __trapret ends in sret.
+    return 0;
+}
 
-//lab5 function2 YOUR CODE update init_main
-// lab5 requirement: the lab4 version below only prints a greeting. Update it so that it creates
-// user_main with kernel_thread(), reaps children with do_wait(0, NULL) until none is left, then
-// prints "all user-mode processes have quit." and checks that no page and no process leaked
-// (kernel-level checks against nr_free_pages and nr_process saved at entry), printing
-// "init check memory pass.". Its return value ends initproc.
+//lab5 function2 2414007
+/**
+ * @fn static int user_main(void *arg)
+ * @brief Body of the kernel thread that becomes the first user process.
+ *
+ * Created by init_main(). It selects the program and calls kernel_execve(), which does not return
+ * on success. When the grading harness builds the kernel with `make build-x` (TEST defined) the
+ * program is the one named by TEST, taken from the TESTSTART/TESTSIZE symbols; otherwise it is the
+ * default program `exit`.
+ * @param arg unused
+ * @return does not return; reaching the panic means that the program could not be started
+ */
+static int user_main(void *arg) {
+#ifdef TEST
+    KERNEL_EXECVE2(TEST, TESTSTART, TESTSIZE);
+#else
+    KERNEL_EXECVE(exit);
+#endif
+    panic("user_main execve failed.\n");
+}
+
+//lab5 function2 2414007
+/**
+ * @fn int do_wait(int pid, int *code_store)
+ * @brief Wait for a child to exit, then reclaim its kernel stack and PCB.
+ *
+ * With pid == 0 any child counts, otherwise only that child, which must be a child of the caller
+ * (else -E_BAD_PROC). If code_store is not NULL it is checked with user_mem_check() for a writable
+ * int in the caller's address space (-E_INVAL) before anything is done. The caller searches its
+ * children for a PROC_ZOMBIE. If there is none but a child exists, it sleeps (PROC_SLEEPING with
+ * wait_state WT_CHILD, which do_exit() of a child answers with a wakeup), calls schedule() and
+ * searches again after the wakeup; if it was killed meanwhile (PF_EXITING) it exits instead.
+ *
+ * When a zombie is found, its exit code is stored, it is removed from the hash table, the process
+ * list and the process tree (with interrupts disabled), and its kernel stack and PCB are freed.
+ * These two resources could not be freed by the child itself in do_exit().
+ * @param pid        PID of the child, or 0 for any child
+ * @param code_store user address that receives the exit code, or NULL
+ * @return 0 on success; -E_BAD_PROC if there is no such child; -E_INVAL for a bad code_store;
+ *         -E_KILLED is delivered through do_exit() when the caller is killed while waiting
+ */
+int do_wait(int pid, int *code_store) {
+    struct mm_struct *mm = current->mm;
+    if (code_store != NULL) {
+        if (!user_mem_check(mm, (uintptr_t)code_store, sizeof(int), 1)) {
+            return -E_INVAL;
+        }
+    }
+
+    struct proc_struct *proc;
+    bool intr_flag, haskid;
+repeat:
+    haskid = 0;
+    if (pid != 0) {
+        proc = find_proc(pid);
+        if (proc != NULL && proc->parent == current) {
+            haskid = 1;
+            if (proc->state == PROC_ZOMBIE) {
+                goto found;
+            }
+        }
+    } else {
+        proc = current->cptr;
+        for (; proc != NULL; proc = proc->optr) {
+            haskid = 1;
+            if (proc->state == PROC_ZOMBIE) {
+                goto found;
+            }
+        }
+    }
+    if (haskid) {
+        // A child exists but has not exited yet: sleep until do_exit() of a child wakes us up.
+        current->state = PROC_SLEEPING;
+        current->wait_state = WT_CHILD;
+        schedule();
+        if (current->flags & PF_EXITING) {
+            do_exit(-E_KILLED);
+        }
+        goto repeat;
+    }
+    return -E_BAD_PROC;
+
+found:
+    if (proc == idleproc || proc == initproc) {
+        panic("wait idleproc or initproc.\n");
+    }
+    if (code_store != NULL) {
+        *code_store = proc->exit_code;
+    }
+    local_intr_save(intr_flag);
+    {
+        unhash_proc(proc);
+        remove_links(proc);
+    }
+    local_intr_restore(intr_flag);
+    put_kstack(proc);
+    kfree(proc);
+    return 0;
+}
+
+//lab5 function2 2414007 update init_main
 //LAB4 function2 2411622
 /**
- * @brief Body of initproc (lab4 version: print a greeting and return).
+ * @brief Body of initproc (lab5 version): start the first user process and wait for all of them.
  *
- * Runs as the first kernel thread created by kernel_thread(). Its argument is the string
- * passed to kernel_thread() by proc_init().
+ * Runs as the first kernel thread created by kernel_thread(). It records the number of processes,
+ * creates the kernel thread user_main (which becomes the first user process), then reaps children
+ * with do_wait(0, NULL), calling schedule() between calls so that the children get the CPU, until
+ * no child is left. Then it checks that the process table is back in the state it started from:
+ * initproc has no relatives and only idleproc and initproc remain in proc_list.
  *
- * @param arg a `const char *` message printed as "To U: ..."
+ * @param arg a `const char *` message passed by proc_init() (not used any more)
  * @return 0; returning hands control to kernel_thread_entry(), which calls do_exit()
+ * @note The number of free physical pages is deliberately not compared with the value at entry:
+ *       the kmalloc() heap (SLOB, kmalloc.c) takes pages from the page allocator when many
+ *       PCBs, mm_structs and VMAs are alive at once (forktest) and never returns them, so the
+ *       count differs by a few pages without any leak, and kallocated() always returns 0.
  */
 static int init_main(void *arg) {
-    cprintf("this initproc, pid = %d, name = \"%s\"\n", current->pid, get_proc_name(current));
-    cprintf("To U: \"%s\".\n", (const char *)arg);
-    cprintf("To U: \"en.., Bye, Bye. :)\"\n");
+    int nr_process_store = nr_process;
+
+    int pid = kernel_thread(user_main, NULL, 0);
+    if (pid <= 0) {
+        panic("create user_main failed.\n");
+    }
+
+    while (do_wait(0, NULL) == 0) {
+        schedule();
+    }
+
+    cprintf("all user-mode processes have quit.\n");
+    assert(initproc->cptr == NULL && initproc->yptr == NULL && initproc->optr == NULL);
+    assert(nr_process == nr_process_store);
+    assert(list_next(&proc_list) == &(initproc->list_link));
+    assert(list_prev(&proc_list) == &(initproc->list_link));
+    cprintf("init check memory pass.\n");
     return 0;
 }
 

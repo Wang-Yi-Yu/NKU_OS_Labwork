@@ -212,6 +212,7 @@ void interrupt_handler(struct trapframe *tf) {
 }
 
 //lab3 function2 2411622
+//lab5 function1 2414007 update exception_handler
 
 /**
  * @brief Handle an exception (scause bit 63 clear).
@@ -220,7 +221,15 @@ void interrupt_handler(struct trapframe *tf) {
  * instruction and advances tf->epc past it, so that sret resumes at the next instruction instead
  * of re-executing the one that trapped. The length is read from the instruction itself: the low
  * two bits are 0b11 for a 32-bit instruction, anything else is a 16-bit compressed one (for
- * example c.ebreak). Any other exception is dumped with print_trapframe().
+ * example c.ebreak).
+ *
+ * An ecall from user mode (CAUSE_USER_ECALL, lab5) is a system call request. The saved epc points
+ * at the ecall instruction itself, so it is advanced by 4 bytes first (ecall is always a 32-bit
+ * instruction); otherwise sret would execute the same ecall again and the call would repeat
+ * forever. The request is then handed to syscall(), which reads the number and the arguments from
+ * the saved registers of current->tf and writes the result into a0 of that frame.
+ *
+ * Any other exception is dumped with print_trapframe().
  *
  * @param tf trap frame of the exception
  */
@@ -235,16 +244,14 @@ void exception_handler(struct trapframe *tf) {
             cprintf("Breakpoint at 0x%08x\n", tf->epc);
         }
         tf->epc += instruction_length;
+    } else if (tf->cause == CAUSE_USER_ECALL) {
+        // Skip the 4-byte ecall so that sret resumes after it, then run the system call.
+        tf->epc += 4;
+        syscall();
     } else {
         print_trapframe(tf);
     }
 }
-
-//lab5 function1 YOUR CODE update exception_handler
-// Contract: extend exception_handler() above with the case CAUSE_USER_ECALL. An ecall from user mode
-// has to advance tf->epc past the 4-byte ecall instruction (otherwise sret would execute it again)
-// and then hand the request to syscall() in kern/syscall/syscall.c. The lab3 cases stay unchanged.
-
 
 /**
  * @brief Route a trap to interrupt_handler() or exception_handler() by the top bit of scause.

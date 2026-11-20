@@ -95,24 +95,42 @@ _save_context:
     .endm
 
     /*
-     * RESTORE_ALL - inverse of SAVE_ALL (lab3 exercise 1, extended in lab5).
+     * RESTORE_ALL - inverse of SAVE_ALL; restores a frame that may return to user or kernel mode
+     * (lab3 exercise 1, extended in lab5 module 1).
      *
-     * Contract: reload every register and the CSRs that must survive a trap from the trap frame
-     * at sp (trap() may have changed epc), and leave sp equal to the sp of the interrupted code.
-     * lab5 requirement: the version below is the kernel-only one carried over from lab3. It must be
-     * extended so that it also returns to user mode: test sstatus.SPP (SSTATUS_SPP) of the frame;
-     * if the trap came from user mode (SPP = 0) store the kernel stack top (sp + 36 * REGBYTES)
-     * into sscratch before sp is replaced by the user sp, otherwise leave sscratch at 0.
+     * Reloads every register and the CSRs that must survive a trap from the trap frame at sp
+     * (trap() may have changed epc) and leaves sp equal to the sp of the interrupted code.
+     *
+     * The mode that is returned to is read from sstatus.SPP of the frame:
+     *  - SPP = 0: the frame describes a user program (an interrupted one, a system call return, or
+     *    the frame built by load_icode()). While it runs, sscratch must hold the kernel stack top,
+     *    which is the address just above this frame (sp + 36 * REGBYTES), so that the next trap can
+     *    find the kernel stack in SAVE_ALL. It is stored before sp is replaced by the user sp.
+     *  - SPP = 1: the frame describes kernel code. sscratch stays 0 (SAVE_ALL cleared it), which is
+     *    what tells a nested trap that it comes from the kernel.
+     * Clobbers s0..s2 (reloaded afterwards from the frame).
      */
     .macro RESTORE_ALL
+    LOCAL _save_kernel_sp
+    LOCAL _restore_context
 
     #lab3 function1 2414007
-    #lab5 function1 YOUR CODE update RESTORE_ALL: add the user/kernel distinction described above
-
-    # Restore the CSRs first: they have to be staged through s1/s2, which are overwritten by
-    # the register reloads below. sepc is reloaded because trap() may have advanced it.
+    #lab5 function1 2414007 update RESTORE_ALL: add the user/kernel distinction
     LOAD s1, 32*REGBYTES(sp)
     LOAD s2, 33*REGBYTES(sp)
+
+    # sstatus.SPP is the privilege level the sret returns to: 1 = S mode (kernel), 0 = U mode.
+    andi s0, s1, SSTATUS_SPP
+    bnez s0, _restore_context
+
+_save_kernel_sp:
+    # Returning to user mode: park the unwound kernel stack top in sscratch for the next trap.
+    addi s0, sp, 36 * REGBYTES
+    csrw sscratch, s0
+
+_restore_context:
+    # Restore the CSRs before the register reloads below overwrite s1/s2 (the staging registers).
+    # sepc is reloaded because trap() may have advanced it.
     csrw sstatus, s1
     csrw sepc, s2
 

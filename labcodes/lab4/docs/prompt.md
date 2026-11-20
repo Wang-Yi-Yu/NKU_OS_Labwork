@@ -164,6 +164,82 @@
 
 ### 2.2 2414015-鲁昕宁
 
+**功能模块一：虚拟内存页操作功能**
+
+````markdown
+[PROMPT]
+**任务**：修改 `kern/mm/pmm.c`，实现虚拟内存页操作：补全 `page_insert()` 和 `page_remove()`。`get_pte()` 已经负责沿 Sv39 查找叶子页表项，并在 `create` 非 0 时分配缺失的中间页表。本任务只维护叶子映射、物理页引用计数和对应虚拟地址的 TLB。
+
+**操作要求**：你必须在项目中修改实际文件，保留现有代码，只在标记 `LAB4 function1` 处补全。不得修改 `get_pte()`、`get_page()`、`check_pgdir()`、`check_boot_pgdir()` 以及 `pte_create()` 的定义。不得改两个公开函数的签名，不得新增文件。允许在本文件内新增 `static` 的 `page_remove_pte()`。把标记注释中的 `YOUR CODE` 替换为学号 `2414015`，保留 `LAB4 function1` 字样。
+
+**输出要求**：直接进行文件操作，使用下面 [RELY]、[GUARANTEE]、[SPECIFICATION] 部分的信息，以工程中的真实代码为准，不要引入无关功能。
+
+[RELY]
+
+1. 待补全的函数已在 `kern/mm/pmm.h` 中声明：
+
+```c
+int page_insert(pde_t *pgdir, struct Page *page, uintptr_t la, uint32_t perm);
+void page_remove(pde_t *pgdir, uintptr_t la);
+```
+
+`pgdir` 是根页表的内核虚拟地址。`la` 不必按页对齐。`perm` 是调用者给出的权限位，测试中会出现 `0`、`PTE_U | PTE_W` 和 `PTE_W | PTE_R`。
+
+2. 已有的页表与页描述符操作：
+
+```c
+pte_t *get_pte(pde_t *pgdir, uintptr_t la, bool create);
+struct Page *pte2page(pte_t pte);
+ppn_t page2ppn(struct Page *page);
+pte_t pte_create(uintptr_t ppn, int type); /* 结果已含 PTE_V */
+int page_ref_inc(struct Page *page);
+int page_ref_dec(struct Page *page);
+void free_page(struct Page *page);
+void tlb_invalidate(pde_t *pgdir, uintptr_t la);
+```
+
+`get_pte(..., 1)` 在中间页表无法分配时返回 `NULL`。`get_pte(..., 0)` 在页表缺失时返回 `NULL`，不分配。`PTE_V` 未置位的叶子槽仍然会返回指针，调用者自己判断。`-E_NO_MEM` 在 `libs/error.h` 中。
+
+3. 权限位（`kern/mm/mmu.h`）：`PTE_V`、`PTE_R`、`PTE_W`、`PTE_X`、`PTE_U`、`PTE_A`、`PTE_D`。`R`、`W`、`X` 全为 0 的有效项表示指向下一级页表。`W` 为 1 时该项还必须可读，才能作为数据页。
+
+[GUARANTEE]
+需要交付的公开函数只有：
+
+```c
+int page_insert(pde_t *pgdir, struct Page *page, uintptr_t la, uint32_t perm);
+void page_remove(pde_t *pgdir, uintptr_t la);
+```
+
+允许新增 `static void page_remove_pte(pde_t *pgdir, uintptr_t la, pte_t *ptep)`，不得放进头文件。
+
+[SPECIFICATION]
+**page_insert**
+
+Pre-Condition：`pgdir` 指向一张可用的根页表。`page` 是已分配的物理页。`la` 是要映射的虚拟地址。
+
+Post-Condition：成功时该虚拟地址所在页映射到 `page`，叶子项含 `PTE_V` 和调用者要求的权限，`page` 的引用计数比调用前多 1（若该地址原先已经映射到同一页，则计数不变）。返回 0。失败时返回 `-E_NO_MEM`，不写入这个叶子项。
+
+Case 1：该地址没有有效映射。引用计数加 1，写入叶子项。
+
+Case 2：该地址已经映射到 `page`。只更新权限。引用计数与调用前相同，这一页不被释放，空闲页数量不变。
+
+Case 3：该地址已经映射到另一页。先撤销旧映射；旧页引用计数降到 0 时归还该页。新页引用计数加 1。
+
+Requirements：
+
+- 新页的引用计数先增加，再撤销旧映射。这样 Case 2 不会在更新权限的过程中把 `page` 释放。
+- 调用者给出 `PTE_W` 时，叶子项同时具有 `PTE_R`。具有 `PTE_R`、`PTE_W` 或 `PTE_X` 时，同时置 `PTE_A` 和 `PTE_D`。
+- 叶子项写入之后，使 `la` 的 TLB 项失效。
+
+**page_remove**
+
+Pre-Condition：`pgdir` 指向一张可用的根页表。`la` 可以已有映射，也可以没有。
+
+Post-Condition：该地址不再有有效叶子映射，对应 TLB 项失效。映射的物理页引用计数减 1，降到 0 时该页回到空闲链表。地址原本没有映射时，页表和空闲页数量都不变。
+
+Requirements：查找叶子时不得分配新的中间页表。
+````
+
 ### 2.3 2411622-张雨函
 
 **功能模块二：进程创建及初始化功能**

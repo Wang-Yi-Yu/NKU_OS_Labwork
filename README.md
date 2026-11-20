@@ -28,13 +28,17 @@ lab 框架原本针对 QEMU 4.x + OpenSBI v0.4 编写。本仓库的实验环境
 5. **QEMU 8.x 不接受带 U/A/D 位的非叶子页表项（lab4 起）。** RISC-V 规范里非叶子项（R=W=X=0）的 U/A/D 是保留位，QEMU 8.x 会判定为非法翻译。lab4 骨架的 `get_pte()` 给中间层写 `PTE_U | PTE_V`，一旦真正通过这些中间项访问虚拟地址（`check_boot_pgdir()` 里 `page_insert` 映射 `0x100` 后 `strcpy`）就触发 store page fault；此时 `idt_init()` 还没执行，`stvec` 未设置，现象是内核反复重启、不停打印 `DTB Init`。可以用 `qemu ... -d int -D log` 看到 `store_page_fault`，`tval` 就是出错的虚拟地址。适配：`get_pte()` 创建中间页表项时改用 `ptd_create()`（只有 `PTE_V`），并删除 `check_pgdir()` 里 `assert(boot_pgdir_va[0] & PTE_U)`（它断言的正是这个写法）。叶子项上的 `PTE_U` 不受影响。
 6. **GCC 15 把 `-Wint-conversion` 和 `-Wincompatible-pointer-types` 升级成错误（lab4 起）。** lab4 骨架的 `kmalloc.c`（整数传给 `kva2page()`）和 `tools/test_lab4.c`（`void (*)(void *)` 传给 `kernel_thread`）依赖旧行为。适配：在 `Makefile` 的 `CFLAGS` 里加 `-Wno-error=int-conversion -Wno-error=incompatible-pointer-types`，不改动老师给的代码；编译时会看到相应警告，属正常现象。
 7. **GCC 15 把用户程序 `divzero` 里的除零折叠成别的值（lab5 起）。** `user/divzero.c` 原本靠 `1 / zero` 触发 RISC-V 的除零行为：RISC-V 的 `div` 指令不会陷入异常，而是返回 -1，评分脚本据此检查输出行 `value is -1.`。除零在 C 里是未定义行为，GCC 15 在 `-O2` 下把 `1 / x` 改写成 `(x + 1 < 3) ? x : 0`，`zero` 为 0 时程序打印的是 `value is 0.`，该用例拿不到分；只把 `zero` 改成 `volatile` 没有用，因为被折叠的是除法本身。适配：把被除数也改成 `volatile int one = 1;`，写成 `one / zero`，编译器就必须真正发出 `div` 指令。反汇编里能看到 `sltiu` 而没有 `div`，就是遇到了这个问题。
-8. **lab5 把 lab2/3/4 的代码迁入骨架时要检查的几处（与 QEMU 版本无关）。**
+
+## 4. 迁移前期实验代码时的一些修改
+
+1. **lab5 把 lab2/3/4 的代码迁入骨架时要检查的几处。**
    - `default_pmm.h` 声明了 `extern free_area_t free_area;`，所以 `default_pmm.c` 里的 `free_area` 不能是 `static`，否则报 `static declaration of 'free_area' follows non-static declaration`。
    - 评分脚本 `tools/grade.sh` 会查找 `memory management: default_pmm_manager`，所以 Best-Fit 管理器的 `.name` 要写成 `"default_pmm_manager"`（lab4 里用的是 `"best_fit_pmm_manager"`）。
    - lab4 的 `libs/riscv.h` 里 `lsatp()` 是 RV32 写法（`SATP32_MODE`），lab5 的 `proc_run` 和 `load_icode` 真正依赖它切换页表，必须使用 lab5 骨架里的 RV64 版本（`0x8000000000000000 | (pgdir >> RISCV_PGSHIFT)`）。
    - `trap_in_kernel()`、`print_pgdir()` 等：前者是骨架提供的函数，合并代码时不要丢；后者在骨架里只有声明、没有定义，而 `sys_pgdir` 需要它，要自己补上。
    - lab3 的时钟中断处理只打印 `100 ticks`，lab5 需要在每 `TICK_NUM` 个 tick 时设置 `current->need_resched = 1`，否则一个死循环的用户进程（`spin` 用例）永远不会被抢占。
-9. **lab6 评分脚本对时钟中断和 RR 的两个隐含要求（与 QEMU 版本无关）。**
+
+2. **lab6 评分脚本对时钟中断和 RR 的两个隐含要求。**
    - `tools/grade.sh` 带 `-DDEBUG_GRADE` 编译，此时 `print_ticks()` 在第一个 100 ticks（约 1 秒）处打印 `End of Test.` 并 panic。`priority` 要跑约 2 秒，所以 lab6 的 `interrupt_handler()` 里不能再调用 `print_ticks()`，要像任务书写的那样每个 tick 都调用 `sched_class_proc_tick(current)`。lab5 的时钟代码（每 100 个 tick 打印并置位 `need_resched`）原样带过来会让 `priority` 的检查全部失败。
    - 注入的测试 `tools/test_lab6.c` 在一个被 `memset` 清零的运行队列上调用 `default_sched_class.init()`，随后断言 `rq->max_time_slice == MAX_TIME_SLICE`，再断言入队后 `time_slice == MAX_TIME_SLICE`。所以 `RR_init()` 必须自己把 `max_time_slice` 设成 `MAX_TIME_SLICE`（`sched_init()` 在调用 `init` 之前设置过，但测试不经过它）。任务书对 `RR_init` 的描述里没有这一条。
    - lab6 的 `schedule()` 不能再沿用 lab4/lab5 扫描 `proc_list` 的写法：`wakeup_proc()` 已经把进程放进运行队列，扫描链表会绕过调度类。要改成 "当前进程仍可运行则入队 → `pick_next` → `dequeue` → 为空则选 idleproc"。

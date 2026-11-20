@@ -1,9 +1,3 @@
-#include <list.h>
-#include <sync.h>
-#include <proc.h>
-#include <sched.h>
-#include <assert.h>
-
 /**
  * @file   sched.c
  * @brief  Round-robin scheduler: wakeup_proc() and the schedule() exercise.
@@ -33,6 +27,7 @@ void wakeup_proc(struct proc_struct *proc) {
     proc->state = PROC_RUNNABLE;
 }
 
+//LAB4 function3 2414007
 /**
  * @fn void schedule(void)
  * @brief Select the next runnable process and switch to it.
@@ -48,7 +43,6 @@ void wakeup_proc(struct proc_struct *proc) {
  * @note Context: runs in the kernel thread that calls it (normally idleproc). The call returns only
  *       when this thread is switched back in later.
  */
-//LAB4 function3 2414007
 void schedule(void) {
     bool intr_flag;
     list_entry_t *le, *last;

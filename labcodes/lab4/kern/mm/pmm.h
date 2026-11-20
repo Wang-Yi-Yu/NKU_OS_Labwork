@@ -41,9 +41,6 @@
  * methods directly: alloc_pages(), free_pages() and nr_free_pages() in pmm.c
  * dispatch to them with interrupts disabled.
  */
-// pmm_manager is a physical memory management class. A special pmm manager - XXX_pmm_manager
-// only needs to implement the methods in pmm_manager class, then XXX_pmm_manager can be used
-// by ucore to manage the total physical memory space.
 struct pmm_manager {
     const char *name;    // XXX_pmm_manager's name
     void (*init)(void);  // initialize internal description&management data structure
@@ -334,7 +331,6 @@ static inline void flush_tlb() {
  * @param type permission/flag bits, e.g. PTE_R | PTE_W | PTE_U
  * @return the PTE with PTE_V set
  */
-// construct PTE from a page and permission bits
 static inline pte_t pte_create(uintptr_t ppn, int type) {
     return (ppn << PTE_PPN_SHIFT) | PTE_V | type;
 }

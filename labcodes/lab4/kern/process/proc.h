@@ -20,7 +20,6 @@
  * PROC_UNINIT: allocated, not yet ready (alloc_proc). PROC_RUNNABLE: may run or is running.
  * PROC_SLEEPING: waiting for an event. PROC_ZOMBIE: finished, waiting for its parent (do_exit).
  */
-// process's state in his life cycle
 enum proc_state {
     PROC_UNINIT = 0,  // uninitialized
     PROC_SLEEPING,    // sleeping

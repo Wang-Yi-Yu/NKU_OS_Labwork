@@ -2,9 +2,9 @@
 
 ## 实验目的
 
--   理解操作系统的调度管理机制
--   熟悉 ucore 的系统调度器框架，实现缺省的Round-Robin 调度算法
--   基于调度器框架实现一个(Stride Scheduling)调度算法来替换缺省的调度算法
+- 理解操作系统的调度管理机制
+- 熟悉 ucore 的系统调度器框架，实现缺省的Round-Robin 调度算法
+- 基于调度器框架实现一个(Stride Scheduling)调度算法来替换缺省的调度算法
 
 ## 实验内容
 
@@ -54,12 +54,12 @@ void interrupt_handler(struct trapframe *tf); (kern/trap/trap.c)
 
 本任务用于理解 ucore 如何把通用调度流程与具体调度策略分开。请仔细阅读调度器框架的实现，并在实验报告中分别完成以下分析：
 
--   **调度类结构体分析**：解释 `struct sched_class` 中每个函数指针的作用和调用时机，并分析为什么需要使用函数指针组织这些调度接口，而不是直接实现固定的调度函数。
--   **运行队列结构体分析**：比较 `lab5` 和 `lab6` 中 `struct run_queue` 的差异，说明为什么 `lab6` 的运行队列需要同时支持链表和斜堆两种数据结构。
--   **调度器框架函数分析**：分析 `sched_init()`、`wakeup_proc()` 和 `schedule()` 在 `lab6` 中的实现变化，说明这些函数如何与具体的调度算法解耦。
--   **调度类初始化流程**：描述从内核启动到调度器初始化完成的完整流程，并分析 `default_sched_class` 如何与调度器框架建立关联。
--   **进程调度流程**：绘制完整的进程调度流程图，包括时钟中断触发、`proc_tick` 被调用、`schedule()` 执行以及调度类各接口的调用顺序，并解释 `need_resched` 标志在调度过程中的作用。
--   **调度算法切换机制**：分析添加新的调度算法（如 Stride）时需要修改哪些代码，并说明当前的框架设计为什么便于切换调度算法。
+- **调度类结构体分析**：解释 `struct sched_class` 中每个函数指针的作用和调用时机，并分析为什么需要使用函数指针组织这些调度接口，而不是直接实现固定的调度函数。
+- **运行队列结构体分析**：比较 `lab5` 和 `lab6` 中 `struct run_queue` 的差异，说明为什么 `lab6` 的运行队列需要同时支持链表和斜堆两种数据结构。
+- **调度器框架函数分析**：分析 `sched_init()`、`wakeup_proc()` 和 `schedule()` 在 `lab6` 中的实现变化，说明这些函数如何与具体的调度算法解耦。
+- **调度类初始化流程**：描述从内核启动到调度器初始化完成的完整流程，并分析 `default_sched_class` 如何与调度器框架建立关联。
+- **进程调度流程**：绘制完整的进程调度流程图，包括时钟中断触发、`proc_tick` 被调用、`schedule()` 执行以及调度类各接口的调用顺序，并解释 `need_resched` 标志在调度过程中的作用。
+- **调度算法切换机制**：分析添加新的调度算法（如 Stride）时需要修改哪些代码，并说明当前的框架设计为什么便于切换调度算法。
 
 #### 功能模块二：Round Robin 调度算法（设计提示词借助 ai 完成）
 
@@ -87,12 +87,12 @@ Tips：如果对 RR 调度器如何接入现有框架还不熟悉，可以仔细
 
 请在实验报告中完成：
 
--   提交本任务使用的完整`prompt`。
--   比较一个在`lab5`和`lab6`中均存在但实现不同的函数，说明为什么需要这一改动，以及不修改可能产生的问题。可以参考`kern/schedule/sched.c`，也可以选择其他函数。
--   描述你的提示词让 AI 生成的 RR 调度模块如何实现各项调度接口，解释关键链表操作和**边界情况**的处理方式。
--   展示`make grade`的**输出结果**，并描述在 QEMU 中观察到的调度现象。
--   分析 Round Robin 调度算法的优缺点，并讨论时间片大小对系统性能的影响。
--   **拓展思考**：如果要让 AI 生成支持优先级的 RR 调度器，你会如何修改提示词？当前生成的实现是否支持多核调度？如果不支持，提示词还需要增加哪些要求？
+- 提交本任务使用的完整`prompt`。
+- 比较一个在`lab5`和`lab6`中均存在但实现不同的函数，说明为什么需要这一改动，以及不修改可能产生的问题。可以参考`kern/schedule/sched.c`，也可以选择其他函数。
+- 描述你的提示词让 AI 生成的 RR 调度模块如何实现各项调度接口，解释关键链表操作和**边界情况**的处理方式。
+- 展示`make grade`的**输出结果**，并描述在 QEMU 中观察到的调度现象。
+- 分析 Round Robin 调度算法的优缺点，并讨论时间片大小对系统性能的影响。
+- **拓展思考**：如果要让 AI 生成支持优先级的 RR 调度器，你会如何修改提示词？当前生成的实现是否支持多核调度？如果不支持，提示词还需要增加哪些要求？
 
 #### 功能模块三：Stride Scheduling 调度算法（设计提示词借助 ai 完成）
 
@@ -121,14 +121,14 @@ Tips：完成 Stride 调度模块后，还需要在`sched_init()`中切换调度
 
 后面的实验文档部分给出了Stride调度算法的大体描述。这里给出Stride调度算法的一些相关的资料（目前网上中文的资料比较欠缺）。
 
--   [strid-shed paper location](http://citeseerx.ist.psu.edu/viewdoc/summary?doi=10.1.1.138.3502&rank=1)
--   也可 GOOGLE “Stride Scheduling” 来查找相关资料
+- [strid-shed paper location](http://citeseerx.ist.psu.edu/viewdoc/summary?doi=10.1.1.138.3502&rank=1)
+- 也可 GOOGLE “Stride Scheduling” 来查找相关资料
 
 请在实验报告中完成：
 
--   提交本任务使用的完整`prompt`。
--   说明提示词如何描述 Stride 调度规则、运行队列数据结构、`stride`溢出处理和调度框架接口，并分析 AI 生成结果是否满足这些要求。
--   简要证明或说明（不必特别严谨，但应当能够“说服你自己”），为什么 Stride 算法中，经过足够多的时间片之后，每个进程分配到的时间片数目和优先级成正比。
+- 提交本任务使用的完整`prompt`。
+- 说明提示词如何描述 Stride 调度规则、运行队列数据结构、`stride`溢出处理和调度框架接口，并分析 AI 生成结果是否满足这些要求。
+- 简要证明或说明（不必特别严谨，但应当能够“说服你自己”），为什么 Stride 算法中，经过足够多的时间片之后，每个进程分配到的时间片数目和优先级成正比。
 
 #### 扩展练习 Challenge 1：实现其他基本调度算法
 
@@ -138,9 +138,9 @@ Tips：完成 Stride 调度模块后，还需要在`sched_init()`中切换调度
 
 在ucore的调度器框架下也可以实现Linux的CFS调度算法。可阅读相关Linux内核书籍或查询网上资料，这里给出CFS调度算法的一些相关的资料。
 
--   [CFS 调度器 - Linux 内核文档](https://docs.linuxkernel.org.cn/scheduler/sched-design-CFS.html)
--   [Linux完全公平调度(CFS)深度解剖（安卓流畅度核心）](https://www.cnblogs.com/16msyanjiusuo/articles/18720910)
--   [一文搞懂linux cfs调度器](https://zhuanlan.zhihu.com/p/556295381)
+- [CFS 调度器 - Linux 内核文档](https://docs.linuxkernel.org.cn/scheduler/sched-design-CFS.html)
+- [Linux完全公平调度(CFS)深度解剖（安卓流畅度核心）](https://www.cnblogs.com/16msyanjiusuo/articles/18720910)
+- [一文搞懂linux cfs调度器](https://zhuanlan.zhihu.com/p/556295381)
 
 可通过这些相关资料了解CFS的细节，然后大致实现在ucore中。（可以作为Challenge 2的实现）
 
@@ -267,13 +267,13 @@ lab6
 
 相对与实验五，实验六的主要改动简单说明如下：
 
--   libs/skew_heap.h:提供了基本的优先队列数据结构，为本次实验提供了抽象数据结构方面的支持。
--   kern/process/proc.[ch]：proc.h中扩展了proc_struct的成员变量，用于RR和stride调度算法。proc.c中实现了lab6_set_priority，用于设置进程的优先级。
--   kern/schedule/{sched.h,sched.c}: 定义了 ucore 的调度器框架，其中包括相关的数据结构（包括调度器的接口和运行队列的结构），和具体的运行时机制。
--   kern/schedule/{default_sched.h,default_sched.c}: default_sched.h提供调度类的对外声明，default_sched.c作为 RR 调度模块的代码生成区域，需要通过设计提示词让 AI 生成完整实现。
--   kern/schedule/default_sched_stride.c: Stride Scheduling调度模块的代码生成区域，需要通过设计提示词让 AI 生成完整实现并接入现有调度框架。
--   kern/syscall/syscall.[ch]: 增加了sys_gettime系统调用，便于用户进程获取当前时钟值；增加了sys_lab6_set_priority系统调用，便于用户进程设置进程优先级（给priority.c用）
--   user/{matrix.c,priority.c,. . . }: 相关的一些测试用户程序，测试调度算法的正确性，user目录下包含但不限于这些程序。在完成实验过程中，建议阅读这些测试程序，以了解这些程序的行为，便于进行调试。
+- libs/skew_heap.h:提供了基本的优先队列数据结构，为本次实验提供了抽象数据结构方面的支持。
+- kern/process/proc.[ch]：proc.h中扩展了proc_struct的成员变量，用于RR和stride调度算法。proc.c中实现了lab6_set_priority，用于设置进程的优先级。
+- kern/schedule/{sched.h,sched.c}: 定义了 ucore 的调度器框架，其中包括相关的数据结构（包括调度器的接口和运行队列的结构），和具体的运行时机制。
+- kern/schedule/{default_sched.h,default_sched.c}: default_sched.h提供调度类的对外声明，default_sched.c作为 RR 调度模块的代码生成区域，需要通过设计提示词让 AI 生成完整实现。
+- kern/schedule/default_sched_stride.c: Stride Scheduling调度模块的代码生成区域，需要通过设计提示词让 AI 生成完整实现并接入现有调度框架。
+- kern/syscall/syscall.[ch]: 增加了sys_gettime系统调用，便于用户进程获取当前时钟值；增加了sys_lab6_set_priority系统调用，便于用户进程设置进程优先级（给priority.c用）
+- user/{matrix.c,priority.c,. . . }: 相关的一些测试用户程序，测试调度算法的正确性，user目录下包含但不限于这些程序。在完成实验过程中，建议阅读这些测试程序，以了解这些程序的行为，便于进行调试。
 
 ## 调度框架和调度算法设计与实现
 
@@ -281,10 +281,10 @@ lab6
 
 在ucore中，进程有如下几个状态：
 
--   `PROC_UNINIT`：这个状态表示进程刚刚被分配相应的进程控制块，但还没有初始化，需要进一步的初始化才能进入`PROC_RUNNABLE`的状态。
--   `PROC_SLEEPING`：这个状态表示进程正在等待某个事件的发生，通常由于等待锁的释放，或者主动交出CPU资源（`do_sleep`）。这个状态下的进程是不会被调度的。
--   `PROC_RUNNABLE`：这个状态表示进程已经准备好要执行了，只需要操作系统给他分配相应的CPU资源就可以运行。
--   `PROC_ZOMBIE`：这个状态表示进程已经退出，相应的资源被回收（大部分），`almost dead`。
+- `PROC_UNINIT`：这个状态表示进程刚刚被分配相应的进程控制块，但还没有初始化，需要进一步的初始化才能进入`PROC_RUNNABLE`的状态。
+- `PROC_SLEEPING`：这个状态表示进程正在等待某个事件的发生，通常由于等待锁的释放，或者主动交出CPU资源（`do_sleep`）。这个状态下的进程是不会被调度的。
+- `PROC_RUNNABLE`：这个状态表示进程已经准备好要执行了，只需要操作系统给他分配相应的CPU资源就可以运行。
+- `PROC_ZOMBIE`：这个状态表示进程已经退出，相应的资源被回收（大部分），`almost dead`。
 
 一个进程的生命周期一般由如下过程组成：
 
@@ -413,11 +413,11 @@ struct run_queue {
 
 为了把 RR 算法接入统一的调度框架，需要分别处理运行队列和时间片在不同调度阶段的变化：
 
--   初始化接口负责建立空的运行队列，并将队列中的进程数量初始化为零。
--   入队接口负责将可运行进程加入队尾，在剩余时间片无效时按照运行队列的最大时间片进行调整，同时维护进程所属队列和队列进程数量。
--   出队接口负责从运行队列移除指定进程，并同步更新相关队列状态。
--   选择接口负责返回队首进程；运行队列为空时应返回空指针。
--   时钟接口负责消耗当前进程的剩余时间片，并在时间片耗尽时设置重新调度标记。
+- 初始化接口负责建立空的运行队列，并将队列中的进程数量初始化为零。
+- 入队接口负责将可运行进程加入队尾，在剩余时间片无效时按照运行队列的最大时间片进行调整，同时维护进程所属队列和队列进程数量。
+- 出队接口负责从运行队列移除指定进程，并同步更新相关队列状态。
+- 选择接口负责返回队首进程；运行队列为空时应返回空指针。
+- 时钟接口负责消耗当前进程的剩余时间片，并在时间片耗尽时设置重新调度标记。
 
 `default_sched_class`是 RR 调度器与通用调度框架之间的连接点。它的类型是`struct sched_class`，其中的函数指针分别对应上述调度操作。在`sched_init()`中，框架把`sched_class`指向`default_sched_class`，初始化运行队列，并通过统一接口调用 RR 调度器；后续的进程唤醒、主动让出 CPU 和时钟中断也会沿着这些接口更新调度状态。
 
@@ -431,29 +431,29 @@ struct run_queue {
 
 考察 round-robin 调度器，在假设所有进程都充分使用了其拥有的 CPU 时间资源的情况下，所有进程得到的 CPU 时间应该是相等的。但是有时候我们希望调度器能够更智能地为每个进程分配合理的 CPU 资源。假设我们为不同的进程分配不同的优先级，则我们有可能希望每个进程得到的时间资源与他们的优先级成正比关系。Stride调度是基于这种想法的一个较为典型和简单的算法。除了简单易于实现以外，它还有如下的特点：
 
--   可控性：如我们之前所希望的，可以证明 Stride Scheduling对进程的调度次数正比于其优先级。
--   确定性：在不考虑计时器事件的情况下，整个调度机制都是可预知和重现的。该算法的基本思想可以考虑如下：
-    1.  为每个runnable的进程设置一个当前状态stride，表示该进程当前的调度权。另外定义其对应的pass值，表示对应进程在调度后，stride 需要进行的累加值。
-    2.  每次需要调度时，从当前 runnable 态的进程中选择 stride最小的进程调度。
-    3.  对于获得调度的进程P，将对应的stride加上其对应的步长pass（只与进程的优先权有关系）。
-    4.  在一段固定的时间之后，回到 2.步骤，重新调度当前stride最小的进程。
+- 可控性：如我们之前所希望的，可以证明 Stride Scheduling对进程的调度次数正比于其优先级。
+- 确定性：在不考虑计时器事件的情况下，整个调度机制都是可预知和重现的。该算法的基本思想可以考虑如下：
+  1.  为每个runnable的进程设置一个当前状态stride，表示该进程当前的调度权。另外定义其对应的pass值，表示对应进程在调度后，stride 需要进行的累加值。
+  2.  每次需要调度时，从当前 runnable 态的进程中选择 stride最小的进程调度。
+  3.  对于获得调度的进程P，将对应的stride加上其对应的步长pass（只与进程的优先权有关系）。
+  4.  在一段固定的时间之后，回到 2.步骤，重新调度当前stride最小的进程。
 
 可以证明，如果令 P.pass =BigStride / P.priority 其中 P.priority 表示进程的优先权（大于 1），而 BigStride 表示一个预先定义的大常数，则该调度方案为每个进程分配的时间将与其优先级成正比。证明过程我们在这里略去，有兴趣的同学可以在网上查找相关资料。将该调度器应用到ucore 的调度器框架中来，则需要将调度器接口实现如下：
 
--   init:
-    -   初始化调度器类的信息（如果有的话）。
-    -   初始化当前的运行队列为一个空的容器结构。（比如和RR调度算法一样，初始化为一个有序列表）
--   enqueue
-    -   初始化刚进入运行队列的进程 proc的stride属性。
-    -   将 proc插入放入运行队列中去（注意：这里并不要求放置在队列头部）。
--   dequeue
-    -   从运行队列中删除相应的元素。
--   pick next
-    -   扫描整个运行队列，返回其中stride值最小的对应进程。
-    -   更新对应进程的stride值，即pass = BIG_STRIDE / P->priority; P->stride += pass。
--   proc tick:
-    -   检测当前进程是否已用完分配的时间片。如果时间片用完，应该正确设置进程结构的相关标记来引起进程切换。
-    -   一个 process 最多可以连续运行 rq.max_time_slice个时间片。
+- init:
+  - 初始化调度器类的信息（如果有的话）。
+  - 初始化当前的运行队列为一个空的容器结构。（比如和RR调度算法一样，初始化为一个有序列表）
+- enqueue
+  - 初始化刚进入运行队列的进程 proc的stride属性。
+  - 将 proc插入放入运行队列中去（注意：这里并不要求放置在队列头部）。
+- dequeue
+  - 从运行队列中删除相应的元素。
+- pick next
+  - 扫描整个运行队列，返回其中stride值最小的对应进程。
+  - 更新对应进程的stride值，即pass = BIG_STRIDE / P->priority; P->stride += pass。
+- proc tick:
+  - 检测当前进程是否已用完分配的时间片。如果时间片用完，应该正确设置进程结构的相关标记来引起进程切换。
+  - 一个 process 最多可以连续运行 rq.max_time_slice个时间片。
 
 在具体实现时，有一个需要注意的地方：stride属性的溢出问题，在之前的实现里面我们并没有考虑 stride 的数值范围，而这个值在理论上是不断增加的，在stride溢出以后，基于stride的比较可能会出现错误。比如假设当前存在两个进程A和B，stride属性采用16位无符号整数进行存储。当前队列中元素如下（假设当前运行的进程已经被重新放置进运行队列中）：
 
@@ -498,27 +498,27 @@ STRIDE_MAX – STRIDE_MIN <= PASS_MAX
 
 其中优先队列的顺序由比较函数`comp`决定。对于 Stride 调度器，比较函数需要根据进程的 stride 判断先后顺序，并结合前文介绍的方法正确处理无符号整数溢出。当使用优先队列实现 Stride 调度器后，运行队列结构也需要作相应改变，其中包括：
 
--   struct run_queue中的lab6_run_pool指针，在使用优先队列的实现中表示当前优先队列的头元素，如果优先队列为空，则其指向空指针（NULL）。
--   struct proc_struct中的lab6_run_pool结构，表示当前进程对应的优先队列节点。ucore 已经在进程和运行队列结构中预留了 Stride 调度需要的数据，使用优先队列组织这些数据时，可以将其工作过程概括如下：
--   init(rq):
-    -   Initialize rq->run_list
-    -   Set rq->lab6_run_pool to NULL
-    -   Set rq->proc_num to 0
--   enqueue(rq, proc)
-    -   Initialize proc->time_slice
-    -   Insert proc->lab6_run_pool into rq->lab6_run_pool
-    -   rq->proc_num ++
--   dequeue(rq, proc)
-    -   Remove proc->lab6_run_pool from rq->lab6_run_pool
-    -   rq->proc_num --
--   pick_next(rq)
-    -   If rq->lab6_run_pool == NULL, return NULL
-    -   Find the proc corresponding to the pointer rq->lab6_run_pool
-    -   proc->lab6_stride += BIG_STRIDE / proc->lab6_priority
-    -   Return proc
--   proc_tick(rq, proc):
-    -   If proc->time_slice > 0, proc->time_slice --
-    -   If proc->time_slice == 0, set the flag proc->need_resched
+- struct run_queue中的lab6_run_pool指针，在使用优先队列的实现中表示当前优先队列的头元素，如果优先队列为空，则其指向空指针（NULL）。
+- struct proc_struct中的lab6_run_pool结构，表示当前进程对应的优先队列节点。ucore 已经在进程和运行队列结构中预留了 Stride 调度需要的数据，使用优先队列组织这些数据时，可以将其工作过程概括如下：
+- init(rq):
+  - Initialize rq->run_list
+  - Set rq->lab6_run_pool to NULL
+  - Set rq->proc_num to 0
+- enqueue(rq, proc)
+  - Initialize proc->time_slice
+  - Insert proc->lab6_run_pool into rq->lab6_run_pool
+  - rq->proc_num ++
+- dequeue(rq, proc)
+  - Remove proc->lab6_run_pool from rq->lab6_run_pool
+  - rq->proc_num --
+- pick_next(rq)
+  - If rq->lab6_run_pool == NULL, return NULL
+  - Find the proc corresponding to the pointer rq->lab6_run_pool
+  - proc->lab6_stride += BIG_STRIDE / proc->lab6_priority
+  - Return proc
+- proc_tick(rq, proc):
+  - If proc->time_slice > 0, proc->time_slice --
+  - If proc->time_slice == 0, set the flag proc->need_resched
 
 上述过程与 RR 调度器使用相同的调度类接口，区别主要在于运行队列的组织方式和下一进程的选择规则。优先队列使调度器能够直接取得 stride 最小的进程，从而避免每次调度都扫描整个可运行进程集合。
 
@@ -537,19 +537,19 @@ set priority to 4
 set priority to 3
 set priority to 2
 set priority to 1
-child pid 7, acc 944000, time 2010 
-child pid 6, acc 788000, time 2010 
-child pid 5, acc 620000, time 2010 
-child pid 4, acc 460000, time 2020 
-child pid 3, acc 316000, time 2020 
-main: pid 3, acc 316000, time 2020 
-main: pid 4, acc 460000, time 2020 
-main: pid 5, acc 620000, time 2030 
-main: pid 6, acc 788000, time 2030 
-main: pid 7, acc 944000, time 2030 
+child pid 7, acc 944000, time 2010
+child pid 6, acc 788000, time 2010
+child pid 5, acc 620000, time 2010
+child pid 4, acc 460000, time 2020
+child pid 3, acc 316000, time 2020
+main: pid 3, acc 316000, time 2020
+main: pid 4, acc 460000, time 2020
+main: pid 5, acc 620000, time 2030
+main: pid 6, acc 788000, time 2030
+main: pid 7, acc 944000, time 2030
 main: wait pids over
-sched result: 1 1 2 2 3 
-all user-mode processes have quit. 
+sched result: 1 1 2 2 3
+all user-mode processes have quit.
 init check memory pass.
 kernel panic at kern/process/proc.c:<line>:
     initproc exit.

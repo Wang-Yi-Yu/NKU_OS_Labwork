@@ -137,7 +137,6 @@ void forkrets(struct trapframe *tf);
  */
 void switch_to(struct context *from, struct context *to);
 
-//lab6 function1-1 YOUR CODE update alloc_proc
 //lab5 function2 2414007 update alloc_proc
 //LAB4 function2 2411622
 /**
@@ -189,6 +188,13 @@ static struct proc_struct *alloc_proc(void) {
     proc->exit_code = 0;
     proc->wait_state = 0;
     proc->cptr = proc->yptr = proc->optr = NULL;
+    //lab6 function1-1 2414015 update alloc_proc
+    proc->rq = NULL;
+    list_init(&proc->run_link);
+    proc->time_slice = 0;
+    skew_heap_init(&proc->lab6_run_pool);
+    proc->lab6_stride = 0;
+    proc->lab6_priority = 1;
     return proc;
 }
 

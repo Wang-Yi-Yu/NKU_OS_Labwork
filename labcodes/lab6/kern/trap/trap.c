@@ -141,7 +141,6 @@ void print_regs(struct pushregs *gpr) {
  */
 extern struct mm_struct *check_mm_struct;
 
-//lab6 function1-2 YOUR CODE update interrupt_handler
 //lab3 function2 2414015
 
 /**
@@ -166,15 +165,11 @@ void interrupt_handler(struct trapframe *tf) {
 
     switch (cause) {
         case IRQ_S_TIMER:
+            //lab6 function1-2 2414015 update interrupt_handler
             clock_set_next_event();
             ticks++;
-            if (ticks % TICK_NUM == 0) {
-                print_ticks();
-                // lab5: a user process only gives up the CPU when it asks for it or is preempted,
-                // so the timer has to request a reschedule (checked in trap() on the way out)
-                if (current != NULL) {
-                    current->need_resched = 1;
-                }
+            if (current != NULL) {
+                sched_class_proc_tick(current);
             }
             break;
         case IRQ_U_SOFT:

@@ -32,6 +32,13 @@
 
 本实验的主要目的是：
 
+1. 理解用户态与内核态的边界，以及用户程序如何通过 `ecall` 陷入内核、经 `exception_handler` 和 `syscall()` 获得服务，再通过扩展后的 `RESTORE_ALL` 和 `sret` 返回用户态。
+2. 掌握系统调用框架的实现方式：系统调用号与参数在 `trapframe` 中的存放约定、`syscall` 分发表与各个 `sys_*` 的职责，以及内核如何把请求转发到 `do_exit`、`do_fork`、`do_wait` 等进程管理接口。
+3. 理解第一个用户进程的创建与装载过程：`init_main`、`user_main`、`kernel_execve`、`do_execve` 和 `load_icode` 如何把嵌入内核镜像的 ELF 装入独立的用户地址空间，并完成从内核线程到用户进程的执行流切换。
+4. 掌握用户进程的复制机制：`do_fork` 如何复制 PCB、内核栈、`trapframe` 和用户地址空间（VMA 与页表映射），以及子进程如何从系统调用返回 0。
+5. 理解用户进程的生命周期管理：`do_exit` 释放地址空间并进入僵尸态，`do_wait` 回收子进程的内核栈与 PCB，`do_yield` 主动让出 CPU，`do_kill` 请求目标进程退出，以及孤儿进程过继给 `initproc` 的回收闭环。
+6. 理解用户地址空间的组织方式：通过 `mm_struct` 与 VMA 描述合法区间，通过 `page_insert` 建立带 `PTE_U` 的映射，通过 `user_mem_check` 校验用户指针，以及用户栈与内核栈在 Trap 路径上的分工（`sscratch` 约定）。
+
 ---
 
 ## 二、实验环境
@@ -67,9 +74,9 @@
 
 #### 3.2.1 功能模块一：用户态系统调用功能
 
-**为什么需要。** 用户程序没有权限直接使用内核资源，系统调用是它获得内核服务的唯一入口。如果没有这一层，后面的"启动用户进程""复制进程""退出进程"都无法被用户程序触发，也无法在从用户态陷入后正确返回。所以实验首先要打通"用户 `ecall` → 异常入口 → 系统调用分发 → 内核处理 → `sret` 返回用户态"这条链路：扩展 `RESTORE_ALL` 使它能区分返回用户态和返回内核态，让 `exception_handler` 识别 `ecall`，由 `syscall()` 按编号分发到各个 `sys_*`。
+**为什么需要。** 用户程序没有权限直接使用内核资源，系统调用是它获得内核服务的唯一入口。如果没有这一层，后面的"启动用户进程""复制进程""退出进程"都无法被用户程序触发，也无法在从用户态陷入后正确返回。所以实验首先要打通"用户 `ecall` → 异常入口 → 系统调用分发 → 内核处理 → `sret` 返回用户态"这条链路：扩展 `RESTORE_ALL` 使它能区分返回用户态和返回内核态，让 `exception_handler` 识别 `ecall`，由 `syscall()` 按编号分发到各个 `sys_`*。
 
-**与其他模块的关联。** 它是后面三个模块的基础。模块二里 `kernel_execve` 直接跳到 `__trapret`，依赖本模块扩展后的 `RESTORE_ALL` 才能进入用户态；模块三的 `do_fork` 和模块四的 `do_exit`、`do_yield`、`do_kill`、模块二的 `do_wait`、`do_execve` 都是通过 `sys_fork`、`sys_exit`、`sys_wait` 等处理函数才被用户程序调用的。本模块只做"解包参数并转发"，真正的语义落在后三个模块的 `do_*` 函数里。
+**与其他模块的关联。** 它是后面三个模块的基础。模块二里 `kernel_execve` 直接跳到 `__trapret`，依赖本模块扩展后的 `RESTORE_ALL` 才能进入用户态；模块三的 `do_fork` 和模块四的 `do_exit`、`do_yield`、`do_kill`、模块二的 `do_wait`、`do_execve` 都是通过 `sys_fork`、`sys_exit`、`sys_wait` 等处理函数才被用户程序调用的。本模块只做"解包参数并转发"，真正的语义落在后三个模块的 `do_`* 函数里。
 
 ---
 
@@ -131,11 +138,11 @@ void print_pgdir(void)                               // kern/mm/pmm.c（sys_pgdi
 
 这一模块把用户态通过 `ecall` 发出的请求接入内核，再把结果写回用户态寄存器。整条链路由四部分组成：
 
-1. **`RESTORE_ALL`：区分返回用户态和返回内核态。** lab3 的 `RESTORE_ALL` 只服务于纯内核系统，恢复完寄存器就 `sret`。lab5 约定：用户态运行时 `sscratch` 保存内核栈顶，内核态运行时 `sscratch` 为 0，`SAVE_ALL` 靠交换 `sp` 和 `sscratch` 判断陷入来源。因此返回时必须把 `sscratch` 设成正确的值。实现上先从 trapframe 取出 `sstatus` 和 `sepc`，用 `andi` 检查 `SSTATUS_SPP`：`SPP == 1` 说明要返回内核，直接跳过，`sscratch` 保持 `SAVE_ALL` 清零后的 0；`SPP == 0` 说明要返回用户态，把 `sp + 36 * REGBYTES`（本 trapframe 之上，即内核栈顶）写入 `sscratch`，下一次陷入时 `SAVE_ALL` 才能找到内核栈。这一步必须在 `sp` 被换成用户栈指针之前完成，所以放在恢复通用寄存器之前，`x2` 仍然最后一个恢复。宏内的跳转标号用 `LOCAL` 声明，避免多次展开冲突。
-2. **`exception_handler`：识别用户态 `ecall`。** 在原有的非法指令、断点分支之外增加 `CAUSE_USER_ECALL` 分支：先把 `tf->epc` 加 4（`ecall` 是 32 位指令），再调用 `syscall()`。必须先前移 `epc`，否则 `sret` 回去会重新执行同一条 `ecall`，系统调用会无限重复。
-3. **`syscall()`：取号、取参、分发、写回。** 从 `current->tf` 里读出 `a0` 作为系统调用号，`a1`~`a5` 作为 `arg[0]`~`arg[4]`（与用户库 `user/libs/syscall.c` 的寄存器约定一一对应），调用 `syscalls[num](arg)`，返回值写回 `tf->gpr.a0`，用户程序 `sret` 回去后就从 `a0` 读到结果。用户可以传入任意整数，所以要同时检查 `num >= 0`、`num < NUM_SYSCALLS` 和表项非空；不合法的编号不分发，直接把 `-E_INVAL` 写入 `a0` 并返回，不能 panic，也不能通过空指针调用。
-4. **`sys_*`：把统一编号的请求翻译成内核语义。** 这些函数只负责解包参数并转交给进程管理层，真正的权限检查和资源更新都在对应的 `do_*` 里完成：`sys_exit` → `do_exit(arg[0])`；`sys_fork` 以 `clone_flags = 0`、当前 trapframe 的 `sp` 为子进程用户栈指针、当前 trapframe 为模板调用 `do_fork`；`sys_wait` 把 PID 和用户态地址转交 `do_wait`（指针由 `do_wait` 用 `user_mem_check` 检查）；`sys_exec` 把名字、长度、ELF 映像和大小转交 `do_execve`；`sys_yield`、`sys_kill` 对应 `do_yield`、`do_kill`；`sys_getpid` 返回 `current->pid`；`sys_putc` 用 `cputchar` 输出一个字符（用户态不能直接访问控制台，用户库的 `cprintf` 每个字符都经由这个调用）；`sys_pgdir` 调用 `print_pgdir`。
-5. **`print_pgdir`：补上骨架缺失的定义。** 骨架里 `print_pgdir` 只有声明，`sys_pgdir` 和用户程序 `pgdir` 都需要它，不实现则链接失败。它利用 `pmm.c` 中已有的 `get_pgtable_items` 和 `perm2str`，从 `satp` 找到当前页表的根，按 Sv39 三级页表逐级把"权限相同的连续有效表项"打印成一行：带 R/W/X 的是叶子（大页或页），不再下降；不带的指向下一级页表，缩进后继续打印。虚拟地址按 Sv39 规则做符号扩展。
+1. `**RESTORE_ALL`：区分返回用户态和返回内核态。** lab3 的 `RESTORE_ALL` 只服务于纯内核系统，恢复完寄存器就 `sret`。lab5 约定：用户态运行时 `sscratch` 保存内核栈顶，内核态运行时 `sscratch` 为 0，`SAVE_ALL` 靠交换 `sp` 和 `sscratch` 判断陷入来源。因此返回时必须把 `sscratch` 设成正确的值。实现上先从 trapframe 取出 `sstatus` 和 `sepc`，用 `andi` 检查 `SSTATUS_SPP`：`SPP == 1` 说明要返回内核，直接跳过，`sscratch` 保持 `SAVE_ALL` 清零后的 0；`SPP == 0` 说明要返回用户态，把 `sp + 36 * REGBYTES`（本 trapframe 之上，即内核栈顶）写入 `sscratch`，下一次陷入时 `SAVE_ALL` 才能找到内核栈。这一步必须在 `sp` 被换成用户栈指针之前完成，所以放在恢复通用寄存器之前，`x2` 仍然最后一个恢复。宏内的跳转标号用 `LOCAL` 声明，避免多次展开冲突。
+2. `**exception_handler`：识别用户态 `ecall`。** 在原有的非法指令、断点分支之外增加 `CAUSE_USER_ECALL` 分支：先把 `tf->epc` 加 4（`ecall` 是 32 位指令），再调用 `syscall()`。必须先前移 `epc`，否则 `sret` 回去会重新执行同一条 `ecall`，系统调用会无限重复。
+3. `**syscall()`：取号、取参、分发、写回。** 从 `current->tf` 里读出 `a0` 作为系统调用号，`a1`~`a5` 作为 `arg[0]`~`arg[4]`（与用户库 `user/libs/syscall.c` 的寄存器约定一一对应），调用 `syscalls[num](arg)`，返回值写回 `tf->gpr.a0`，用户程序 `sret` 回去后就从 `a0` 读到结果。用户可以传入任意整数，所以要同时检查 `num >= 0`、`num < NUM_SYSCALLS` 和表项非空；不合法的编号不分发，直接把 `-E_INVAL` 写入 `a0` 并返回，不能 panic，也不能通过空指针调用。
+4. `**sys_*`：把统一编号的请求翻译成内核语义。** 这些函数只负责解包参数并转交给进程管理层，真正的权限检查和资源更新都在对应的 `do_`* 里完成：`sys_exit` → `do_exit(arg[0])`；`sys_fork` 以 `clone_flags = 0`、当前 trapframe 的 `sp` 为子进程用户栈指针、当前 trapframe 为模板调用 `do_fork`；`sys_wait` 把 PID 和用户态地址转交 `do_wait`（指针由 `do_wait` 用 `user_mem_check` 检查）；`sys_exec` 把名字、长度、ELF 映像和大小转交 `do_execve`；`sys_yield`、`sys_kill` 对应 `do_yield`、`do_kill`；`sys_getpid` 返回 `current->pid`；`sys_putc` 用 `cputchar` 输出一个字符（用户态不能直接访问控制台，用户库的 `cprintf` 每个字符都经由这个调用）；`sys_pgdir` 调用 `print_pgdir`。
+5. `**print_pgdir`：补上骨架缺失的定义。** 骨架里 `print_pgdir` 只有声明，`sys_pgdir` 和用户程序 `pgdir` 都需要它，不实现则链接失败。它利用 `pmm.c` 中已有的 `get_pgtable_items` 和 `perm2str`，从 `satp` 找到当前页表的根，按 Sv39 三级页表逐级把"权限相同的连续有效表项"打印成一行：带 R/W/X 的是叶子（大页或页），不再下降；不带的指向下一级页表，缩进后继续打印。虚拟地址按 Sv39 规则做符号扩展。
 
 一次完整的系统调用就是：`ecall` 进入 `__alltraps`（`SAVE_ALL` 保存现场，`sscratch` 清零）→ `trap()` → `exception_handler` 前移 `epc` → `syscall()` 分发并写回 `a0` → 回到 `__trapret`（`RESTORE_ALL` 恢复现场并设置 `sscratch`）→ `sret` 回到用户态。
 
@@ -143,9 +150,9 @@ void print_pgdir(void)                               // kern/mm/pmm.c（sys_pgdi
 
 以下是经过迭代优化后，最终成功实现该功能的提示词：
 
-````markdown
+```markdown
 [PROMPT]
-**任务**：补全 lab5 的"用户态系统调用"功能模块。涉及四个文件：`kern/trap/trapentry.S` 中的 `RESTORE_ALL` 宏（扩展为同时支持返回用户态和返回内核态）、`kern/trap/trap.c` 中的 `exception_handler`（增加用户态 `ecall` 的处理）、`kern/syscall/syscall.c` 中的 `syscall()` 分发函数和九个 `sys_*` 处理函数、`kern/mm/pmm.c` 中的 `print_pgdir`（`sys_pgdir` 依赖它，骨架里只有声明没有定义）。
+**任务**：补全 lab5 的"用户态系统调用"功能模块。涉及四个文件：`kern/trap/trapentry.S` 中的 `RESTORE_ALL` 宏（扩展为同时支持返回用户态和返回内核态）、`kern/trap/trap.c` 中的 `exception_handler`（增加用户态 `ecall` 的处理）、`kern/syscall/syscall.c` 中的 `syscall()` 分发函数和九个 `sys_`* 处理函数、`kern/mm/pmm.c` 中的 `print_pgdir`（`sys_pgdir` 依赖它，骨架里只有声明没有定义）。
 
 **操作要求**：你必须在项目中修改实际文件，保留现有代码，只在标有 `lab5 function1 YOUR CODE` 的位置补全，并把其中的 `YOUR CODE` 替换为学号 `2414007`；`exception_handler` 里已有的 lab3 分支保持不变。所有新增代码的注释使用英文，函数使用 Doxygen 风格。
 
@@ -202,7 +209,7 @@ void print_pgdir(void)                              // kern/mm/pmm.c
 - Case 2：编号为负、不小于 `NUM_SYSCALLS`，或表项为空。不得调用任何函数，不得 panic，把 `-E_INVAL` 写入 `a0` 并返回（调用号 0 属于这一类）。
 - Requirements：必须同时检查上界、下界和空表项，用户可以传入任意整数。
 
-**各 sys_* 处理函数**（只负责解包参数并调用进程管理接口，真正的语义和检查在 `do_*` 中完成）
+**各 sys_* 处理函数**（只负责解包参数并调用进程管理接口，真正的语义和检查在 `do_`* 中完成）
 - `sys_exit`：`arg[0]` 为退出码，返回 `do_exit` 的结果（成功时不会返回）。
 - `sys_fork`：以 `clone_flags = 0`，用户栈指针取当前 trapframe 的 `sp`，当前 trapframe 为模板调用 `do_fork`，返回子进程 PID。
 - `sys_wait`：`arg[0]` 是 PID（0 表示任意子进程），`arg[1]` 是用户态地址，转交 `do_wait`；指针的合法性由 `do_wait` 检查。
@@ -218,7 +225,7 @@ void print_pgdir(void)                              // kern/mm/pmm.c
 - Case 1：表项带有 R/W/X 之一（大页或叶子），只打印该行，不再下降。
 - Case 2：表项无 R/W/X（指向下一级页表），打印该行后下降到下一级，行首缩进体现层次。
 - Requirements：虚拟地址按 Sv39 规则做符号扩展；通过 `satp` 找到页表根，不依赖 `current`。
-````
+```
 
 #### 4.1.3 实现迭代过程
 
@@ -264,20 +271,20 @@ static int load_icode(unsigned char *binary, size_t size)
 
 这一模块让系统从"只有内核线程"推进到"第一个用户程序开始执行"，启动链是：`proc_init` → `init_main` → `user_main` → `kernel_execve` → `do_execve` → `load_icode` → `__trapret`/`sret` → 用户程序入口。
 
-1. **`alloc_proc`（更新）。** 在 lab4 的初始化基础上，给 lab5 新增的字段赋空值：`exit_code = 0`、`wait_state = 0`、`cptr/yptr/optr = NULL`。`kmalloc` 返回的内存不清零，而 `set_links`、`do_wait` 会读这些字段，所以不初始化就是 bug。
-2. **`kernel_thread`（核对）。** 它构造的临时 trapframe 使用 `SPP = 1`、`SPIE = 1`、`SIE = 0`，经过扩展后的 `RESTORE_ALL` 会走内核分支（`sscratch` 保持 0），`sret` 后以 S 态、开中断进入 `kernel_thread_entry`，不需要修改。`init_main` 也用它创建 `user_main`。
-3. **`init_main`（更新）。** 记录入口处的 `nr_process`，用 `kernel_thread` 创建 `user_main`；然后循环 `do_wait(0, NULL)` 回收所有子进程，每成功一次调用一次 `schedule()`，直到没有子进程；最后打印 `all user-mode processes have quit.`，检查进程树已回到起点（`initproc` 无亲属，`nr_process` 与入口一致，`proc_list` 中只剩 `initproc`），打印 `init check memory pass.`。
-4. **`user_main`。** 若构建时定义了 `TEST`（`make build-x`），用 `KERNEL_EXECVE2(TEST, TESTSTART, TESTSIZE)` 启动指定程序，否则用 `KERNEL_EXECVE(exit)`。`kernel_execve` 不返回，返回就 panic。
-5. **`kernel_execve`。** 直接调用 `do_execve` 行不通：它只准备好新映像和 trapframe，执行流还在 S 态的内核线程里。当前没有真实的 trap 可以返回，所以用内联汇编手工进入返回路径：把 `sp` 指向 `current->tf`（`load_icode` 写好的、位于内核栈顶的 trapframe），再 `j __trapret`，由 `RESTORE_ALL` 恢复寄存器并设置 `sscratch`，`sret` 后落到用户程序入口。
-6. **`do_execve`。** 先用 `user_mem_check` 检查名字在调用者地址空间中可读（内核线程 `mm` 为 NULL，只要求是内核地址），并把名字复制到内核局部缓冲区，因为旧地址空间随后会被销毁。如果有旧 `mm`：先切到内核页表 `boot_pgdir_pa`（同时更新 `current->pgdir`），避免继续使用即将被释放的页表；再把 `mm_count` 减 1，减到 0 时依次 `exit_mmap`（释放页和页表）、`put_pgdir`、`mm_destroy`。然后调用 `load_icode`；成功就更新进程名，失败则旧映像已不存在，只能 `do_exit`。
-7. **`load_icode`。** 新建 `mm` 和页目录（`setup_pgdir` 会把内核映射复制进去）；检查 `e_magic`，不对则返回 `-E_INVAL_ELF`；遍历 `PT_LOAD` 段，按 `ELF_PF_X/W/R` 设置 VMA 标志，PTE 权限含 `PTE_U|PTE_V`（可写段同时带 `PTE_R`），用 `mm_map` 建立 VMA，再逐页分配并拷贝 `p_filesz` 字节；`p_memsz` 超出 `p_filesz` 的 bss 部分清零，其中包括文件数据最后一页的剩余部分（刚分配的页内容不是零）。随后建立 `VM_STACK` 用户栈 VMA（`USTACKTOP` 之下 `USTACKSIZE` 字节）；由于本实验没有缺页处理，不能依赖按需分配，所以只为栈顶 4 页分配物理页（`USTACKSIZE` 为 256 页，全部分配会让每次 `fork` 都复制 1 MiB）。接着把新 `mm` 设为当前进程的地址空间：引用计数设为 1，写 `current->mm`、`current->pgdir` 和 `satp`，并刷新 TLB。最后重写 trapframe：`sp = USTACKTOP`、`epc = e_entry`，`status` 清除 `SSTATUS_SPP`（`sret` 返回 U 态）、置位 `SSTATUS_SPIE`（返回后开中断），其余寄存器清零。任何一步失败，都按逆序释放已建立的页、页目录和 `mm_struct`。
-8. **`do_wait`。** 若 `code_store` 非 NULL，先用 `user_mem_check` 确认当前进程对它可写，否则返回 `-E_INVAL`。然后在子进程中查找 `PROC_ZOMBIE`：`pid == 0` 遍历所有子进程，否则只看指定的、且 `parent == current` 的子进程。找不到子进程返回 `-E_BAD_PROC`；有子进程但都没退出时，置 `PROC_SLEEPING`、`wait_state = WT_CHILD` 并 `schedule()`，唤醒后若自己已被标记 `PF_EXITING` 就 `do_exit(-E_KILLED)`，否则重新查找。找到僵尸后（`idleproc` 和 `initproc` 绝不回收），保存退出码，关中断从哈希表和进程树中摘除，再释放内核栈和 PCB。这两样东西在子进程执行 `do_exit` 时还在使用，只有父进程能释放。
+1. `**alloc_proc`（更新）。** 在 lab4 的初始化基础上，给 lab5 新增的字段赋空值：`exit_code = 0`、`wait_state = 0`、`cptr/yptr/optr = NULL`。`kmalloc` 返回的内存不清零，而 `set_links`、`do_wait` 会读这些字段，所以不初始化就是 bug。
+2. `**kernel_thread`（核对）。** 它构造的临时 trapframe 使用 `SPP = 1`、`SPIE = 1`、`SIE = 0`，经过扩展后的 `RESTORE_ALL` 会走内核分支（`sscratch` 保持 0），`sret` 后以 S 态、开中断进入 `kernel_thread_entry`，不需要修改。`init_main` 也用它创建 `user_main`。
+3. `**init_main`（更新）。** 记录入口处的 `nr_process`，用 `kernel_thread` 创建 `user_main`；然后循环 `do_wait(0, NULL)` 回收所有子进程，每成功一次调用一次 `schedule()`，直到没有子进程；最后打印 `all user-mode processes have quit.`，检查进程树已回到起点（`initproc` 无亲属，`nr_process` 与入口一致，`proc_list` 中只剩 `initproc`），打印 `init check memory pass.`。
+4. `**user_main`。** 若构建时定义了 `TEST`（`make build-x`），用 `KERNEL_EXECVE2(TEST, TESTSTART, TESTSIZE)` 启动指定程序，否则用 `KERNEL_EXECVE(exit)`。`kernel_execve` 不返回，返回就 panic。
+5. `**kernel_execve`。** 直接调用 `do_execve` 行不通：它只准备好新映像和 trapframe，执行流还在 S 态的内核线程里。当前没有真实的 trap 可以返回，所以用内联汇编手工进入返回路径：把 `sp` 指向 `current->tf`（`load_icode` 写好的、位于内核栈顶的 trapframe），再 `j __trapret`，由 `RESTORE_ALL` 恢复寄存器并设置 `sscratch`，`sret` 后落到用户程序入口。
+6. `**do_execve`。** 先用 `user_mem_check` 检查名字在调用者地址空间中可读（内核线程 `mm` 为 NULL，只要求是内核地址），并把名字复制到内核局部缓冲区，因为旧地址空间随后会被销毁。如果有旧 `mm`：先切到内核页表 `boot_pgdir_pa`（同时更新 `current->pgdir`），避免继续使用即将被释放的页表；再把 `mm_count` 减 1，减到 0 时依次 `exit_mmap`（释放页和页表）、`put_pgdir`、`mm_destroy`。然后调用 `load_icode`；成功就更新进程名，失败则旧映像已不存在，只能 `do_exit`。
+7. `**load_icode`。** 新建 `mm` 和页目录（`setup_pgdir` 会把内核映射复制进去）；检查 `e_magic`，不对则返回 `-E_INVAL_ELF`；遍历 `PT_LOAD` 段，按 `ELF_PF_X/W/R` 设置 VMA 标志，PTE 权限含 `PTE_U|PTE_V`（可写段同时带 `PTE_R`），用 `mm_map` 建立 VMA，再逐页分配并拷贝 `p_filesz` 字节；`p_memsz` 超出 `p_filesz` 的 bss 部分清零，其中包括文件数据最后一页的剩余部分（刚分配的页内容不是零）。随后建立 `VM_STACK` 用户栈 VMA（`USTACKTOP` 之下 `USTACKSIZE` 字节）；由于本实验没有缺页处理，不能依赖按需分配，所以只为栈顶 4 页分配物理页（`USTACKSIZE` 为 256 页，全部分配会让每次 `fork` 都复制 1 MiB）。接着把新 `mm` 设为当前进程的地址空间：引用计数设为 1，写 `current->mm`、`current->pgdir` 和 `satp`，并刷新 TLB。最后重写 trapframe：`sp = USTACKTOP`、`epc = e_entry`，`status` 清除 `SSTATUS_SPP`（`sret` 返回 U 态）、置位 `SSTATUS_SPIE`（返回后开中断），其余寄存器清零。任何一步失败，都按逆序释放已建立的页、页目录和 `mm_struct`。
+8. `**do_wait`。** 若 `code_store` 非 NULL，先用 `user_mem_check` 确认当前进程对它可写，否则返回 `-E_INVAL`。然后在子进程中查找 `PROC_ZOMBIE`：`pid == 0` 遍历所有子进程，否则只看指定的、且 `parent == current` 的子进程。找不到子进程返回 `-E_BAD_PROC`；有子进程但都没退出时，置 `PROC_SLEEPING`、`wait_state = WT_CHILD` 并 `schedule()`，唤醒后若自己已被标记 `PF_EXITING` 就 `do_exit(-E_KILLED)`，否则重新查找。找到僵尸后（`idleproc` 和 `initproc` 绝不回收），保存退出码，关中断从哈希表和进程树中摘除，再释放内核栈和 PCB。这两样东西在子进程执行 `do_exit` 时还在使用，只有父进程能释放。
 
 #### 4.2.2 最终提示词
 
 以下是经过迭代优化后，最终成功实现该功能的提示词：
 
-````markdown
+```markdown
 [PROMPT]
 **任务**：补全 lab5 的"创建并加载第一个用户进程"功能模块，修改 `kern/process/proc.c`：更新 `alloc_proc`、`kernel_thread`、`init_main`，新增 `user_main`、`kernel_execve`、`do_wait`、`do_execve`、`load_icode`。目标是让内核线程 `init_main` 创建 `user_main`，`user_main` 通过 `kernel_execve` 把自己变成一个运行在用户态的进程，`init_main` 再通过 `do_wait` 等它退出。
 
@@ -363,7 +370,7 @@ static int load_icode(unsigned char *binary, size_t size)
 - Case 3：建立 `VM_READ|VM_WRITE|VM_STACK` 的用户栈 VMA，范围是 `USTACKTOP` 之下 `USTACKSIZE` 字节；因为没有缺页处理，只为栈顶的 4 页分配物理页，权限为 `PTE_USER`。
 - Case 4：任一步骤分配失败（`-E_NO_MEM`）或出错，必须按已完成的步骤逆序释放：已映射的页和页表（`exit_mmap`，此时 `mm_count` 为 0）、页目录、`mm_struct`。
 - Requirements：切换 `satp` 之后要刷新 TLB；`status` 的修改要基于原值，只改 `SPP` 与 `SPIE` 两位。
-````
+```
 
 #### 4.2.3 实现迭代过程
 
@@ -423,10 +430,10 @@ int copy_range(pde_t *to, pde_t *from, uintptr_t start, uintptr_t end, bool shar
 
 这一模块把父进程复制成子进程，使子进程拥有自己的 PCB、内核栈、trapframe 和用户地址空间，并让用户程序看到"父进程得到子进程 PID，子进程从 `fork` 返回 0"的标准语义。调用链是 `sys_fork` → `do_fork` → `copy_mm` → `dup_mmap` → `copy_range`。
 
-1. **`copy_mm`（更新）。** lab4 版本只处理内核线程（父进程无 `mm`）和 `CLONE_VM` 共享，lab5 补上普通 fork。父进程没有 `mm` 时子进程也没有，`pgdir` 保持 `alloc_proc` 给的内核页表。带 `CLONE_VM` 时直接共享父进程的 `mm`。普通 fork 时：`mm_create` 新建 `mm`，`setup_pgdir` 建页目录（并复制内核映射），在持有父进程 `mm_lock` 的情况下调用 `dup_mmap` 复制地址空间。成功后三种情况都一样：`mm_count_inc`，设置 `proc->mm`，并把 `proc->pgdir` 设为页目录的**物理地址**（`proc_run` 会把它写进 `satp`）。出错回滚按获取的相反顺序：复制了一部分时 `exit_mmap`（此时引用计数仍是 0，满足它的断言），再 `put_pgdir`，最后 `mm_destroy`，使用 `goto` 标号实现。
-2. **`do_fork`（更新）。** 在 lab4 的基础上：先检查 `nr_process >= MAX_PROCESS`，返回 `-E_NO_FREE_PROC`；`alloc_proc` 之后立即设置 `proc->parent = current`，并断言父进程 `wait_state == 0`（正在运行的父进程不可能处在 `do_wait` 睡眠中）；`copy_mm` 现在会真正复制地址空间；`copy_thread` 在子进程内核栈顶放置 trapframe（`a0 = 0`，`sp` 为 `stack`）和初始上下文。关中断的临界区里依次完成 `get_pid`、`hash_proc`、`set_links`、`wakeup_proc`。用 `set_links` 取代 lab4 手工操作 `proc_list`，因为它还会维护父进程的子进程链（`cptr/optr/yptr`），`do_exit`、`do_wait` 都依赖这套关系，并且已经自带 `nr_process++`，所以不能再自己递增。`wakeup_proc` 放在临界区最后，保证子进程在所有链接完成之后才对调度器可见。
-3. **`dup_mmap`。** 按父进程 `mmap_list` 的顺序遍历每个 VMA：`vma_create` 创建同区间、同标志的 VMA，`insert_vma_struct` 插入子进程（它保持有序并拒绝重叠），再对这个 VMA 的范围调用 `copy_range`，`share` 固定为 0。任何一步失败返回 `-E_NO_MEM`，已复制的部分由调用者 `copy_mm` 用 `exit_mmap` 清理。
-4. **`copy_range`。** 逐页遍历 `[start, end)`：源页表某一级不存在时，跳到下一个 `PTSIZE` 边界；源 PTE 有效时，先 `get_pte(to, ..., 1)` 确保目标页表存在，取源 PTE 的 `PTE_USER` 位作为权限，`alloc_page` 分配新页、`memcpy` 复制完整的 4 KiB，再用 `page_insert` 以相同权限（含 `PTE_U`）映射到同一虚拟地址。`page_insert` 内部会设置 A/D 位并维护引用计数。`share != 0` 时不分配新页，直接映射同一物理页；本实验的 `fork` 不使用它，它是为后续 COW 预留的。分配或插入失败返回错误码（`page_insert` 失败时释放刚分配的新页）。循环条件写成 `start != 0 && start < end`，以免区间末尾地址回绕为 0 后死循环。
+1. `**copy_mm`（更新）。** lab4 版本只处理内核线程（父进程无 `mm`）和 `CLONE_VM` 共享，lab5 补上普通 fork。父进程没有 `mm` 时子进程也没有，`pgdir` 保持 `alloc_proc` 给的内核页表。带 `CLONE_VM` 时直接共享父进程的 `mm`。普通 fork 时：`mm_create` 新建 `mm`，`setup_pgdir` 建页目录（并复制内核映射），在持有父进程 `mm_lock` 的情况下调用 `dup_mmap` 复制地址空间。成功后三种情况都一样：`mm_count_inc`，设置 `proc->mm`，并把 `proc->pgdir` 设为页目录的**物理地址**（`proc_run` 会把它写进 `satp`）。出错回滚按获取的相反顺序：复制了一部分时 `exit_mmap`（此时引用计数仍是 0，满足它的断言），再 `put_pgdir`，最后 `mm_destroy`，使用 `goto` 标号实现。
+2. `**do_fork`（更新）。** 在 lab4 的基础上：先检查 `nr_process >= MAX_PROCESS`，返回 `-E_NO_FREE_PROC`；`alloc_proc` 之后立即设置 `proc->parent = current`，并断言父进程 `wait_state == 0`（正在运行的父进程不可能处在 `do_wait` 睡眠中）；`copy_mm` 现在会真正复制地址空间；`copy_thread` 在子进程内核栈顶放置 trapframe（`a0 = 0`，`sp` 为 `stack`）和初始上下文。关中断的临界区里依次完成 `get_pid`、`hash_proc`、`set_links`、`wakeup_proc`。用 `set_links` 取代 lab4 手工操作 `proc_list`，因为它还会维护父进程的子进程链（`cptr/optr/yptr`），`do_exit`、`do_wait` 都依赖这套关系，并且已经自带 `nr_process++`，所以不能再自己递增。`wakeup_proc` 放在临界区最后，保证子进程在所有链接完成之后才对调度器可见。
+3. `**dup_mmap`。** 按父进程 `mmap_list` 的顺序遍历每个 VMA：`vma_create` 创建同区间、同标志的 VMA，`insert_vma_struct` 插入子进程（它保持有序并拒绝重叠），再对这个 VMA 的范围调用 `copy_range`，`share` 固定为 0。任何一步失败返回 `-E_NO_MEM`，已复制的部分由调用者 `copy_mm` 用 `exit_mmap` 清理。
+4. `**copy_range`。** 逐页遍历 `[start, end)`：源页表某一级不存在时，跳到下一个 `PTSIZE` 边界；源 PTE 有效时，先 `get_pte(to, ..., 1)` 确保目标页表存在，取源 PTE 的 `PTE_USER` 位作为权限，`alloc_page` 分配新页、`memcpy` 复制完整的 4 KiB，再用 `page_insert` 以相同权限（含 `PTE_U`）映射到同一虚拟地址。`page_insert` 内部会设置 A/D 位并维护引用计数。`share != 0` 时不分配新页，直接映射同一物理页；本实验的 `fork` 不使用它，它是为后续 COW 预留的。分配或插入失败返回错误码（`page_insert` 失败时释放刚分配的新页）。循环条件写成 `start != 0 && start < end`，以免区间末尾地址回绕为 0 后死循环。
 
 复制结束后，父子进程在虚拟地址上看到相同的内容，在物理上各自拥有一份，后续的写入互不影响。
 
@@ -434,7 +441,7 @@ int copy_range(pde_t *to, pde_t *from, uintptr_t start, uintptr_t end, bool shar
 
 以下是经过迭代优化后，最终成功实现该功能的提示词：
 
-````markdown
+```markdown
 [PROMPT]
 **任务**：补全 lab5 的"复制用户进程"功能模块，涉及三个文件：`kern/process/proc.c` 中更新 `copy_mm` 和 `do_fork`，`kern/mm/vmm.c` 中实现 `dup_mmap`，`kern/mm/pmm.c` 中实现 `copy_range`。目标是让 `fork` 产生的子进程拥有自己的 PCB、内核栈、trapframe、进程树关系和一份独立的用户地址空间副本。
 
@@ -492,7 +499,7 @@ int copy_range(pde_t *to, pde_t *from, uintptr_t start, uintptr_t end, bool shar
 - Case 3：源地址对应的页表不存在时，跳到下一个 `PTSIZE` 边界继续；源表项无效时在目标中保持不映射。
 - Case 4：目标页表或新页分配失败，返回 `-E_NO_MEM`；`page_insert` 失败时释放刚分配的新页并返回其错误码。
 - Requirements：循环必须能处理区间末尾地址回绕到 0 的情况；`page_insert` 后目标页的引用计数应为 1，父子之间不得互相影响。
-````
+```
 
 #### 4.3.3 实现迭代过程
 
@@ -532,14 +539,14 @@ int do_kill(int pid)
 
 这一模块实现用户程序生命周期中的"结束、让出和终止"三个动作。
 
-1. **`do_exit`：释放能自己释放的，其余交给父进程。** 进程执行退出逻辑时仍在使用自己的内核栈和 PCB，所以这两样不能自己释放，只能由父进程在 `do_wait` 中回收。其余步骤如下：
+1. `**do_exit`：释放能自己释放的，其余交给父进程。** 进程执行退出逻辑时仍在使用自己的内核栈和 PCB，所以这两样不能自己释放，只能由父进程在 `do_wait` 中回收。其余步骤如下：
    - `idleproc` 和 `initproc` 不允许退出，直接 panic。
    - 如果有 `mm`：先切换到内核页表 `boot_pgdir_pa`（并更新 `current->pgdir`），再把 `mm_count` 减 1；减到 0 才依次 `exit_mmap`（释放页和页表）、`put_pgdir`、`mm_destroy`，最后 `current->mm = NULL`。线程共享 `mm` 时，最后一个退出的才真正释放。
    - 置 `PROC_ZOMBIE`，记录 `exit_code`。
    - 关中断，使进程树不会被别的代码看到半更新的状态：若父进程的 `wait_state == WT_CHILD`，用 `wakeup_proc` 唤醒它；把当前进程的所有子进程过继给 `initproc`（摘出子进程链，设置新 `parent`，挂到 `initproc` 子进程链的头部），如果被过继的子进程已经是僵尸并且 `initproc` 正在等待，唤醒 `initproc`。
    - 恢复中断后调用 `schedule()`，僵尸不会再被调度；如果它竟然返回就 panic。
-2. **`do_yield`：只设标志。** 只把 `current->need_resched` 置 1 并返回 0。真正的切换发生在系统调用返回时：`trap()` 在从用户态返回前检查 `need_resched`，调用 `schedule()`。所以不能在 `do_yield` 里直接 `schedule()`，那会让切换发生在内核态系统调用处理中途。
-3. **`do_kill`：只发"请退出"的意图。** 用 `find_proc` 找目标进程：不存在返回 `-E_INVAL`；已经带 `PF_EXITING` 返回 `-E_KILLED`；否则置位 `PF_EXITING`，如果目标的 `wait_state` 带 `WT_INTERRUPTED`（例如正在 `do_wait` 里睡眠），用 `wakeup_proc` 唤醒它，让它尽快运行到 `trap()` 或 `do_wait` 的检查点，在那里 `do_exit(-E_KILLED)`。目标进程不会被立即停止。
+2. `**do_yield`：只设标志。** 只把 `current->need_resched` 置 1 并返回 0。真正的切换发生在系统调用返回时：`trap()` 在从用户态返回前检查 `need_resched`，调用 `schedule()`。所以不能在 `do_yield` 里直接 `schedule()`，那会让切换发生在内核态系统调用处理中途。
+3. `**do_kill`：只发"请退出"的意图。** 用 `find_proc` 找目标进程：不存在返回 `-E_INVAL`；已经带 `PF_EXITING` 返回 `-E_KILLED`；否则置位 `PF_EXITING`，如果目标的 `wait_state` 带 `WT_INTERRUPTED`（例如正在 `do_wait` 里睡眠），用 `wakeup_proc` 唤醒它，让它尽快运行到 `trap()` 或 `do_wait` 的检查点，在那里 `do_exit(-E_KILLED)`。目标进程不会被立即停止。
 
 三者与 `do_wait`、调度器和 `trap()` 一起闭合了进程生命周期：`exit` → 僵尸 → 父进程被唤醒 → `do_wait` 回收内核栈和 PCB；孤儿进程过继给 `initproc` 后由 `init_main` 的 `do_wait` 循环回收。
 
@@ -547,7 +554,7 @@ int do_kill(int pid)
 
 以下是经过迭代优化后，最终成功实现该功能的提示词：
 
-````markdown
+```markdown
 [PROMPT]
 **任务**：补全 lab5 的"其余系统调用功能"模块，修改 `kern/process/proc.c`，实现进程退出 `do_exit`、让出 CPU `do_yield` 和终止进程 `do_kill`，使它们与 `do_wait`、调度器和 `trap()` 一起构成完整的进程生命周期闭环。
 
@@ -593,7 +600,7 @@ int do_kill(int pid)
 - Case 1：`find_proc(pid)` 找不到，返回 `-E_INVAL`。
 - Case 2：目标已设置 `PF_EXITING`，返回 `-E_KILLED`，不重复处理。
 - Case 3：否则置位目标的 `PF_EXITING`；如果目标的 `wait_state` 带有 `WT_INTERRUPTED`（正在可中断的等待中），用 `wakeup_proc` 唤醒它，使它尽快在 `trap()` 或 `do_wait` 中发现该标志并退出；返回 0。
-````
+```
 
 #### 4.4.3 实现迭代过程
 
@@ -648,4 +655,30 @@ int do_kill(int pid)
 
 ### 6.1 对操作系统的理解
 
+1. 本实验中的知识点，以及与 OS 原理的对应：
+
+| 实验中的知识点 | 对应的 OS 原理 | 含义与差异 |
+| --- | --- | --- |
+| 用户库把系统调用号放入 `a0`、参数放入 `a1`～`a5` 后执行 `ecall`；内核在 `syscall()` 里分发，结果写回 `a0` | 系统调用：用户态获得内核服务的受控入口 | 原理上对应“陷入 + 内核服务例程 + 返回”。本实验用 RISC-V 的 U 态 `ecall` 和统一的 `trapframe`，没有单独的系统调用门或 fast syscall 指令 |
+| `RESTORE_ALL` 根据 `sstatus.SPP` 设置 `sscratch`；用户态陷入时 `SAVE_ALL` 用 `sp` 与 `sscratch` 交换栈指针 | 双栈模型：用户栈与内核栈分离 | 完整操作系统里，用户线程在内核栈上保存 Trap 现场。本实验用 `sscratch` 在两种栈之间切换，规模小，但机制与“用户代码不在内核栈上跑”一致 |
+| `kernel_execve` 构造 trap 返回路径；`load_icode` 解析 ELF、建 VMA、装段、设用户栈和 `trapframe` | 程序装载：把可执行文件映射进地址空间并跳到入口 | 用户程序二进制链接进内核镜像，由 `KERNEL_EXECVE` 宏引用，不是从磁盘或文件系统按路径打开。装载发生在 `exec` 路径上，没有独立的动态链接器 |
+| `do_fork` 复制 `mm`、页表和用户页内容；子进程 `trapframe` 里 `a0` 为 0 | `fork`：子进程继承父进程映像并得到新执行实体 | 本实验按 VMA 预映射并复制页，没有做写时复制（Challenge 另做）。子进程第一次被调度时的现场由 `copy_thread` 布置，与 lab4 内核线程首次运行链类似 |
+| `do_execve` 回收旧 `mm`，`load_icode` 建立新映像；`do_exit` 释放 `mm` 后变僵尸，`do_wait` 回收 PCB | 进程生命周期：创建、替换映像、退出与收尸 | `init_main` 的 `do_wait` 循环负责收掉用户进程和孤儿，形成与 Unix 中 init 进程收尸相近的结构。没有独立的信号、作业控制或会话 |
+| 访问用户指针前经 `user_mem_check`，页表项带 `PTE_U` | 内存保护：内核不信任用户地址 | 检查的是当前进程的 VMA 与页权限，还没有缺页异常驱动的按需分配 |
+
+2. 通过整组实验串联起来，可以看到用户进程建立在哪些前提上：
+
+- lab2 的页分配与 `page_insert` 提供物理页和映射维护；lab4 的 PCB、调度与 `switch_to` 提供执行流切换；lab3 的 Trap 保存与恢复提供陷入路径。lab5 在此基础上增加 U 态返回、独立用户页表和用户栈，并把进程管理接口接到系统调用上。
+- 一次 `fork` 同时涉及进程对象、内核栈上的 trapframe、用户地址空间和页表引用计数。任一层的约定不一致，都会在 `wait`、`exit` 或调度返回时暴露为僵尸泄漏、页表残留或用户态无法继续执行。
+
+3. OS 原理中很重要、但本实验没有完整对应上的知识点：
+
+- **从文件系统或 loader 装载程序。** 用户 ELF 嵌在镜像里，没有路径解析、解释器和按需读盘。
+- **缺页异常与按需分页。** 用户区间在 `exec`/`fork` 时一次性映射，访问未映射页不会进入页故障处理。
+- **写时复制。** 标准 `fork` 路径复制物理页；CoW 在 Challenge 中单独讨论。
+- **多 hart 与用户态并发。** 仍为单核 FIFO 调度，系统调用与进程管理临界区主要靠关中断保护。
+- **完整的用户态运行时。** 用户库只封装少量系统调用；没有完整的 libc、线程库或信号机制。
+
 ### 6.2 AI 协作开发的经验
+
+**跨文件的约定要写成可核对的清单，提示词才不容易漏项。** 阅读 4.1.2 可见系统调用模块同时约束汇编、`exception_handler`、`syscall` 九处转发，以及 `print_pgdir` 的链接依赖。单写「实现 syscall」时，模型常会漏 `epc += 4`、漏非法编号返回 `-E_INVAL`，或漏 `RESTORE_ALL` 里对用户态的 `sscratch` 处理。规格文档里把这些写成 Case 和 Requirements，比一段笼统描述更易对照源码验收。

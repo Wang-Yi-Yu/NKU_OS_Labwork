@@ -22,6 +22,8 @@
 
 lab 框架原本针对 QEMU 4.x + OpenSBI v0.4 编写。本仓库的实验环境是 QEMU 8.2.x + OpenSBI v1.3（以及较新的 binutils），直接运行会出现内核不启动、静默卡死或汇编报错的问题。下面按出现的顺序列出需要做的适配修改，后续实验遇到框架回退成旧写法时可对照修改。
 
+> 若某次实验并没有新的针对 QEMU 8.2+OpenSBI v1.3 环境的适配性修改，不要在改项下新增内容。
+
 1. **用 `-kernel` 加载内核，不再用 `-device loader`。** 将 `Makefile` 中 `qemu`、`debug`、`test` 目标以及 `tools/grade.sh` 里的 `-device loader,file=bin/ucore.img,addr=0x80200000` 改为 `-kernel bin/ucore.img`。OpenSBI v1.3 使用 `fw_dynamic`，需要由 QEMU 通过 `-kernel` 告知下一级镜像的入口；用旧写法时启动信息里的 `Domain0 Next Address` 是 `0`，内核根本不会被执行。改对之后该项应为 `0x0000000080200000`。
 2. **在 `kern/init/entry.S` 的启动页表中增加 `0x80000000` 的恒等映射。** 在 `boot_page_table_sv39` 的第 2 项（对应虚拟地址 `0x80000000`，1 GiB 大页）写入 `.quad (0x80000 << 10) | 0xcf`，权限为 VRWXAD。原因是 `csrw satp` 之后紧跟的几条指令仍然从低物理地址 `0x802000xx` 取指：QEMU 4.x 会在与 `csrw` 同一个已翻译的基本块内继续执行，只映射高地址就够；QEMU 8.x 在写 `satp` 之后会用新页表重新取指，缺少低地址映射会触发指令页错误，内核在没有任何输出的情况下卡死。
 3. **把 `SAVE_ALL` 中的 `sbadaddr` 改为 `stval`（lab3 起）。** `trapentry.S` 里原有 `csrr s3, sbadaddr`，新版 binutils（本环境为 riscv64-unknown-elf-gcc 15.1）已经删除这个旧名字，汇编时报 `unknown CSR 'sbadaddr'`。`sbadaddr` 就是特权架构 1.9 中 `stval` 的旧称，改成 `csrr s3, stval` 后语义完全相同。`libs/riscv.h` 中的 `DECLARE_CSR(sbadaddr, ...)` 只是宏声明、没有被使用，不需要改。
@@ -30,29 +32,33 @@ lab 框架原本针对 QEMU 4.x + OpenSBI v0.4 编写。本仓库的实验环境
 6. **GCC 15 把 `-Wint-conversion` 和 `-Wincompatible-pointer-types` 升级成错误（lab4 起）。** lab4 骨架的 `kmalloc.c`（整数传给 `kva2page()`）和 `tools/test_lab4.c`（`void (*)(void *)` 传给 `kernel_thread`）依赖旧行为。适配：在 `Makefile` 的 `CFLAGS` 里加 `-Wno-error=int-conversion -Wno-error=incompatible-pointer-types`，不改动老师给的代码；编译时会看到相应警告，属正常现象。
 7. **GCC 15 把用户程序 `divzero` 里的除零折叠成别的值（lab5 起）。** `user/divzero.c` 原本靠 `1 / zero` 触发 RISC-V 的除零行为：RISC-V 的 `div` 指令不会陷入异常，而是返回 -1，评分脚本据此检查输出行 `value is -1.`。除零在 C 里是未定义行为，GCC 15 在 `-O2` 下把 `1 / x` 改写成 `(x + 1 < 3) ? x : 0`，`zero` 为 0 时程序打印的是 `value is 0.`，该用例拿不到分；只把 `zero` 改成 `volatile` 没有用，因为被折叠的是除法本身。适配：把被除数也改成 `volatile int one = 1;`，写成 `one / zero`，编译器就必须真正发出 `div` 指令。反汇编里能看到 `sltiu` 而没有 `div`，就是遇到了这个问题。
 
-lab7 骨架又把第 1、2、4、5、6、7 项恢复成了旧写法（第 3 项用的是数字 CSR `0x143`，汇编不会报错），回填 lab2–lab6 代码时已经逐项重新应用，除此之外 lab7 没有新增与 QEMU 8.2 相关的适配。
-
 ## 4. 迁移前期实验代码时的一些修改
 
-1. **lab5 把 lab2/3/4 的代码迁入骨架时要检查的几处。**
-   - `default_pmm.h` 声明了 `extern free_area_t free_area;`，所以 `default_pmm.c` 里的 `free_area` 不能是 `static`，否则报 `static declaration of 'free_area' follows non-static declaration`。
-   - 评分脚本 `tools/grade.sh` 会查找 `memory management: default_pmm_manager`，所以 Best-Fit 管理器的 `.name` 要写成 `"default_pmm_manager"`（lab4 里用的是 `"best_fit_pmm_manager"`）。
-   - lab4 的 `libs/riscv.h` 里 `lsatp()` 是 RV32 写法（`SATP32_MODE`），lab5 的 `proc_run` 和 `load_icode` 真正依赖它切换页表，必须使用 lab5 骨架里的 RV64 版本（`0x8000000000000000 | (pgdir >> RISCV_PGSHIFT)`）。
-   - `trap_in_kernel()`、`print_pgdir()` 等：前者是骨架提供的函数，合并代码时不要丢；后者在骨架里只有声明、没有定义，而 `sys_pgdir` 需要它，要自己补上。
-   - lab3 的时钟中断处理只打印 `100 ticks`，lab5 需要在每 `TICK_NUM` 个 tick 时设置 `current->need_resched = 1`，否则一个死循环的用户进程（`spin` 用例）永远不会被抢占。
+这里主要记录迁移前期实验代码过程中，需要修改前期实验代码的一些地方。
 
-2. **lab6 评分脚本对时钟中断和 RR 的两个隐含要求。**
-   - `tools/grade.sh` 带 `-DDEBUG_GRADE` 编译，此时 `print_ticks()` 在第一个 100 ticks（约 1 秒）处打印 `End of Test.` 并 panic。`priority` 要跑约 2 秒，所以 lab6 的 `interrupt_handler()` 里不能再调用 `print_ticks()`，要像任务书写的那样每个 tick 都调用 `sched_class_proc_tick(current)`。lab5 的时钟代码（每 100 个 tick 打印并置位 `need_resched`）原样带过来会让 `priority` 的检查全部失败。
-   - 注入的测试 `tools/test_lab6.c` 在一个被 `memset` 清零的运行队列上调用 `default_sched_class.init()`，随后断言 `rq->max_time_slice == MAX_TIME_SLICE`，再断言入队后 `time_slice == MAX_TIME_SLICE`。所以 `RR_init()` 必须自己把 `max_time_slice` 设成 `MAX_TIME_SLICE`（`sched_init()` 在调用 `init` 之前设置过，但测试不经过它）。任务书对 `RR_init` 的描述里没有这一条。
-   - lab6 的 `schedule()` 不能再沿用 lab4/lab5 扫描 `proc_list` 的写法：`wakeup_proc()` 已经把进程放进运行队列，扫描链表会绕过调度类。要改成 "当前进程仍可运行则入队 → `pick_next` → `dequeue` → 为空则选 idleproc"。
+> 1. 若某次实验迁移前期代码时没有改动，无需在这里添加占位项
+> 2. 若某次实验迁移前期代码时改动的地方在前期实验中已经有记录，无需重复添加
+> 3. 不要添加对于后续实验没有参考意义的修改
 
-3. **lab7 的评分流程和框架里几处没有写在任务书里的要求。**
-   - 评分流程：`make grade` 把工作树拷到 `/tmp/lab7_grade`，用 `tools/inject.py` 在副本的 `check_sync()` 入口注入 `test_lab7_condvar()` 和 `test_lab7_philosopher(phi_test_condvar, phi_take_forks_condvar, phi_put_forks_condvar)`，再由 `tools/grade.sh` 带 `-DDEBUG_GRADE` 编译、跑 QEMU 最多 40 秒，在串口输出里找 `[Test 1] Condition Variable: PASS` 和 `[Test 2] Philosopher Monitor: PASS`，各 50 分。`grade.sh` 里也是旧的 `-device loader`，要改成 `-kernel`。
-   - 骨架里没有任何地方调用 `check_sync()`。要在 `init_main()` 里创建 `user_main` 之后、`do_wait` 循环之前加上 `extern void check_sync(void); check_sync();`，否则注入的测试一行都不会运行，得分是 0/100（已实测）。
-   - 时钟中断分支要调用 `run_timer_list()`：它负责唤醒 `do_sleep()` 的进程，然后自己调用 `sched_class_proc_tick(current)`。lab7 的 `sched_class_proc_tick` 是 `static` 的，lab6 里直接调用它的写法编译不过；不调用 `run_timer_list()` 则睡眠的哲学家永远醒不来。同 lab6，仍然不能调用 `print_ticks()`。
-   - `sync.h` 去掉了 `lock_t`、`lock()`、`unlock()`，所以 `mm_struct` 里的 `mm_lock` 换成了信号量 `mm_sem`：`mm_create()` 里 `sem_init(&mm->mm_sem, 1)`，`lock_mm()` / `unlock_mm()` 用 `down()` / `up()`。用户库里的 `lab6_setpriority` 改名为 `lab6_set_priority`，`priority.c` 的输出行也改成了 `stride sched correct result:`。
-   - `kern/sync/monitor.h` 的头文件保护宏写错了（`#ifndef` 用 `MONITOR`，`#define` 用 `MOINTOR`），编译会有 `-Wheader-guard` 警告，保护也没有生效，已改正。
-   - 任务书里 `phi_*_condvar` 的参数类型 `i32_t` 在代码里不存在。框架实际用 `int`，测试里的函数指针类型是 `void (*)(int32_t)`，两者一致。
-   - lab7 骨架又带回了 `kern/debug/stab.h`（lab6 没有），直接用 lab5 里带注释的那份。
-   - lab7 的 `default_sched.c` 和 `default_sched_stride.c` 在骨架里是空的，`sched_init()` 链接时需要 `default_sched_class`，所以要把 lab6 的 RR 和 Stride 迁过来。
-   - 用 `/tmp` 里的临时参考实现（`cond_wait`、`cond_signal` 和三个 `phi_*_condvar`，不在仓库里）验证过：QEMU 8.2.2 下 `make grade` 100/100；`sleep` 打印 `use 10000 msecs.`；`priority` 在 RR 下是 `1 1 1 1 1`，改成 Stride 后是 `1 2 3 4 5`。
+### Lab 5
+
+- `default_pmm.h` 声明了 `extern free_area_t free_area;`，所以 `default_pmm.c` 里的 `free_area` 不能是 `static`，否则报 `static declaration of 'free_area' follows non-static declaration`。
+- 评分脚本 `tools/grade.sh` 会查找 `memory management: default_pmm_manager`，所以 Best-Fit 管理器的 `.name` 要写成 `"default_pmm_manager"`（lab4 里用的是 `"best_fit_pmm_manager"`）。
+- lab4 的 `libs/riscv.h` 里 `lsatp()` 是 RV32 写法（`SATP32_MODE`），lab5 的 `proc_run` 和 `load_icode` 真正依赖它切换页表，必须使用 lab5 骨架里的 RV64 版本（`0x8000000000000000 | (pgdir >> RISCV_PGSHIFT)`）。
+- `trap_in_kernel()`、`print_pgdir()` 等：前者是骨架提供的函数，合并代码时不要丢；后者在骨架里只有声明、没有定义，而 `sys_pgdir` 需要它，要自己补上。
+- lab3 的时钟中断处理只打印 `100 ticks`，lab5 需要在每 `TICK_NUM` 个 tick 时设置 `current->need_resched = 1`，否则一个死循环的用户进程（`spin` 用例）永远不会被抢占。
+
+### Lab 6
+
+- `tools/grade.sh` 带 `-DDEBUG_GRADE` 编译，此时 `print_ticks()` 在第一个 100 ticks（约 1 秒）处打印 `End of Test.` 并 panic。`priority` 要跑约 2 秒，所以 lab6 的 `interrupt_handler()` 里不能再调用 `print_ticks()`，要像任务书写的那样每个 tick 都调用 `sched_class_proc_tick(current)`。lab5 的时钟代码（每 100 个 tick 打印并置位 `need_resched`）原样带过来会让 `priority` 的检查全部失败。
+- 注入的测试 `tools/test_lab6.c` 在一个被 `memset` 清零的运行队列上调用 `default_sched_class.init()`，随后断言 `rq->max_time_slice == MAX_TIME_SLICE`，再断言入队后 `time_slice == MAX_TIME_SLICE`。所以 `RR_init()` 必须自己把 `max_time_slice` 设成 `MAX_TIME_SLICE`（`sched_init()` 在调用 `init` 之前设置过，但测试不经过它）。任务书对 `RR_init` 的描述里没有这一条。
+- lab6 的 `schedule()` 不能再沿用 lab4/lab5 扫描 `proc_list` 的写法：`wakeup_proc()` 已经把进程放进运行队列，扫描链表会绕过调度类。要改成 "当前进程仍可运行则入队 → `pick_next` → `dequeue` → 为空则选 idleproc"。
+
+### Lab 7
+
+- 骨架里没有任何地方调用 `check_sync()`。要在 `init_main()` 里创建 `user_main` 之后、`do_wait` 循环之前加上 `extern void check_sync(void); check_sync();`，否则注入的测试一行都不会运行，得分是 0/100（已实测）。
+- 时钟中断分支要调用 `run_timer_list()`：它负责唤醒 `do_sleep()` 的进程，然后自己调用 `sched_class_proc_tick(current)`。lab7 的 `sched_class_proc_tick` 是 `static` 的，lab6 里直接调用它的写法编译不过；不调用 `run_timer_list()` 则睡眠的哲学家永远醒不来。同 lab6，仍然不能调用 `print_ticks()`。
+- `sync.h` 去掉了 `lock_t`、`lock()`、`unlock()`，所以 `mm_struct` 里的 `mm_lock` 换成了信号量 `mm_sem`：`mm_create()` 里 `sem_init(&mm->mm_sem, 1)`，`lock_mm()` / `unlock_mm()` 用 `down()` / `up()`。用户库里的 `lab6_setpriority` 改名为 `lab6_set_priority`，`priority.c` 的输出行也改成了 `stride sched correct result:`。
+- `kern/sync/monitor.h` 的头文件保护宏写错了（`#ifndef` 用 `MONITOR`，`#define` 用 `MOINTOR`），编译会有 `-Wheader-guard` 警告，保护也没有生效，已改正。
+- lab7 的 `default_sched.c` 和 `default_sched_stride.c` 在骨架里是空的，`sched_init()` 链接时需要 `default_sched_class`，所以要把 lab6 的 RR 和 Stride 迁过来。
+- 任务书里 `phi_*_condvar` 的参数类型 `i32_t` 在代码里不存在。框架实际用 `int`，测试里的函数指针类型是 `void (*)(int32_t)`，两者一致。

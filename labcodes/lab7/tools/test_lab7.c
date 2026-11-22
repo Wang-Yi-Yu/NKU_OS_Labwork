@@ -1,3 +1,20 @@
+/**
+ * @file   test_lab7.c
+ * @brief  Grading tests of lab7 (100 points): condition variables and the monitor philosophers.
+ *
+ * tools/inject.py copies this file to kern/test/ of a temporary copy of the student tree and makes
+ * check_sync() call the two entry points at its start. Each test prints one result line, which
+ * tools/grade.sh looks for. The tests only use the public interface and the fields of the monitor
+ * and condition variable structures, so they work with any correct implementation:
+ *  - test_lab7_condvar(): an empty cond_signal() changes nothing; two waiters on one condition
+ *    variable are woken one per signal, and the woken thread owns the monitor (mutex.value 0,
+ *    next_count 1); a waiter can wait on two condition variables one after the other;
+ *  - test_lab7_philosopher(): phi_test_condvar() only lets a hungry philosopher eat when the
+ *    neighbours are not eating; an uncontended take/put returns in the EATING/THINKING states;
+ *    a philosopher blocked by either neighbour waits on its condition variable until that neighbour
+ *    puts the forks down; put_forks wakes both neighbours; finally a stress run of all five
+ *    philosophers is watched by an observer thread for two adjacent eating philosophers.
+ */
 #include <defs.h>
 #include <stdio.h>
 #include <proc.h>
@@ -5,27 +22,46 @@
 #include <monitor.h>
 #include <test_lab7.h>
 
-#define TEST_LAB7_N             5
-#define TEST_LAB7_THINKING      0
-#define TEST_LAB7_HUNGRY        1
-#define TEST_LAB7_EATING        2
-#define TEST_LAB7_LEFT(i)       (((i) + TEST_LAB7_N - 1) % TEST_LAB7_N)
-#define TEST_LAB7_RIGHT(i)      (((i) + 1) % TEST_LAB7_N)
+/** @brief Number of philosophers; the same as N in check_sync.c. */
+#define TEST_LAB7_N 5
+/** @brief Philosopher states; the same values as THINKING, HUNGRY and EATING in check_sync.c. */
+#define TEST_LAB7_THINKING 0
+#define TEST_LAB7_HUNGRY   1
+#define TEST_LAB7_EATING   2
+/** @brief Number of the left neighbour of philosopher i. */
+#define TEST_LAB7_LEFT(i) (((i) + TEST_LAB7_N - 1) % TEST_LAB7_N)
+/** @brief Number of the right neighbour of philosopher i. */
+#define TEST_LAB7_RIGHT(i) (((i) + 1) % TEST_LAB7_N)
 
+/** @brief The monitor and the state array of the student's philosopher code in check_sync.c. */
 extern monitor_t mt;
 extern int state_condvar[];
+/** @brief Thread body of one philosopher of the monitor version (check_sync.c); arg is the number. */
 extern int philosopher_using_condvar(void *arg);
 
+/** @brief State shared by the condition variable test: its monitor, a semaphore that the waiters
+ *         up when they are about to wait, the number of waiters that have woken up, and an error flag. */
 static monitor_t test_cv_mt;
 static semaphore_t test_cv_ready;
 static volatile int test_cv_awake;
 static volatile int test_cv_waiter_error;
+/** @brief State of the hand-off test: its monitor, semaphores for "waiter started" and "waiter done", and an error flag. */
 static monitor_t test_handoff_mt;
 static semaphore_t test_handoff_started, test_handoff_done;
 static volatile int test_handoff_error;
+/** @brief State of the philosopher stress test: philosophers still running and a flag set by the observer on a violation. */
 static volatile int test_phi_running;
 static volatile int test_phi_bad;
 
+/**
+ * @brief Thread body of a waiter in the condition variable test.
+ *
+ * Enters the monitor, tells the main thread (test_cv_ready), and waits on cv[0]. When woken it
+ * checks that it owns the monitor (mutex.value 0 and next_count 1: the signaler is suspended),
+ * counts itself in test_cv_awake, and leaves the monitor through next so the signaler resumes.
+ * @param arg unused
+ * @return 0
+ */
 static int
 test_cv_waiter(void *arg)
 {
@@ -50,6 +86,14 @@ test_cv_waiter(void *arg)
     return 0;
 }
 
+/**
+ * @brief Thread body of the waiter in the hand-off test: waits on cv[0] and then on cv[1].
+ *
+ * After the second wake-up it checks that it owns the monitor, then ups next and the "done"
+ * semaphore.
+ * @param arg unused
+ * @return 0
+ */
 static int
 test_cv_handoff_waiter(void *arg)
 {
@@ -69,6 +113,14 @@ test_cv_handoff_waiter(void *arg)
     return 0;
 }
 
+/**
+ * @brief Check that a thread woken from cv[0] can wait again (on cv[1]) and then be signaled.
+ *
+ * The main thread signals cv[0] and expects that the woken waiter went back to wait on cv[1]
+ * and handed the monitor back at once (cv[1].count 1, next_count 0, mutex.value 0), then signals
+ * cv[1] and lets the waiter finish.
+ * @return 1 if every check held, otherwise 0
+ */
 static int
 test_cv_handoff(void)
 {
@@ -103,6 +155,14 @@ test_cv_handoff(void)
     return test_handoff_error == 0;
 }
 
+/**
+ * @brief Test 1: cond_wait() and cond_signal().
+ *
+ * Checks, in this order: an empty cond_signal() changes no counter, semaphore value or queue;
+ * two waiters give cv[0].count 2; the first signal wakes exactly one waiter and the monitor goes to
+ * it (next_count back to 0 once the signaler resumes); the second signal wakes the other one; no
+ * waiter saw a wrong monitor state; the hand-off test passes. Prints one result line.
+ */
 void
 test_lab7_condvar(void)
 {
@@ -191,11 +251,16 @@ test_lab7_condvar(void)
     }
 }
 
+/** @brief The student's three philosopher functions, and two semaphores for the blocked-take tests. */
 static test_lab7_phi_fn_t test_phi_test_fn;
 static test_lab7_phi_fn_t test_phi_take_fn;
 static test_lab7_phi_fn_t test_phi_put_fn;
 static semaphore_t test_phi_started, test_phi_finished;
 
+/**
+ * @brief Set the state of every philosopher to @p state.
+ * @param state THINKING, HUNGRY or EATING
+ */
 static void
 test_phi_set_all(int state)
 {
@@ -205,6 +270,10 @@ test_phi_set_all(int state)
     }
 }
 
+/**
+ * @brief Tell whether two neighbouring philosophers are eating at the same time.
+ * @return 1 if such a pair exists, otherwise 0
+ */
 static int
 test_phi_adjacent_eating(void)
 {
@@ -218,6 +287,11 @@ test_phi_adjacent_eating(void)
     return 0;
 }
 
+/**
+ * @brief Thread body of a philosopher in the stress test: the student's philosopher loop.
+ * @param arg philosopher number, cast to a pointer
+ * @return 0
+ */
 static int
 test_phi_stress_thread(void *arg)
 {
@@ -226,6 +300,13 @@ test_phi_stress_thread(void *arg)
     return 0;
 }
 
+/**
+ * @brief Thread body of the observer: checks the states every tick while philosophers run.
+ *
+ * Sets test_phi_bad if two neighbours are ever eating at the same time.
+ * @param arg unused
+ * @return 0
+ */
 static int
 test_phi_observer(void *arg)
 {
@@ -240,6 +321,10 @@ test_phi_observer(void *arg)
     return 0;
 }
 
+/**
+ * @brief Run all five philosophers (philosopher_using_condvar) together with the observer.
+ * @return 1 if every thread was created and no violation was seen, otherwise 0
+ */
 static int
 test_phi_stress(void)
 {
@@ -276,6 +361,11 @@ test_phi_stress(void)
     return ok;
 }
 
+/**
+ * @brief Thread body that calls take_forks for philosopher 0; it ups test_phi_started first.
+ * @param arg unused
+ * @return 0
+ */
 static int
 test_phi_blocked_take(void *arg)
 {
@@ -286,6 +376,15 @@ test_phi_blocked_take(void *arg)
     return 0;
 }
 
+/**
+ * @brief Check that philosopher 0 waits while neighbour @p blocker eats, and wakes up when it stops.
+ *
+ * Marks @p blocker EATING and starts a thread that calls take_forks(0). The thread must be HUNGRY
+ * and waiting on mt.cv[0] (count 1). Then put_forks(blocker) is called; philosopher 0 must
+ * end up EATING with no two neighbours eating.
+ * @param blocker the left or right neighbour of philosopher 0
+ * @return 1 if every check held, otherwise 0
+ */
 static int
 test_phi_blocked_by(int blocker)
 {
@@ -316,6 +415,17 @@ test_phi_blocked_by(int blocker)
     return ok;
 }
 
+/**
+ * @brief Test 2: phi_test_condvar(), phi_take_forks_condvar() and phi_put_forks_condvar().
+ *
+ * Checks, in this order: phi_test only promotes a HUNGRY philosopher whose neighbours do not eat;
+ * an uncontended take/put gives EATING then THINKING; blocking by the left and by the right
+ * neighbour (test_phi_blocked_by); put_forks wakes both hungry neighbours; the stress run.
+ * Prints one result line.
+ * @param test_fn phi_test_condvar of the student
+ * @param take_fn phi_take_forks_condvar of the student
+ * @param put_fn  phi_put_forks_condvar of the student
+ */
 void
 test_lab7_philosopher(test_lab7_phi_fn_t test_fn,
                       test_lab7_phi_fn_t take_fn,

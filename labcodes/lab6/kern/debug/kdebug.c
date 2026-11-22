@@ -1,0 +1,91 @@
+/**
+ * @file   kdebug.c
+ * @brief  Kernel debugging helpers: kernel layout printout and the (unimplemented) stack backtrace.
+ */
+#include <assert.h>
+#include <defs.h>
+#include <stdio.h>
+
+/**
+ * @brief Print the key kernel symbol addresses and the kernel's memory footprint.
+ *
+ * Prints the virtual addresses of kern_init (entry), etext, edata and end (linker symbols
+ * defined in kernel.ld), then the footprint in KB computed as (end - kern_init) rounded up.
+ * The footprint is measured from kern_init, not from the start of the kernel image.
+ *
+ * @note Uses cprintf, so output goes to the console. Takes no arguments and returns nothing.
+ */
+void print_kerninfo(void) {
+    extern char etext[], edata[], end[], kern_init[];
+    cprintf("Special kernel symbols:\n");
+    cprintf("  entry  0x%08x (virtual)\n", kern_init);
+    cprintf("  etext  0x%08x (virtual)\n", etext);
+    cprintf("  edata  0x%08x (virtual)\n", edata);
+    cprintf("  end    0x%08x (virtual)\n", end);
+    cprintf("Kernel executable memory footprint: %dKB\n", (end - kern_init + 1023) / 1024);
+}
+
+/**
+ * @brief Print a stack backtrace (saved return addresses). Not implemented in the skeleton: it panics.
+ *
+ * The student is expected to implement this with the frame-pointer chain described below.
+ * The current implementation only calls panic("Not Implemented!"), so calling it halts the kernel.
+ *
+ * @note The long comment below is the original reference description of the x86 stack/ebp convention.
+ */
+void print_debuginfo(uintptr_t eip) {
+    panic("Not Implemented!");
+}
+
+/* *
+ * print_stackframe - print a list of the saved eip values from the nested
+ * 'call'
+ * instructions that led to the current point of execution
+ *
+ * The x86 stack pointer, namely esp, points to the lowest location on the stack
+ * that is currently in use. Everything below that location in stack is free.
+ * Pushing
+ * a value onto the stack will invole decreasing the stack pointer and then
+ * writing
+ * the value to the place that stack pointer pointes to. And popping a value do
+ * the
+ * opposite.
+ *
+ * The ebp (base pointer) register, in contrast, is associated with the stack
+ * primarily by software convention. On entry to a C function, the function's
+ * prologue code normally saves the previous function's base pointer by pushing
+ * it onto the stack, and then copies the current esp value into ebp for the
+ * duration
+ * of the function. If all the functions in a program obey this convention,
+ * then at any given point during the program's execution, it is possible to
+ * trace
+ * back through the stack by following the chain of saved ebp pointers and
+ * determining
+ * exactly what nested sequence of function calls caused this particular point
+ * in the
+ * program to be reached. This capability can be particularly useful, for
+ * example,
+ * when a particular function causes an assert failure or panic because bad
+ * arguments
+ * were passed to it, but you aren't sure who passed the bad arguments. A stack
+ * backtrace lets you find the offending function.
+ *
+ * The inline function read_ebp() can tell us the value of current ebp. And the
+ * non-inline function read_eip() is useful, it can read the value of current
+ * eip,
+ * since while calling this function, read_eip() can read the caller's eip from
+ * stack easily.
+ *
+ * In print_debuginfo(), the function debuginfo_eip() can get enough information
+ * about
+ * calling-chain. Finally print_stackframe() will trace and print them for
+ * debugging.
+ *
+ * Note that, the length of ebp-chain is limited. In boot/bootasm.S, before
+ * jumping
+ * to the kernel entry, the value of ebp has been set to zero, that's the
+ * boundary.
+ * */
+void print_stackframe(void) {
+    panic("Not Implemented!");
+}

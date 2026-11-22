@@ -13,7 +13,7 @@
 |   lab1   | [Here](labcodes/lab1/) | [Here](labcodes/lab1/docs/report.md) |                  -                   |
 |   lab2   | [Here](labcodes/lab2/) | [Here](labcodes/lab2/docs/report.md) | [Here](labcodes/lab2/docs/prompt.md) |
 |   lab3   | [Here](labcodes/lab3/) | [Here](labcodes/lab3/docs/report.md) | [Here](labcodes/lab3/docs/prompt.md) |
-|   lab4   | [Here](labcodes/lab4/) |                  -                   |                  -                   |
+|   lab4   | [Here](labcodes/lab4/) | [Here](labcodes/lab4/docs/report.md) | [Here](labcodes/lab4/docs/prompt.md) |
 
 # 3. QEMU 8.2+OpenSBI v1.3 环境下的适配修改
 

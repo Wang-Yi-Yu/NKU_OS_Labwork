@@ -22,13 +22,29 @@
 #include <default_sched.h>
 
 //lab6 function2 2414015
-
+/**
+ * @brief Initialise an empty RR run queue.
+ * @param rq run queue to initialise
+ * @note Also sets rq->max_time_slice to MAX_TIME_SLICE: the grading test calls this function on a
+ *       zeroed run queue and expects the slice length to be set here.
+ */
 static void RR_init(struct run_queue *rq) {
     list_init(&(rq->run_list));
     rq->proc_num = 0;
     rq->max_time_slice = MAX_TIME_SLICE;
 }
 
+/**
+ * @brief Append a runnable process at the tail of the run queue.
+ *
+ * list_add_before() on the list head inserts just before the head, i.e. at the tail of the circular
+ * list, which keeps FIFO order. A time slice that is 0 (used up) or longer than the queue's
+ * maximum is reset to rq->max_time_slice; a partly used valid slice is kept.
+ *
+ * @param rq   run queue to insert into
+ * @param proc process to enqueue; its run_link must be self-linked (not queued yet)
+ * @note The assert catches double insertion, which would corrupt the list.
+ */
 static void RR_enqueue(struct run_queue *rq, struct proc_struct *proc) {
     assert(list_empty(&(proc->run_link)));
     list_add_before(&(rq->run_list), &(proc->run_link));
@@ -39,6 +55,15 @@ static void RR_enqueue(struct run_queue *rq, struct proc_struct *proc) {
     rq->proc_num++;
 }
 
+/**
+ * @brief Remove a process from the run queue.
+ *
+ * list_del_init() unlinks run_link and makes it self-linked again, so the process can be enqueued
+ * later. proc->rq is cleared and proc_num decremented to keep the three in step.
+ *
+ * @param rq   run queue the process is in
+ * @param proc process to remove; it must currently be in @p rq
+ */
 static void RR_dequeue(struct run_queue *rq, struct proc_struct *proc) {
     assert(!list_empty(&(proc->run_link)) && proc->rq == rq);
     list_del_init(&(proc->run_link));
@@ -46,6 +71,12 @@ static void RR_dequeue(struct run_queue *rq, struct proc_struct *proc) {
     rq->proc_num--;
 }
 
+/**
+ * @brief Choose the process at the head of the run queue.
+ * @param rq run queue to look at
+ * @return the first process, or NULL if the queue is empty
+ * @note The process stays in the queue; schedule() dequeues it afterwards.
+ */
 static struct proc_struct *RR_pick_next(struct run_queue *rq) {
     if (list_empty(&(rq->run_list))) {
         return NULL;
@@ -53,6 +84,15 @@ static struct proc_struct *RR_pick_next(struct run_queue *rq) {
     return le2proc(list_next(&(rq->run_list)), run_link);
 }
 
+/**
+ * @brief Consume one timer tick of the running process.
+ *
+ * Decrements time_slice while it is positive and sets need_resched once it has reached 0, so the
+ * process is preempted when the trap returns and goes to the tail of the queue.
+ *
+ * @param rq   run queue (unused: RR keeps no per-queue tick state)
+ * @param proc the running process
+ */
 static void RR_proc_tick(struct run_queue *rq, struct proc_struct *proc) {
     (void)rq;
     if (proc->time_slice > 0) {
@@ -63,6 +103,7 @@ static void RR_proc_tick(struct run_queue *rq, struct proc_struct *proc) {
     }
 }
 
+/** @brief The RR class object: connects the five RR_* functions to the framework in sched.c. */
 struct sched_class default_sched_class = {
     .name = "RR_scheduler",
     .init = RR_init,

@@ -78,7 +78,8 @@ SYS_getpid      : get the process's pid
 
 /**
  * @brief The list of all process control blocks (linked through proc_struct::list_link).
- * @note Every PCB that is alive must be in this list; schedule() scans it for PROC_RUNNABLE.
+ * @note Every PCB that is alive must be in this list. Since lab6 it is no longer used to find the
+ *       next process: schedule() asks the scheduling class, which keeps its own run queue.
  */
 list_entry_t proc_list;
 

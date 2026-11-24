@@ -364,3 +364,185 @@ int do_kill(int pid)
 ### 2.2 2414015-鲁昕宁
 
 ### 2.3 2411622-张雨函
+
+#### 2.3.1 Challenge：Copy on Write 机制
+
+````markdown
+[PROMPT]
+**任务**：在现有 Lab5 用户进程和虚拟内存实现上完成 Challenge：Copy on Write（COW）。普通 fork 不再为每个用户页立即分配物理副本，而是让父子进程暂时共享已映射的物理页；对原本可写的共享页清除硬件写权限并设置软件 COW 标志，进程第一次写入时再通过写缺页异常获得私有可写页。实现必须保持普通 fork、waitpid、exit 和非法访问测试的原有语义。
+
+涉及文件：
+
+- kern/mm/mmu.h：定义一个不与硬件权限位冲突的软件 PTE_COW 位；
+- kern/mm/pmm.c：更新 copy_range，完成共享映射、权限转换、引用计数和失败回滚；
+- kern/mm/vmm.c、kern/mm/vmm.h：让 dup_mmap 使用共享复制，并提供 COW 写故障解析接口；
+- kern/trap/trap.c：在用户或内核向合法 COW 用户页写入时解析 CAUSE_STORE_PAGE_FAULT，成功后重试原指令；
+- user/cowtest.c：新增覆盖父子隔离、多子进程共享、退出回收和内核写用户缓冲区的测试；
+- 必要时更新 docs/report.md，说明状态转换、Dirty COW 风险、测试结果和剩余限制。
+
+**操作要求**：
+
+1. 先阅读并核对 copy_mm → dup_mmap → copy_range、page_insert、page_remove_pte、exit_mmap、user_mem_check 和 exception_handler 的真实实现，再开始修改。
+2. 只修改 COW Challenge 所需的路径和测试文件，保留 Lab5 四个基础模块的语义；不要把普通 fork 改回父子各复制一份物理页。
+3. 新增或修改的注释使用英文，函数注释使用 Doxygen 风格；保留并补充 lab5 Challenge 2411622张雨函 标记。
+4. 先完成共享映射和引用计数，再完成写缺页解析，最后加入测试。每个阶段都要编译验证。
+5. COW 只针对用户地址空间中的有效叶子页表项。不能因为页面属于可写 VMA 就把原本只读的 PTE 升级为可写。
+6. 不引入文件系统、按需装载、多 hart 调度或与 Challenge 无关的公开接口。
+
+**输出要求**：直接修改实际文件并给出实现；使用下面 RELY、GUARANTEE、SPECIFICATION 作为约束，以工程真实代码为准。
+
+[RELY]
+1. do_fork 的普通 fork 路径调用 copy_mm(0, child)，随后调用 dup_mmap。
+2. dup_mmap 按父地址空间的 VMA 顺序建立子 VMA，并调用 copy_range(to->pgdir, from->pgdir, start, end, share)。
+3. copy_range 的签名必须保持为：
+   int copy_range(pde_t *to, pde_t *from, uintptr_t start, uintptr_t end, bool share)
+4. page_insert 建立映射并增加物理页引用；page_remove_pte、unmap_range 和 exit_mmap 解除映射并减少引用；引用数为零时才释放物理页。
+5. 可用 page_ref、page_ref_inc、page_ref_dec、pte2page、page2kva、alloc_page、free_page 管理物理页。
+6. 页表权限包括 PTE_V、PTE_R、PTE_W、PTE_X、PTE_U 和 PTE_USER；VMA 权限包括 VM_READ、VM_WRITE、VM_EXEC、VM_STACK。
+7. find_vma 查找 VMA，get_pte 查找页表项，tlb_invalidate 使单页 TLB 失效，lock_mm 和 unlock_mm 保护地址空间修改。
+8. exception_handler 已处理用户 ecall；写缺页原因为 CAUSE_STORE_PAGE_FAULT。copy_to_user 和 do_wait 可能从内核向用户缓冲区写数据。
+9. 本实验为单 hart。mm_lock 可以保护同一地址空间的解析和替换，但不能据此声称多核并发安全。
+
+[GUARANTEE]
+需要实现或修改以下接口，签名必须与现有声明一致：
+
+~~~c
+#define PTE_COW ...
+int copy_range(pde_t *to, pde_t *from,
+               uintptr_t start, uintptr_t end, bool share)
+int dup_mmap(struct mm_struct *to, struct mm_struct *from)
+int cow_resolve(struct mm_struct *mm, uintptr_t addr)
+void exception_handler(struct trapframe *tf)
+~~~
+
+还必须新增 user/cowtest.c。允许新增本模块内部使用的 static 辅助函数，不得改变既有公开接口签名。
+
+[SPECIFICATION]
+按以下顺序实施和验收，每一阶段完成后先编译，再进入下一阶段。
+
+**阶段一：权限和状态表示**
+
+- PTE_COW 使用软件保留位，不能覆盖 PTE_V/R/W/X/U。
+- PTE_COW 只表示“该映射原本允许写入”，不能单独授予用户访问权限。
+- 必须区分“原本可写、当前因共享而只读的 COW 页”和“原本只读的共享页”。
+
+**阶段二：建立共享映射**
+
+- dup_mmap 为每个父 VMA 建立相同范围和权限的子 VMA，并调用 copy_range(..., share=1)。
+- share 为真且源 PTE 带 PTE_W：父子映射同一物理页，父子 PTE 都清除 PTE_W 并设置 PTE_COW。
+- share 为真但源 PTE 不带 PTE_W：父子共享物理页并保持只读，不设置 PTE_COW。
+- 子映射建立成功后才修改父 PTE，并使父页 TLB 失效。
+- 任何目标页表或映射分配失败都必须返回错误并保持引用计数一致。
+
+**阶段三：解析写缺页**
+
+cow_resolve 的合法条件必须同时满足：找到 VMA；VMA 带 VM_WRITE；PTE 有效；PTE 带 PTE_COW 且当前没有 PTE_W。
+
+- 引用计数大于 1：分配新页，复制完整 4 KiB 内容，替换当前映射为 PTE_W 且去掉 PTE_COW 的私有页。
+- 引用计数等于 1：不复制，直接恢复 PTE_W 并清除 PTE_COW。
+- 地址、VMA、PTE 或权限不合法：返回错误，不升级权限。
+- 分配或替换失败：释放本次新资源，保留原映射和 COW 状态。
+- 检查、引用计数读取和映射替换由 mm_lock 保护，修改 PTE 后使 TLB 失效。
+
+**阶段四：接入异常路径**
+
+- CAUSE_STORE_PAGE_FAULT 调用 COW 解析接口。
+- 解析成功时直接返回，让 sret 重试原 store；不能前移 tf->epc。
+- 解析失败时继续原有非法访问处理，不能把普通只读页、未映射页或非法地址变成可写页。
+- 必须覆盖用户态写入和内核向用户缓冲区写入，例如 waitpid 写退出码。
+
+**阶段五：引用计数和回收**
+
+- 父子任一方解除映射时只减少自己的引用，另一方仍可访问共享页。
+- 两方都解除映射后物理页才释放；页表页和 VMA 继续由原有 exit_mmap、mm_destroy 路径回收。
+- COW 失败或非法访问退出时，不能泄漏新页、页表或引用计数。
+
+**阶段六：测试和报告**
+
+cowtest 至少覆盖：
+
+1. 父子分别写同一全局数据页，确认写入不可见；
+2. 连续多轮 fork 和回收，覆盖引用数降为 1 后恢复写权限；
+3. 多个同时存在的子进程分别写入，确认互不覆盖；
+4. waitpid 向页对齐的用户缓冲区写退出码，覆盖内核写 COW 页；
+5. 子进程退出后父进程数据不变，并输出 cowtest pass.。
+
+至少执行并记录：
+
+~~~bash
+make build-cowtest
+make qemu
+make build-forktest
+make qemu
+make build-exit
+make qemu
+~~~
+
+报告必须说明独占可写页、共享 COW 页、写故障复制页和引用数为 1 后恢复可写页的状态转换；说明如何避免把原生只读页升级为可写页；说明 Dirty COW 的竞态风险、单 hart 限制和实际测试结果。
+````
+
+#### 2.3.2 分支任务：双重 GDB 调试系统调用与返回
+
+````markdown
+[PROMPT]
+**任务**：完成 Lab5 分支任务“使用双重 GDB 调试系统调用以及返回”。使用 RISC-V GDB 调试 ucore，使用宿主机 GDB 附加 QEMU，观察用户态 ecall 触发、异常委托、S 态系统调用处理以及 sret 返回 U 态的完整流程。调试结果写入实验报告，不修改系统调用语义。
+
+**操作要求**：
+
+1. 使用 make build-exit 构建可重复触发 SYS_putc 的用户程序，用 make debug 启动 QEMU，用 make gdb 连接。
+2. 在 RISC-V GDB 中用 add-symbol-file obj/__user_exit.out 加载用户程序符号；先用源码断点或反汇编定位实际 ecall 地址，不要预先假定固定地址。
+3. 宿主机 GDB 使用带调试信息的 QEMU 构建，观察 helper_raise_exception、riscv_cpu_do_interrupt 和 helper_sret。
+4. 两个 GDB 交替控制运行时，明确记录哪个终端执行 continue、哪个终端执行 si；不要让两个调试器同时争夺运行控制。
+5. 记录关键命令、寄存器值、调用栈和 QEMU 源码位置，整理到报告 4.6。
+
+[RELY]
+1. user/libs/syscall.c 将调用号放入 a0、参数放入 a1 到 a5，执行 ecall，结果从 a0 读取。
+2. 用户程序符号位于 obj/__user_exit.out，需要手动加载。
+3. ucore 的 __alltraps 保存现场，exception_handler 识别 CAUSE_USER_ECALL，syscall 分发，__trapret 恢复现场并执行 sret。
+4. QEMU 的 trans_ecall 位于 target/riscv/insn_trans/trans_privileged.inc.c；helper_raise_exception 和 helper_sret 位于 target/riscv/op_helper.c；riscv_cpu_do_interrupt 位于 target/riscv/cpu_helper.c；TCG 执行路径包含 code_gen_buffer 和 cpu_tb_exec。
+5. CAUSE_USER_ECALL 为 8；异常进入内核后 sepc 保存 ecall 地址；ucore 前移 trapframe 的 epc 后，sret 应返回 ecall 后的下一条指令。
+6. 宿主机 GDB 可使用 exception、env->pc、env->priv 和 env->sepc 设置 QEMU helper 条件断点。
+
+[GUARANTEE]
+必须交付以下调试材料：
+
+1. 用户态 ecall 前的反汇编和寄存器；
+2. helper_raise_exception 命中信息和调用栈；
+3. riscv_cpu_do_interrupt 完成委托后的 priv、pc、sepc、scause、SPP；
+4. ucore exception_handler、syscall 或 sys_putc 的参数和调用栈；
+5. helper_sret 命中信息、返回地址和特权级；
+6. sret 后用户态 pc、sp、a0；
+7. 对 QEMU 源码位置、TCG 作用和一次实际调试问题的解释。
+
+[SPECIFICATION]
+按以下顺序完成：
+
+**阶段一：用户态 ecall**
+
+- 加载用户符号；
+- 在 user/libs/syscall.c 设置源码断点；
+- 用 x/i $pc 或 disassemble /r syscall 找到 ecall；
+- 记录 pc、a0、a1，确认 a0 为 30，a1 为当前输出字符。
+
+**阶段二：QEMU 接收异常**
+
+- 在 helper_raise_exception 设置 exception == 8 且 env->priv == 0 的条件断点；
+- 由 RISC-V GDB 单步执行 ecall；
+- 记录 exception、env->pc、env->priv 和包含 code_gen_buffer 的调用栈。
+
+**阶段三：异常委托**
+
+在 riscv_cpu_do_interrupt 中记录 cause、async、medeleg 委托位、env->priv、env->pc、env->sepc、env->scause、env->stvec 和 mstatus.SPP，说明 U 态异常如何进入 S 态。
+
+**阶段四：ucore 系统调用**
+
+在 RISC-V GDB 中记录 tf->cause、tf->epc、tf->gpr.a0、tf->gpr.a1；说明 epc 已跳过 ecall，并记录 syscall → sys_putc 的调用栈。
+
+**阶段五：sret 返回**
+
+在 __trapret 的 sret 处停下；在 helper_sret 设置 env->priv == 1 且 env->sepc 指向返回地址的条件断点；记录执行前 S 态、执行后 retpc 和 U 态，以及 sret 后的用户 pc、sp、a0。
+
+**阶段六：TCG 总结**
+
+说明 TCG 将 RISC-V 指令翻译为宿主机代码，code_gen_buffer 出现在调用栈中；helper_raise_exception、riscv_cpu_do_interrupt 和 helper_sret 分别对应异常产生、异常委托和特权返回；并记录用户符号未自动加载、QEMU stripped 版本没有函数符号或双 GDB 运行控制冲突等实际问题。
+````

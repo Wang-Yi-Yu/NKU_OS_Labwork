@@ -477,9 +477,17 @@ int copy_range(pde_t *to, pde_t *from, uintptr_t start, uintptr_t end, bool shar
             if (get_pte(to, start, 1) == NULL) {
                 return -E_NO_MEM;
             }
-            uint32_t perm = (*ptep & PTE_USER);
+            uint32_t perm = (*ptep & (PTE_USER | PTE_COW));
             struct Page *page = pte2page(*ptep);
             struct Page *npage = page;
+            if (share && (perm & PTE_W)) {
+                // lab5 Challenge 2411622张雨函: preserve original writability in
+                // software while both hardware mappings become read-only.
+                perm = (perm & ~PTE_W) | PTE_COW;
+            } else if (!share && (perm & PTE_COW)) {
+                // A private copy no longer needs the software COW marker.
+                perm = (perm | PTE_W) & ~PTE_COW;
+            }
             if (!share) {
                 npage = alloc_page();
                 if (npage == NULL) {
@@ -493,6 +501,10 @@ int copy_range(pde_t *to, pde_t *from, uintptr_t start, uintptr_t end, bool shar
                     free_page(npage);
                 }
                 return ret;
+            }
+            if (share && (perm & PTE_COW) && (*ptep & PTE_W)) {
+                *ptep = (*ptep & ~PTE_W) | PTE_COW;
+                tlb_invalidate(from, start);
             }
         }
         start += PGSIZE;

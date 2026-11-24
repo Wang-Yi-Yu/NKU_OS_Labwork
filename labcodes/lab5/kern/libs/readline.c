@@ -15,11 +15,11 @@ static char buf[BUFSIZE];
  * @details Prints @p prompt if it is not NULL. Printable characters are echoed and stored.
  *          Backspace ('\b') removes the last character. Enter ('\n' or '\r') echoes a newline,
  *          terminates the buffer and returns it. Characters beyond BUFSIZE - 1 are dropped.
- *          The loop does not block: getchar() returns a negative value when no input is waiting,
- *          and readline() then returns NULL.
+ *          getchar() returns a negative value when no input is waiting. Keep polling in that
+ *          case, preserving the partial line until Enter is received.
  *
  * @param[in] prompt  String printed before reading; NULL or "" prints nothing.
- * @return Pointer to the internal buffer holding the line (without the newline), or NULL on read error.
+ * @return Pointer to the internal buffer holding the completed line (without the newline).
  * @warning The returned pointer refers to a static buffer that the next call overwrites; copy it first.
  */
 char *readline(const char *prompt) {
@@ -30,7 +30,7 @@ char *readline(const char *prompt) {
     while (1) {
         c = getchar();
         if (c < 0) {
-            return NULL;
+            continue;
         } else if (c >= ' ' && i < BUFSIZE - 1) {
             cputchar(c);
             buf[i++] = c;

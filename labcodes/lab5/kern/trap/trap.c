@@ -247,6 +247,10 @@ void exception_handler(struct trapframe *tf) {
             cprintf("Breakpoint at 0x%08x\n", tf->epc);
         }
         tf->epc += instruction_length;
+    } else if (tf->cause == CAUSE_STORE_PAGE_FAULT && current != NULL &&
+               cow_resolve(current->mm, tf->tval) == 0) {
+        // lab5 Challenge 2411622张雨函: retry the faulting store after COW.
+        return;
     } else if (tf->cause == CAUSE_USER_ECALL) {
         // Skip the 4-byte ecall so that sret resumes after it, then run the system call.
         tf->epc += 4;

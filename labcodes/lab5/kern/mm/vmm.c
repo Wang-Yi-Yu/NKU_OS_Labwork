@@ -264,13 +264,53 @@ int dup_mmap(struct mm_struct *to, struct mm_struct *from) {
         }
         insert_vma_struct(to, nvma);
 
-        // Plain fork: every page is copied, nothing is shared (copy-on-write is the challenge).
-        bool share = 0;
+        // lab5 Challenge 2411622张雨函: fork shares pages; writable leaves become COW.
+        bool share = 1;
         if (copy_range(to->pgdir, from->pgdir, vma->vm_start, vma->vm_end, share) != 0) {
             return -E_NO_MEM;
         }
     }
     return 0;
+}
+
+// lab5 Challenge 2411622张雨函: only a valid, originally writable COW
+// mapping may be upgraded. A genuinely read-only mapping remains protected.
+int cow_resolve(struct mm_struct *mm, uintptr_t addr) {
+    if (mm == NULL || !USER_ACCESS(addr, addr + 1)) {
+        return -E_INVAL;
+    }
+    lock_mm(mm);
+    struct vma_struct *vma = find_vma(mm, addr);
+    pte_t *ptep = get_pte(mm->pgdir, addr, 0);
+    if (vma == NULL || !(vma->vm_flags & VM_WRITE) ||
+        ptep == NULL || !(*ptep & PTE_V) || !(*ptep & PTE_COW) ||
+        (*ptep & PTE_W)) {
+        unlock_mm(mm);
+        return -E_INVAL;
+    }
+
+    struct Page *old = pte2page(*ptep);
+    uint32_t perm = (*ptep & (PTE_USER | PTE_COW));
+    perm = (perm | PTE_W) & ~PTE_COW;
+    if (page_ref(old) == 1) {
+        // No other mapping can observe this page any more.
+        int ret = page_insert(mm->pgdir, old, ROUNDDOWN(addr, PGSIZE), perm);
+        unlock_mm(mm);
+        return ret;
+    }
+
+    struct Page *fresh = alloc_page();
+    if (fresh == NULL) {
+        unlock_mm(mm);
+        return -E_NO_MEM;
+    }
+    memcpy(page2kva(fresh), page2kva(old), PGSIZE);
+    int ret = page_insert(mm->pgdir, fresh, ROUNDDOWN(addr, PGSIZE), perm);
+    if (ret != 0) {
+        free_page(fresh);
+    }
+    unlock_mm(mm);
+    return ret;
 }
 
 /**

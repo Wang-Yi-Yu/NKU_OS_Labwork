@@ -104,7 +104,23 @@
 
 ---
 
-#### 3.2.5 Challenge: Copy on Write 机制
+#### 3.2.5 Challenge：Copy on Write 机制
+
+**为什么需要。** 普通 fork 如果立即复制父进程的全部用户页，会产生不必要的内存复制。COW 让父子进程先共享物理页，只有某一方真正写入时才复制被写页面，在降低 fork 开销的同时保持写隔离。
+
+**与其他模块的关联。** do_fork 通过 copy_mm 和 dup_mmap 建立共享映射；copy_range 维护父子 PTE 的权限和物理页引用计数；写入共享页产生 CAUSE_STORE_PAGE_FAULT，由 exception_handler 调用 cow_resolve；解析成功后返回并重试原 store。父子进程退出时，page_remove_pte 和 exit_mmap 解除映射，引用计数归零后才释放物理页。waitpid 向用户缓冲区写退出码的路径还验证了内核写入 COW 页。
+
+**状态转换。**
+
+1. 独占可写页：PTE_W=1，PTE_COW=0，物理页引用计数为 1。
+2. fork 后共享页：父子映射同一物理页，PTE_W 被清除；原本可写的映射设置 PTE_COW，引用计数至少为 2。
+3. 多引用写故障：写入方分配并复制新页，当前进程得到 PTE_W 映射，其他进程继续使用旧页。
+4. 单引用 COW 页：其他映射释放后引用计数降为 1，下一次写故障直接恢复 PTE_W 并清除 PTE_COW。
+5. 原生只读页：父子可以共享，但不设置 PTE_COW，不能因写故障被升级为可写。
+
+COW 只对合法用户地址生效。cow_resolve 同时检查 VM_WRITE、有效 PTE、PTE_COW 和当前没有 PTE_W；检查、引用计数读取和映射替换由 mm_lock 保护，修改 PTE 后失效对应 TLB 项。失败时沿用原有非法访问处理。
+
+Dirty COW 的风险是权限检查、引用计数判断和实际写入之间的竞态。本实现只在单 hart 环境验证，并在锁保护下先复制或恢复独占页，再重试写指令；不能据此声称已经证明多 hart 下的并发安全性。
 
 ---
 
@@ -629,19 +645,116 @@ int do_kill(int pid)
 
 #### 4.5.1 模块功能描述
 
+**完成说明（2411622张雨函）：** 在普通 `fork` 中共享已映射物理页。原本可写的父子 PTE 清除 `PTE_W` 并设置软件位 `PTE_COW`；原本只读的页面继续共享，但不设置 COW。写入产生 `CAUSE_STORE_PAGE_FAULT` 后，内核仅对位于可写 VMA 且带 COW 标记的有效 PTE 解故障：引用计数大于 1 时分配、复制、替换页面；引用计数为 1 时直接恢复可写权限。其他缺页仍走原有异常路径。
+
+状态转换：`独占可写(ref=1) → fork → 共享只读+COW(ref≥2) → 写故障 → 私有可写(ref=1)`；另一分支在其他引用退出后变成 `只读+COW(ref=1) → 写故障 → 原页恢复可写`。解除映射和进程退出调用现有 `page_remove_pte` / `exit_mmap`，每解除一处映射减少一次引用，计数为零才释放。COW 位与 VMA 的 `VM_WRITE` 必须同时成立，因此原生只读页不会因写故障被升级。
+
+涉及 `kern/mm/mmu.h`、`kern/mm/pmm.c`、`kern/mm/vmm.c`、`kern/mm/vmm.h`、`kern/trap/trap.c` 和新增 `user/cowtest.c`。没有改动其他基础练习的实现。
+
 #### 4.5.2 最终提示词
 
+> 基于现有 Lab5 的 `copy_mm → dup_mmap → copy_range`、`page_insert`、`exception_handler` 与 `do_exit`，实现单核 ucore 的写时复制。普通 fork 共享已映射页；只将原本可写的映射降为只读并加软件 COW 标记，原本只读的映射保持只读。写缺页时验证 VMA 和 PTE；多引用时复制，单引用时原地恢复写权限；维护引用计数和 TLB。异常中的内核写用户缓冲区也应能处理合法 COW 故障。补充父子写入隔离、多子进程共享与退出回收的测试。将改动限定在挑战相关路径，说明测试结果和剩余限制。
+
 #### 4.5.3 实现迭代过程
+
+1. 检查基础代码：普通 fork 原先传入 `share=0`，`copy_range` 对每页分配私有副本；普通用户写故障直接终止进程。确认 `page_insert` / `page_remove_pte` 已经维护映射引用计数。
+2. 加入 `PTE_COW`、共享映射与写故障解析。映射子页成功后才清除父页写权限并失效父页的 TLB 项；分配失败时，已降权的父页仍可在下一次写故障中按 `ref=1` 恢复。
+3. 增加 `cowtest`：反复 fork，父子分别写全局数据页；`waitpid` 向专门对齐的一页写入退出码，以覆盖内核态写 COW 用户页的路径；再创建四个同时存在的子进程，分别写入并回收。运行 `make build-cowtest`，QEMU 输出 `cowtest pass.`。原有 `forktest`、`exit` 也分别输出 `forktest pass.`、`exit pass.`；`faultreadkernel` 仍因非法访问被终止。
+
+**限制：** 当前实验是单 hart；`mm_lock` 保护同一地址空间的解析，不能直接推断多核并发安全。没有实现文件映射、按需分页或多核 TLB 同步。分配失败回滚通过代码审查和构建验证，未强行耗尽全部物理内存。
 
 #### 4.5.4 问题解答
 
 > 说明该用户程序是何时被预先加载到内存中的？与我们常用操作系统的加载有何区别，原因是什么？
 
+用户 ELF 在构建内核时被编译并作为二进制数据链接进内核镜像；启动时镜像进入内存，`kernel_execve` / `load_icode` 再从其中建立用户页表并复制程序段。常见操作系统在运行时从文件系统读取可执行文件，还可按需装页；本实验用内嵌方式避开文件系统依赖，以便集中练习进程和地址空间管理。
+
+Dirty COW 的关键风险是权限检查与实际写入之间的竞态。此实现只允许具有 `VM_WRITE` 且 PTE 带 `PTE_COW` 的地址恢复写权限；共享页写入时先取得私有副本，再修改映射，避免直接改写其他进程可见的物理页。该设计没有在多核环境中验证，若移植到多核，还需将页面引用计数、PTE 检查与替换组织成跨核同步的原子协议，并处理跨核 TLB 失效。
+
 ---
+
+#### 4.5.5 测试结果
+
+手动运行 `make build-cowtest` 后，QEMU 输出 `cowtest pass.`、`all user-mode processes have quit.` 和 `init check memory pass.`。`forktest` 输出 `forktest pass.`，`exit` 输出 `exit pass.`，三项测试都正常进入内核监视器，没有出现 `initproc exit` panic。
+
+完整评分脚本执行结果为 `Total Score: 130/130`，所有基础检查均为 `OK`。COW 专用测试另外覆盖了父子写入隔离、多个子进程同时共享、退出后的回收，以及 `waitpid` 向 COW 用户缓冲区写退出码的路径。
 
 ### 4.6 分支任务：gdb 调试系统调用以及返回
 
 **负责人：** [2411622-张雨函]
+
+#### 4.6.1 调试目标和准备
+
+本次使用两个 GDB：RISC-V GDB 通过 QEMU 远程端口观察 ucore 和用户程序；宿主机 GDB 附加 QEMU 进程，观察 RISC-V 指令经过 TCG 翻译后的执行路径。
+
+实验使用 exit 用户程序。用户程序符号不会由 make gdb 自动加载，因此在 RISC-V GDB 中执行：
+
+~~~gdb
+add-symbol-file obj/__user_exit.out
+~~~
+
+随后在 user/libs/syscall.c 的 syscall 函数设置断点，并用 x/i $pc 或 disassemble /r syscall 定位实际 ecall 指令。一次实测中，ecall 位于 0x800102，a0=30（SYS_putc），a1=0x49（字符 I），用户栈为 0x7ffffe40。
+
+#### 4.6.2 ecall 进入内核
+
+用户态断点处记录：
+
+~~~text
+pc = 0x800102
+instruction = ecall
+a0 = 30
+a1 = 0x49
+sp = 0x7ffffe40
+~~~
+
+宿主机 GDB 在 QEMU 的 helper_raise_exception 设置条件断点：
+
+~~~gdb
+break helper_raise_exception if exception == 8 && env->priv == 0
+~~~
+
+命中结果为 exception=8、env->pc=0x800102、env->priv=0。调用栈包含 code_gen_buffer、cpu_tb_exec、cpu_loop_exec_tb 和 cpu_exec，说明这条 RISC-V 指令由 TCG 翻译块执行。
+
+在 riscv_cpu_do_interrupt 中，实测 cause=8、async=0、medeleg=0xb109，((medeleg >> 8) & 1)=1。委托完成后，env->priv=1，env->pc=0xffffffffc0200da0，env->sepc=0x800102，env->scause=8，mstatus.SPP=0。QEMU 因此把用户态异常交给 S 态，保存原 pc 和异常原因，并跳转到 stvec 指向的 __alltraps。
+
+#### 4.6.3 ucore 系统调用处理
+
+exception_handler 收到的 trapframe 为 tf->cause=0x8、tf->epc=0x800102、tf->gpr.sp=0x7ffffe40、tf->gpr.a0=30、tf->gpr.a1=0x49，且 tf->status 的 SPP 位为 0。
+
+exception_handler 先把 epc 增加 4，再调用 syscall。因此 syscall 中看到 epc=0x800106、a0=30、a1=0x49。调用栈经过 exception_handler、syscall 和 sys_putc；sys_putc 收到 arg[0]=73，即字符 I，并返回 0。
+
+#### 4.6.4 sret 返回用户态
+
+__trapret 中 RESTORE_ALL 根据 SPP 判断返回特权级，恢复 sstatus、sepc 和用户 sp 后执行 sret。实测 sret 地址为 0xffffffffc0200e66，执行前 sp=0x7ffffe40、sepc=0x800106、sscratch=0xffffffffc04ad000、a0=0。
+
+宿主机 GDB 在 helper_sret 命中时观察到 env->priv=1、env->sepc=0x800106、env->mstatus=0x8000000000046020。helper_sret 返回前 retpc=0x800106、env->priv=0、env->mstatus=0x8000000000046002。
+
+sret 后 RISC-V GDB 观察到 pc=0x800106、sp=0x7ffffe40、a0=0。pc 是 ecall 后的下一条指令，sp 恢复为用户栈，a0 是 SYS_putc 的成功返回值。
+
+#### 4.6.5 QEMU TCG 和调试问题
+
+ecall 的关键路径为：
+
+~~~text
+trans_ecall
+  -> helper_raise_exception
+  -> riscv_raise_exception
+  -> riscv_cpu_do_interrupt
+  -> 更新 sepc、scause、mstatus 并跳转 stvec
+~~~
+
+sret 的关键路径为：
+
+~~~text
+翻译后的 sret
+  -> helper_sret
+  -> 根据 mstatus.SPP 恢复特权级
+  -> 返回 sepc
+~~~
+
+TCG 将 RISC-V 指令翻译成宿主机代码，code_gen_buffer 和 cpu_tb_exec 出现在调用栈中。Lab2 的地址翻译调试也经过 TCG，但本次重点是异常、特权级和控制流返回。
+
+调试中遇到的主要问题有：用户程序符号未自动加载，需要 add-symbol-file；安装目录中的 QEMU stripped 版本没有 helper 函数符号，需要改用带 debug_info 的构建；两个 GDB 同时控制运行时，continue 显示 Continuing 代表正在等待另一终端让目标 CPU 执行下一条指令，必须明确交替使用 continue 和 si。
 
 ---
 

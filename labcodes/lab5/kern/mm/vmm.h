@@ -147,9 +147,11 @@ int mm_unmap(struct mm_struct *mm, uintptr_t addr, size_t len);
  * @param from source address space (the parent's)
  * @return 0 on success, -E_NO_MEM if memory is exhausted
  * @note lab5 exercise (function3), implemented in vmm.c: one VMA is created in @p to for every VMA
- *       of @p from, and the pages of that VMA are copied with copy_range().
+ *       of @p from; the Challenge shares pages via copy_range() and marks writable leaves COW.
  */
 int dup_mmap(struct mm_struct *to, struct mm_struct *from);
+/** lab5 Challenge 2411622张雨函: resolve a write fault on a marked COW page. */
+int cow_resolve(struct mm_struct *mm, uintptr_t addr);
 /**
  * @brief Release the pages and the page tables behind every VMA of an address space (used by exit).
  * @param mm address space; asserts that mm_count(mm) is already 0. The VMA list itself stays

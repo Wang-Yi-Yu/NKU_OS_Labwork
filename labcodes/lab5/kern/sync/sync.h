@@ -58,22 +58,42 @@ static inline void __intr_restore(bool flag) {
 /** @brief Restore the interrupt state saved by local_intr_save(). */
 #define local_intr_restore(x) __intr_restore(x);
 
+/** @brief Simple lock word: bit 0 is 1 while some context holds the lock. */
 typedef volatile bool lock_t;
 
+/**
+ * @brief Put a lock into the unlocked state.
+ * @param lock lock to initialise
+ */
 static inline void lock_init(lock_t *lock) {
     *lock = 0;
 }
 
+/**
+ * @brief Try to take the lock once without waiting.
+ * @param lock lock to take
+ * @return true if the lock was free and is now held by the caller, false if it was already held
+ */
 static inline bool try_lock(lock_t *lock) {
     return !test_and_set_bit(0, lock);
 }
 
+/**
+ * @brief Take the lock; while it is held by someone else, yield the CPU with schedule() and retry.
+ * @param lock lock to take
+ * @note Intended for a single hart: the holder can only run again because schedule() lets it.
+ */
 static inline void lock(lock_t *lock) {
     while (!try_lock(lock)) {
         schedule();
     }
 }
 
+/**
+ * @brief Release the lock.
+ * @param lock lock to release
+ * @note Panics if the lock was not held ("Unlock failed.").
+ */
 static inline void unlock(lock_t *lock) {
     if (!test_and_clear_bit(0, lock)) {
         panic("Unlock failed.\n");

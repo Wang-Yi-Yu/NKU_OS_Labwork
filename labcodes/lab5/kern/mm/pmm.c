@@ -451,7 +451,11 @@ void exit_range(pde_t *pgdir, uintptr_t start, uintptr_t end) {
  * an invalid PTE is simply left unmapped in the destination.
  *
  * With @p share set the destination maps the very same physical page instead of a copy
- * (page_insert() counts the extra reference); the plain fork of this lab always passes 0.
+ * (page_insert() counts the extra reference). The copy-on-write Challenge relies on this mode (fork
+ * passes 1 through dup_mmap()): a writable leaf becomes read-only in both tables and is tagged
+ * PTE_COW in both, while a read-only leaf is shared without the tag. A later write fault is
+ * repaired by cow_resolve(). In copy mode a source PTE tagged PTE_COW yields a writable, untagged
+ * private copy.
  *
  * @param to    destination root page directory (kernel virtual address)
  * @param from  source root page directory (kernel virtual address)

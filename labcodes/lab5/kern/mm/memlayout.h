@@ -107,17 +107,34 @@
  */
 #define KSTACKSIZE (KSTACKPAGE * PGSIZE)  // sizeof kernel stack
 
-#define USERTOP    0x80000000
-#define USTACKTOP  USERTOP
-#define USTACKPAGE 256                    // # of pages in user stack
-#define USTACKSIZE (USTACKPAGE * PGSIZE)  // sizeof user stack
+/** @brief Exclusive upper bound of the user virtual address space (2 GiB, lab5). */
+#define USERTOP 0x80000000
+/** @brief Initial user stack pointer: the stack grows downwards from the top of user space. */
+#define USTACKTOP USERTOP
+/** @brief Number of pages in the user stack VMA. */
+#define USTACKPAGE 256
+/**
+ * @brief Size in bytes of the user stack VMA: USTACKPAGE * PGSIZE (1 MiB).
+ *
+ * load_icode() creates a VMA of this size below USTACKTOP, but only backs its top 4 pages with
+ * physical memory, because this lab has no page fault handler that could allocate on demand.
+ */
+#define USTACKSIZE (USTACKPAGE * PGSIZE)
 
+/** @brief Lowest valid user address; user_mem_check() and USER_ACCESS() reject anything below. */
 #define USERBASE 0x00200000
-#define UTEXT    0x00800000  // where user programs generally begin
-#define USTAB    USERBASE    // the location of the user STABS data structure
+/** @brief Address where user programs generally begin (see tools/user.ld). */
+#define UTEXT 0x00800000
+/** @brief Location of the user STABS data (not used in this lab). */
+#define USTAB USERBASE
 
+/**
+ * @brief Check that [start, end) is a non-empty range inside the user address space.
+ * @note Used on every user-supplied range, for example by copy_range() and user_mem_check().
+ */
 #define USER_ACCESS(start, end) (USERBASE <= (start) && (start) < (end) && (end) <= USERTOP)
 
+/** @brief Check that [start, end) is a non-empty range inside the kernel address space. */
 #define KERN_ACCESS(start, end) (KERNBASE <= (start) && (start) < (end) && (end) <= KERNTOP)
 
 #ifndef __ASSEMBLER__

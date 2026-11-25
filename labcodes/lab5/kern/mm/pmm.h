@@ -175,7 +175,7 @@ void exit_range(pde_t *pgdir, uintptr_t start, uintptr_t end);
  * @param from  source root page directory
  * @param start page-aligned start address
  * @param end   page-aligned end address (exclusive)
- * @param share non-zero to share the pages instead of copying them (0 for plain fork)
+ * @param share non-zero to share the pages (copy-on-write, used by fork), 0 to copy them
  * @return 0 on success, -E_NO_MEM if memory is exhausted
  */
 int copy_range(pde_t *to, pde_t *from, uintptr_t start, uintptr_t end, bool share);

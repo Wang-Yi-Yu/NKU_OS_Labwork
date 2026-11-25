@@ -229,7 +229,12 @@ void interrupt_handler(struct trapframe *tf) {
  * forever. The request is then handed to syscall(), which reads the number and the arguments from
  * the saved registers of current->tf and writes the result into a0 of that frame.
  *
- * Any other exception (for example a page fault, which this lab cannot repair) is dumped with
+ * A store page fault (CAUSE_STORE_PAGE_FAULT, copy-on-write Challenge) is first offered to
+ * cow_resolve() with the faulting address from stval. If the page was a shared COW page the
+ * mapping is repaired and the handler simply returns: epc still points at the store, which is
+ * executed again and now succeeds.
+ *
+ * Any other exception (for example a page fault that is not a COW write) is dumped with
  * print_trapframe(). If it happened in kernel mode the kernel panics; if it happened in user mode
  * the process is terminated with do_exit(-E_KILLED). Merely returning would re-execute the
  * faulting instruction forever.

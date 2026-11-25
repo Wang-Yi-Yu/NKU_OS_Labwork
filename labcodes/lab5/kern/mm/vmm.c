@@ -240,12 +240,15 @@ out:
  * @brief Copy the virtual memory areas and the mapped pages of one address space into another.
  *
  * Used by fork (through copy_mm()): the child gets a VMA with the same range and flags for every
- * VMA of the parent, and its own physical copy of every page that is mapped in that VMA, so parent
- * and child can no longer see each other's writes.
+ * VMA of the parent, and the pages mapped in that VMA are handed over with copy_range(). The base
+ * exercise gives the child its own physical copy of every page (share = 0), so parent and child
+ * can no longer see each other's writes. With the copy-on-write Challenge, which the code now
+ * contains, dup_mmap() passes share = 1: both sides map the same physical pages, and a private
+ * copy is only made by cow_resolve() when one of them writes.
  *
  * The VMAs are visited in the order of from->mmap_list (ascending addresses). For each of them a
  * new VMA is created, inserted into @p to (insert_vma_struct() keeps the list sorted and
- * rejects overlaps) and then its pages are copied with copy_range() in copy mode (share = 0).
+ * rejects overlaps) and then its pages are handed over with copy_range().
  *
  * @param to   destination address space; freshly created, with its page directory already set up
  *             and no VMA yet
@@ -273,8 +276,24 @@ int dup_mmap(struct mm_struct *to, struct mm_struct *from) {
     return 0;
 }
 
-// lab5 Challenge 2411622张雨函: only a valid, originally writable COW
-// mapping may be upgraded. A genuinely read-only mapping remains protected.
+// lab5 Challenge 2411622张雨函
+/**
+ * @brief Resolve a store page fault on a copy-on-write page.
+ *
+ * Only a valid user leaf that lies in a VM_WRITE VMA, carries PTE_COW and is currently not
+ * writable is upgraded; a genuinely read-only mapping stays protected and the fault is refused.
+ * Everything below runs under mm_lock:
+ *  - page_ref(page) == 1: no other address space maps the page any more, so the same page is
+ *    remapped writable (PTE_W set, PTE_COW cleared) without copying;
+ *  - page_ref(page) > 1: a new page is allocated, the 4 KiB content is copied into it and it is
+ *    mapped writable at the faulting address. page_insert() drops the reference to the old page,
+ *    which is freed when it was the last one, and invalidates the TLB entry.
+ *
+ * @param mm   address space of the faulting process (may be NULL for a kernel thread)
+ * @param addr faulting virtual address (stval)
+ * @return 0 if the mapping was repaired and the store can be retried; -E_INVAL if the access is not
+ *         a legitimate COW write; -E_NO_MEM if the private copy cannot be allocated
+ */
 int cow_resolve(struct mm_struct *mm, uintptr_t addr) {
     if (mm == NULL || !USER_ACCESS(addr, addr + 1)) {
         return -E_INVAL;
@@ -282,9 +301,8 @@ int cow_resolve(struct mm_struct *mm, uintptr_t addr) {
     lock_mm(mm);
     struct vma_struct *vma = find_vma(mm, addr);
     pte_t *ptep = get_pte(mm->pgdir, addr, 0);
-    if (vma == NULL || !(vma->vm_flags & VM_WRITE) ||
-        ptep == NULL || !(*ptep & PTE_V) || !(*ptep & PTE_COW) ||
-        (*ptep & PTE_W)) {
+    if (vma == NULL || !(vma->vm_flags & VM_WRITE) || ptep == NULL || !(*ptep & PTE_V) ||
+        !(*ptep & PTE_COW) || (*ptep & PTE_W)) {
         unlock_mm(mm);
         return -E_INVAL;
     }

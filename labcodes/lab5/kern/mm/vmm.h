@@ -150,7 +150,13 @@ int mm_unmap(struct mm_struct *mm, uintptr_t addr, size_t len);
  *       of @p from; the Challenge shares pages via copy_range() and marks writable leaves COW.
  */
 int dup_mmap(struct mm_struct *to, struct mm_struct *from);
-/** lab5 Challenge 2411622张雨函: resolve a write fault on a marked COW page. */
+/**
+ * @brief Resolve a store page fault on a copy-on-write page (lab5 Challenge), see vmm.c.
+ * @param mm   address space of the faulting process
+ * @param addr faulting virtual address
+ * @return 0 if the store can be retried, -E_INVAL if it is not a legitimate COW write,
+ *         -E_NO_MEM if the private copy cannot be allocated
+ */
 int cow_resolve(struct mm_struct *mm, uintptr_t addr);
 /**
  * @brief Release the pages and the page tables behind every VMA of an address space (used by exit).

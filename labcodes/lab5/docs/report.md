@@ -762,6 +762,618 @@ TCG 将 RISC-V 指令翻译成宿主机代码，code_gen_buffer 和 cpu_tb_exec 
 
 **负责人：** [2414007-王奕瑜]
 
+本节记录我们对 lab5 最终代码做的全部验证。测试环境为 WSL2 下的 QEMU 8.2.2（自带 OpenSBI v1.3）和 `riscv64-unknown-elf-gcc` 15.1.0，所有命令都在 `labcodes/lab5` 目录下执行。验证按由浅入深的顺序进行：先确认能够编译，再启动内核观察默认用户程序的完整运行过程，然后用 `make grade` 检查整体功能，接着单独运行评分脚本注入的内核测试和各个用户程序，最后在副本里故意去掉两处关键实现做对照实验。
+
+需要说明的是，最终代码已经包含了 Challenge 的写时复制：`fork` 时父子进程共享物理页，写入时才复制。因此下面所有涉及 `fork` 的测试验证的都是 COW 版本，这也说明 COW 没有破坏基础功能。
+
+### 5.1 编译
+
+我们先清理旧的编译产物，再完整编译一遍：
+
+```bash
+make clean && make
+```
+
+编译依次输出各个源文件的 `+ cc ...` 行，共 49 个：内核 23 个、`libs` 4 个、用户程序及用户库 22 个（6 个用户库文件加 16 个测试程序）。最后输出 `+ ld bin/kernel` 和 `riscv64-unknown-elf-objcopy ... bin/ucore.img`，没有任何错误，生成了 `bin/kernel`（924608 字节的 ELF）和 `bin/ucore.img`（665600 字节的裸二进制镜像）。编译过程有两条警告：
+
+```text
++ cc kern/init/entry.S
++ cc kern/init/init.c
+  ...
++ cc kern/trap/trap.c
++ cc kern/trap/trapentry.S
++ cc kern/mm/default_pmm.c
++ cc kern/mm/kmalloc.c
+kern/mm/kmalloc.c: In function '__slob_free_pages':
+kern/mm/kmalloc.c:176:25: warning: passing argument 1 of 'kva2page' makes pointer from integer without a cast [-Wint-conversion]
+  ...
++ cc kern/mm/pmm.c
++ cc kern/mm/vmm.c
++ cc kern/process/proc.c
++ cc kern/syscall/syscall.c
+  ...
++ cc user/testbss.c
+user/testbss.c: In function 'main':
+user/testbss.c:53:13: warning: array subscript 1049600 is above array bounds of 'uint32_t[1048576]' {aka 'unsigned int[1048576]'} [-Warray-bounds=]
+  ...
++ ld bin/kernel
+riscv64-unknown-elf-objcopy bin/kernel --strip-all -O binary bin/ucore.img
+```
+
+> 【截图 5-1】`make clean && make` 的终端输出，需要包含两条 warning 以及最后的 `+ ld bin/kernel` 和 `objcopy` 行。
+
+![](./report.assets/5-1.png)
+
+分析：
+
+1. **我们补全的文件都编译、链接通过。** `trapentry.S`、`trap.c`、`syscall.c`、`proc.c`、`vmm.c`、`pmm.c` 都出现在输出中，没有 error，也没有来自这些文件的 warning。`trapentry.S` 能够汇编，说明扩展后的 `RESTORE_ALL` 中 `LOCAL` 标号、`SSTATUS_SPP`、`REGBYTES` 的用法正确。
+2. **两条警告都不来自我们的实现。** `kmalloc.c:176` 是实验骨架自带的写法，`kva` 是整数却传给了需要指针的 `kva2page()`；GCC 15 默认把这类问题当作错误，所以 `Makefile` 中加了 `-Wno-error=int-conversion` 把它降为警告。`testbss.c:53` 的警告是测试程序故意写出数组边界之外（`bigarray[ARRAYSIZE + 1024]`），用来验证内核会终止越界访问的进程，编译器如实地指出了这一点，这条警告反而说明测试程序写对了。
+3. **用户程序是被链接进内核镜像的。** lab4 的 `ucore.img` 只有 36912 字节，这次增大到 665600 字节。`obj/__user_*.out` 这 16 个用户 ELF 加起来有 620496 字节，约占镜像的 93%。`Makefile` 的链接命令用 `--format=binary` 把它们当作二进制数据块嵌入内核，并导出 `_binary_obj___user_<名字>_out_start`、`_binary_obj___user_<名字>_out_size` 两个符号，这正是 `KERNEL_EXECVE` 宏引用的符号。所以用户程序是在构建内核时就“预先加载”的：它们随内核镜像一起被 QEMU 装入内存，运行时 `load_icode` 再从内存中的 ELF 映像建立用户页表。这与常见操作系统在运行时从文件系统读取可执行文件不同，本实验没有文件系统，只能这样做。
+
+### 5.2 运行内核，观察默认用户程序的完整运行过程
+
+接着我们启动内核。没有指定测试程序时，`user_main` 默认启动 `exit`：
+
+```bash
+make qemu
+```
+
+QEMU 先输出 OpenSBI v1.3 的启动信息，随后是内核自己的输出。我们截取其中从物理内存管理开始的部分：
+
+```text
+memory management: default_pmm_manager
+physical memory map:
+  memory: 0x0000000008000000, [0x0000000080000000, 0x0000000087ffffff].
+check_alloc_page() succeeded!
+check_pgdir() succeeded!
+check_boot_pgdir() succeeded!
+use SLOB allocator
+kmalloc_init() succeeded!
+check_vma_struct() succeeded!
+check_vmm() succeeded.
+++ setup timer interrupts
+kernel_execve: pid = 2, name = "exit".
+I am the parent. Forking the child...
+I am parent, fork a child pid 3
+I am the parent, waiting now..
+I am the child.
+100 ticks
+100 ticks
+100 ticks
+100 ticks
+100 ticks
+100 ticks
+100 ticks
+waitpid 3 ok.
+exit pass.
+100 ticks
+all user-mode processes have quit.
+init check memory pass.
+Welcome to the kernel debug monitor!!
+Type 'help' for a list of commands.
+K>
+```
+
+输出停在 `K>` 提示符处，需要按 `Ctrl-A` 再按 `X` 才能退出 QEMU。
+
+> 【截图 5-2】`make qemu` 运行到 `K>` 提示符的终端输出，需要包含 `kernel_execve` 一行到 `K>` 的全部内容。
+
+![](./report.assets/5-2.png)
+
+分析：
+
+1. **前面实验的自检仍然通过。** `default_pmm_manager` 是 lab2 回填的 Best-Fit 分配器，`check_pgdir()`、`check_boot_pgdir()` 覆盖 `page_insert`/`page_remove`，`check_vmm()` 覆盖 VMA 的增删查。这些检查失败时内核会在 `assert` 处 panic，后面的输出就不会出现。
+2. **第一次进入用户态成功。** `kernel_execve: pid = 2, name = "exit".` 由 `__KERNEL_EXECVE` 宏在调用 `kernel_execve` 之前打印；PID 是 2，因为 0 号是 `idleproc`、1 号是 `initproc`，`user_main` 是 `initproc` 创建的第一个线程。这一行之后的每一行都由 U 态的 `exit` 程序产生，说明 `do_execve`、`load_icode`、构造 trapframe、跳到 `__trapret` 并 `sret` 这条链路是通的：如果 trapframe 里的 `epc`、`sp` 或 `sstatus` 有任何一项不对，内核会在这里直接出现异常或卡死。
+3. **每个字符都证明了一次完整的系统调用往返。** 用户库的 `cprintf` 对每个字符调用一次 `sys_putc`，也就是一次 `ecall` 进入内核、一次 `sret` 回到用户态。仅第一行 `I am the parent. Forking the child...` 就有 38 个字符，要往返 38 次。如果 `RESTORE_ALL` 没有把 `sscratch` 恢复成内核栈顶，第二次陷入时 `SAVE_ALL` 就会认错来源，输出不可能完整。
+4. **`fork` 的返回值语义正确。** 父进程打印 `fork a child pid 3`，说明 `do_fork` 返回了子进程的 PID（下一个空闲 PID 是 3）；子进程打印 `I am the child.`，说明它从同一条 `ecall` 之后继续运行，并且 `fork` 在它那里返回 0（`copy_thread` 把子进程 trapframe 的 `a0` 置 0）。父进程的 `waiting now..` 先于子进程的输出，是因为 `fork` 之后父进程继续运行，直到它调用 `wait` 睡眠才轮到子进程。
+5. **七条 `100 ticks` 对应子进程的七次 `yield`，不是缺陷。** 子进程每次 `yield` 只是置位 `need_resched`，返回用户态前 `trap()` 调用 `schedule()`。此时父进程睡在 `do_wait` 里、`initproc` 睡在 `do_wait` 里，没有其他可运行进程，`schedule()` 只能切到 `idleproc`；而 `idleproc` 只有在 `need_resched` 被置位时才重新调度，这个标志在时钟中断处理里每 100 个节拍（10 ms 一个节拍，即 1 秒）才置位一次。所以每次 `yield` 大约要等 1 秒，`exit` 一共要跑 8 秒左右，与 5.3 中评分脚本记录的耗时一致。
+6. **退出码和回收都正确。** 子进程 `exit(magic)` 后，`do_exit` 记录 `exit_code`、变为僵尸并唤醒睡在 `WT_CHILD` 上的父进程；父进程在 `do_wait` 中找到僵尸，把退出码写入用户缓冲区（内核能直接写用户页，是因为 `idt_init` 设置了 `sstatus.SUM`），再释放内核栈和 PCB。`exit` 程序里 `waitpid(pid, &code) == 0 && code == magic` 的断言通过，随后第二次 `waitpid` 和 `wait()` 都返回非 0（`-E_BAD_PROC`），说明子进程的 PCB 确实已从进程树中摘除，于是打印 `waitpid 3 ok.` 和 `exit pass.`。
+7. **`init_main` 的收尾检查通过。** `all user-mode processes have quit.` 说明 `init_main` 的 `do_wait(0, NULL)` 循环已经回收了 `user_main`（PID 2），再调用时返回 `-E_BAD_PROC`。`init check memory pass.` 之前的三条断言检查的是进程表：`initproc` 没有任何亲属指针、`nr_process` 回到了入口时的值、`proc_list` 中只剩 `initproc`。这说明 PID 2 和 PID 3 两个进程的 PCB 都被完整地摘除并释放了。
+8. **内核最后停在 `K>` 是预期行为。** `initproc` 不能退出（`do_exit` 会因 `initproc exit.` panic），所以 `init_main` 在检查通过后关闭中断，进入 `kmonitor` 轮询控制台输入，评分脚本正是以“到达 `readline`”作为一次运行结束的标志。
+
+### 5.3 自动评分测试 `make grade`
+
+然后我们运行课程提供的评分脚本：
+
+```bash
+make grade
+```
+
+脚本会先清理工作区，把代码复制到临时目录 `/tmp/lab5_grade`，由 `tools/inject.py` 往副本里注入三个内核测试，然后对 13 个用户程序逐个编译、在 QEMU 中运行，并在串口输出里查找期望的字符串。我们得到的结果为：
+
+```text
+badsegment:              (2.1s)
+  -check result:                             OK
+  -check output:                             OK
+divzero:                 (2.1s)
+  -check result:                             OK
+  -check output:                             OK
+softint:                 (2.1s)
+  -check result:                             OK
+  -check output:                             OK
+faultread:               (2.1s)
+  -check result:                             OK
+  -check output:                             OK
+faultreadkernel:         (2.1s)
+  -check result:                             OK
+  -check output:                             OK
+hello:                   (2.1s)
+  -check result:                             OK
+  -check output:                             OK
+testbss:                 (3.5s)
+  -check result:                             OK
+  -check output:                             OK
+pgdir:                   (2.1s)
+  -check result:                             OK
+  -check output:                             OK
+yield:                   (7.2s)
+  -check result:                             OK
+  -check output:                             OK
+badarg:                  (12.3s)
+  -check result:                             OK
+  -check output:                             OK
+exit:                    (10.7s)
+  -check result:                             OK
+  -check output:                             OK
+spin:                    (5.2s)
+  -check result:                             OK
+  -check output:                             OK
+forktest:                (2.1s)
+  -check result:                             OK
+  -check output:                             OK
+Total Score: 130/130
+```
+
+> 【截图 5-3】`make grade` 的完整终端输出，需要包含最后一行 `Total Score: 130/130`。
+
+![](./report.assets/5-3.png)
+
+13 个程序的两项检查全部通过，总分 130/130。为了看清每个程序实际验证了什么，我们把它们与功能模块对应起来：
+
+| 程序                                      | 验证的内容                                                                                        | 主要涉及的模块 |
+| ----------------------------------------- | ------------------------------------------------------------------------------------------------- | -------------- |
+| `hello`                                   | 用户态输出（`sys_putc`）、`getpid`、正常返回到 `exit`                                             | 一、二         |
+| `pgdir`                                   | `sys_pgdir` 与 `print_pgdir`，用户页表的布局                                                      | 一、二         |
+| `exit`                                    | `fork`、`yield`、`exit`、`waitpid` 的退出码传递和僵尸回收                                         | 一、三、四     |
+| `badarg`                                  | `waitpid` 对非法 PID 和非法用户指针的拒绝（`user_mem_check`）                                     | 一、二、三、四 |
+| `yield`                                   | `yield` 之后进程能被重新调度                                                                      | 一、四         |
+| `spin`                                    | `kill` 一个死循环的子进程，再 `wait` 回收                                                         | 三、四         |
+| `forktest`                                | 连续 `fork` 32 个子进程，全部回收后再 `wait` 必须失败                                             | 三、四         |
+| `faultread`、`faultreadkernel`、`testbss` | 用户态非法访存时，进程被内核终止，不能出现 `user panic`                                           | 一、四         |
+| `badsegment`、`divzero`、`softint`        | 原本针对 x86 的测试，在 RISC-V 上是占位或行为不同，只检查内核仍能正常启动、运行、退出（见 5.5.5） | 二             |
+
+分析：
+
+1. **评分结构。** 每个程序 10 分：其中 7 分来自该程序自己的期望输出（`check result`），3 分来自所有程序共有的内核输出（`check output`），后者包括三条注入测试的 `PASS` 行、`default_pmm_manager`、各项 `check_*() succeeded` 和 `++ setup timer interrupts`。13 个程序共 130 分，全部得分。
+2. **四个模块在同一套测试里互相印证。** 每个程序的 `kernel_execve: pid = 2, name = "..."` 行证明模块二的启动链能把不同的 ELF 装载并运行；`exit`、`badarg`、`spin`、`forktest` 的通过证明模块三的 `fork` 和模块四的 `exit`、`kill`、回收在父子进程之间配合正确；所有输出文字都经由模块一的系统调用路径产生。评分时的 `init check memory pass.` 同样要求每个程序结束后进程表回到起点。
+3. **耗时差异来自 `yield`。** 多数程序约 2 秒，只是 QEMU 启动加上脚本固定的等待。`yield` 要 7.2 秒（5 次 `yield`）、`exit` 要 10.7 秒（子进程 7 次 `yield`）、`badarg` 要 12.3 秒（子进程 10 次 `yield`）、`spin` 要 5.2 秒（父进程 3 次 `yield`）。这与 5.2 的分析一致：没有其他可运行进程时，每次 `yield` 都要等下一个 100 节拍（约 1 秒）才能被重新调度。
+4. **评分在副本上进行，不会修改我们的代码。** 注入的测试位于 `tools/test_lab5.c`，脚本只改 `/tmp/lab5_grade` 里的副本，所以评分通过并不依赖我们在源码中加入任何测试代码。
+
+### 5.4 评分脚本注入的内核测试
+
+评分脚本注入的三个内核测试只在评分副本里存在。为了看清它们的输出，我们复现脚本的前几步，在 `/tmp` 的副本里编译并运行，再直接查看串口输出：
+
+```bash
+rm -rf /tmp/lab5_check && mkdir /tmp/lab5_check
+tar -C . --exclude=.git --exclude=.vscode --exclude=bin --exclude=obj -cf - . | tar -C /tmp/lab5_check -xf -
+python3 tools/inject.py /tmp/lab5_check
+cd /tmp/lab5_check && make
+timeout 20 qemu-system-riscv64 -machine virt -nographic -bios default \
+    -kernel bin/ucore.img -serial file:/tmp/lab5_check.out -monitor none -no-reboot
+sed -n '/memory management/,$p' /tmp/lab5_check.out
+```
+
+得到的输出为：
+
+```text
+memory management: default_pmm_manager
+physical memory map:
+  memory: 0x0000000008000000, [0x0000000080000000, 0x0000000087ffffff].
+check_alloc_page() succeeded!
+check_pgdir() succeeded!
+check_boot_pgdir() succeeded!
+use SLOB allocator
+kmalloc_init() succeeded!
+check_vma_struct() succeeded!
+check_vmm() succeeded.
+[Test Process Create] PASS
+++ setup timer interrupts
+syscall: invalid system call number 0 from pid 1
+[Test Syscall] PASS
+[Test Process Control] PASS
+kernel_execve: pid = 2, name = "exit".
+  ...
+all user-mode processes have quit.
+init check memory pass.
+Welcome to the kernel debug monitor!!
+Type 'help' for a list of commands.
+K>
+```
+
+> 【截图 5-4】上述命令最后一条 `sed` 的输出，需要包含三条 `[Test ...] PASS` 和 `syscall: invalid system call number 0` 那一行。
+
+![](./report.assets/5-4.png)
+
+分析：
+
+1. **`[Test Process Create] PASS`（模块二）。** 它出现在 `check_vmm() succeeded.` 之后、`++ setup timer interrupts` 之前，对应 `proc_init()` 的结尾，此时还没有开中断。测试断言 `current == idleproc`，`idleproc` 的 PID 为 0、状态为 `PROC_RUNNABLE`、`mm` 和 `tf` 均为 `NULL`；`initproc` 的 PID 为 1、状态为 `PROC_RUNNABLE`、`parent == idleproc`、`context.ra` 与 `context.sp` 非零。其中 `initproc->parent == idleproc` 正是 `do_fork` 在 `alloc_proc` 之后立即设置 `proc->parent = current` 的结果；`idleproc` 的 `mm` 和 `tf` 为 `NULL`，是因为它是启动时已有的执行流，不是 `fork` 出来的，也没有用户地址空间。
+2. **`[Test Syscall] PASS`（模块一）。** 测试在内核里伪造一个 `cause == CAUSE_USER_ECALL`、`epc == 0x1000`、`a0 == SYS_getpid` 的 trapframe，直接交给 `exception_handler`，检查两件事：返回后 `epc` 变成 `0x1004`（前移了 4 字节），`a0` 等于当前进程的 PID；再把调用号改成 0，检查 `a0` 变成 `-E_INVAL`。屏幕上的 `syscall: invalid system call number 0 from pid 1` 就是第二次调用打印的：调用号 0 没有处理函数，`syscall()` 拒绝分发，既没有 panic，也没有通过空指针调用函数；`pid 1` 是因为这个测试运行在 `init_main` 里，当前进程是 `initproc`。
+3. **`[Test Process Control] PASS`（模块四）。** 它位于 `init_main` 开头。测试检查 `do_yield()` 返回 0 且 `need_resched` 被置位，`do_kill(-1)` 返回 `-E_INVAL`（不存在的 PID），`do_wait(-1, NULL)` 返回 `-E_BAD_PROC`（不是子进程的 PID）。这三项恰好覆盖了 `do_yield` 只置标志、`do_kill` 先 `find_proc`、`do_wait` 先检查亲子关系的设计。
+4. **三条 `PASS` 的位置本身也有意义。** 前一条在中断打开之前，后两条在 `++ setup timer interrupts` 之后、用户程序启动之前，说明三个模块的基础行为在第一个用户进程运行之前就已经正确。
+
+### 5.5 逐个运行用户程序
+
+评分脚本只检查关键字符串。为了看到每个程序完整的运行过程，我们用 `make build-<程序名>` 构建指定程序的镜像，再用 `make qemu` 运行。`build-%` 规则会在编译时定义 `TEST`、`TESTSTART`、`TESTSIZE`，使 `user_main` 通过 `KERNEL_EXECVE2` 启动指定的程序而不是默认的 `exit`。下面各小节中，如无特别说明，输出都只截取 `++ setup timer interrupts` 之后的部分。
+
+#### 5.5.1 `hello` 与 `pgdir`：系统调用与用户页表
+
+```bash
+make build-hello && make qemu
+make build-pgdir && make qemu
+```
+
+`hello` 的输出为：
+
+```text
+kernel_execve: pid = 2, name = "hello".
+Hello world!!.
+I am process 2.
+hello pass.
+100 ticks
+all user-mode processes have quit.
+init check memory pass.
+```
+
+`pgdir` 的输出为：
+
+```text
+kernel_execve: pid = 2, name = "pgdir".
+I am 2, print pgdir.
+-------------------- BEGIN --------------------
+PDE2(002) 0000000000000000-0000000080000000 080000000 -r-
+  PDE1(001) 0000000000800000-0000000000a00000 000200000 -r-
+    PTE(001) 0000000000800000-0000000000801000 000001000 ur-
+  PDE1(001) 000000007fe00000-0000000080000000 000200000 -r-
+    PTE(004) 000000007fffc000-0000000080000000 000004000 urw
+PDE2(001) 0000000080000000-00000000c0000000 040000000 -rw
+PDE2(001) ffffffffc0000000-0000008000000000 040000000 -rw
+--------------------- END ---------------------
+pgdir pass.
+100 ticks
+all user-mode processes have quit.
+init check memory pass.
+```
+
+> 【截图 5-5】`make build-pgdir && make qemu` 的输出，需要包含 `BEGIN` 到 `END` 之间的整张页表。
+
+![](./report.assets/5-5.png)
+
+分析：
+
+1. **`hello` 的 PID 是 2。** `getpid()` 通过 `sys_getpid` 返回 `current->pid`。它与 `kernel_execve` 那一行的 PID 相同，说明 `exec` 没有创建新进程：内核线程 `user_main`（PID 2）在原地被替换成了用户程序，只是进程名变成了 `hello`，PID、父子关系都不变。
+2. **`print_pgdir` 的每一行是一段“权限相同的连续有效表项”。** 格式依次是层级与表项个数、虚拟地址区间、区间大小、权限。权限列由 `perm2str` 生成：`u` 表示带 `PTE_U`，`r` 固定输出，`w` 表示带 `PTE_W`，`X` 位不显示。
+3. **用户部分。** 第一行 `PDE2(002)` 是 Sv39 根页表里的 0 号和 1 号两项，合起来覆盖 `0` 到 `0x80000000` 共 2 GiB 的用户地址空间。它们不带 R/W/X，是指向下一级页表的非叶子项，所以代码继续向下打印。用户代码在 `0x800000` 处只有一页（`ur-`），`user.ld` 把程序链接到 `0x800020`，页对齐后正是这一页；这一页含代码和只读数据，程序能运行说明它也带 `X` 位，只是不显示。栈是 `0x7fffc000` 到 `0x80000000` 共 4 页（`urw`），正好在 `USTACKTOP` 之下，与 `load_icode` 中“栈 VMA 有 1 MiB，但只为栈顶 4 页分配物理页”一致。
+4. **内核部分。** 最后两行 `PDE2(001)` 是两个 1 GiB 的大页，直接是叶子，所以没有下一级。它们不带 `u`，用户态不能访问：一个是物理内存的恒等映射（`0x80000000` 起），一个是内核的高地址映射（`0xffffffffc0000000` 起）。这两项是 `setup_pgdir` 从 `boot_pgdir` 复制进每个进程页表的，因此内核代码在系统调用和中断发生时始终在当前页表中可见，不需要切换 `satp`；同时由于没有 `U` 位，用户程序又碰不到它们。最后一行的结束地址 `0000008000000000` 是最后一项之后的地址。
+
+#### 5.5.2 `forktest` 与 `forktree`：大量 `fork`
+
+```bash
+make build-forktest && make qemu
+make build-forktree && make qemu
+```
+
+`forktest` 的输出为：
+
+```text
+kernel_execve: pid = 2, name = "forktest".
+I am child 31
+I am child 30
+  ...
+I am child 1
+I am child 0
+forktest pass.
+100 ticks
+all user-mode processes have quit.
+init check memory pass.
+```
+
+`forktree` 的输出为（共 31 行，下面截取开头和结尾）：
+
+```text
+kernel_execve: pid = 2, name = "forktree".
+0002: I am ''
+0004: I am '1'
+0003: I am '0'
+0008: I am '01'
+0007: I am '00'
+  ...
+0012: I am '1011'
+0011: I am '1010'
+100 ticks
+  ...
+all user-mode processes have quit.
+init check memory pass.
+```
+
+> 【截图 5-6】`forktest` 的输出（`I am child 31` 到 `init check memory pass.`），如果希望更完整，可以再补一张 `forktree` 的截图。
+
+![](./report.assets/5-6.png)
+
+分析：
+
+1. **32 个子进程全部被创建并回收。** `forktest` 的父进程连续 `fork` 32 次，再调用 32 次 `wait()`，最后一次 `wait()` 必须失败。输出 `forktest pass.` 说明 32 次 `wait` 都成功、第 33 次失败（`-E_BAD_PROC`），也就是父进程的子进程链 `cptr/optr` 在每次回收后都被正确维护；随后 `init check memory pass.` 说明这 33 个进程的 PCB 都已被摘除，`nr_process` 回到了起点。
+2. **输出顺序是 31 到 0，这是调度顺序决定的。** 父进程 `fork` 32 次期间不会被切走（需要等到下一个 100 节拍才会触发抢占），所以它先创建完所有子进程，才调用 `wait` 睡眠。`set_links` 用 `list_add` 把新进程插在 `proc_list` 的表头，最新的子进程（`n = 31`）排在最前面；`schedule()` 从睡眠的父进程之后开始扫描，最先遇到的就是它。评分脚本只要求出现 31、19、13、0 这几行，并不依赖完整的顺序。
+3. **写时复制在这里被大量触发。** 每次 `fork` 都不复制页面，只把可写页降为只读并打上 `PTE_COW`；32 个子进程各自在打印时写栈和数据，都会触发 store page fault 并由 `cow_resolve` 复制页面。32 个子进程全部正确运行并退出，说明引用计数在多次共享、复制、释放之后没有出错。
+4. **`forktree` 验证嵌套的 `fork`。** 每个进程先打印自己，再创建 `'0'`、`'1'` 两个子进程，深度到 4 层为止，共 1 + 2 + 4 + 8 + 16 = 31 个进程，PID 从 `0002` 到 `0020`（十六进制），与输出行数一致。这说明子进程自己也能继续 `fork`，进程树的父子关系可以任意嵌套。每个子进程退出前还会 `yield` 一次，整个程序因此跑了近 30 秒，期间有 17 条 `100 ticks`，原因同 5.2 的第 5 点。结尾的 `init check memory pass.` 说明这棵 31 个节点的进程树被 `init_main` 的 `do_wait` 循环全部回收：父进程先于子进程退出时，子进程被过继给 `initproc`，由它回收。
+
+#### 5.5.3 `badarg`：系统调用的参数检查
+
+```bash
+make build-badarg && make qemu
+```
+
+得到的输出为：
+
+```text
+kernel_execve: pid = 2, name = "badarg".
+fork ok.
+100 ticks
+  ...（共 10 条）
+badarg pass.
+100 ticks
+all user-mode processes have quit.
+init check memory pass.
+```
+
+> 【截图 5-7】`badarg` 的输出，需要包含 `fork ok.` 和 `badarg pass.`。
+
+![](./report.assets/5-7.png)
+
+分析：`badarg` 的父进程依次做了三次 `waitpid`：`waitpid(-1, NULL)` 必须失败，因为 `-1` 不是任何子进程的 PID，`do_wait` 中 `find_proc(-1)` 返回 `NULL`，得到 `-E_BAD_PROC`；`waitpid(pid, (void *)0xC0000000)` 必须失败，因为 `0xC0000000` 超出用户地址空间，`do_wait` 在做任何事情之前先用 `user_mem_check` 检查 `code_store` 是否可写，得到 `-E_INVAL`；最后用合法参数 `waitpid(pid, &exit_code)` 必须成功，并得到子进程的退出码 `0xbeaf`。三次断言全部通过，输出 `badarg pass.`，说明 `do_wait` 先检查指针、再检查亲子关系、最后才回收的顺序正确，非法的用户指针不会让内核去写一个不属于用户的地址。输出里十条 `100 ticks` 对应子进程的十次 `yield`。
+
+#### 5.5.4 `spin` 与 `waitkill`：`kill` 的两条路径
+
+```bash
+make build-spin && make qemu
+make build-waitkill && make qemu
+```
+
+`spin` 的输出为：
+
+```text
+kernel_execve: pid = 2, name = "spin".
+I am the parent. Forking the child...
+I am the parent. Running the child...
+I am the child. spinning ...
+100 ticks
+100 ticks
+100 ticks
+I am the parent.  Killing the child...
+kill returns 0
+wait returns 0
+spin may pass.
+100 ticks
+all user-mode processes have quit.
+init check memory pass.
+```
+
+`waitkill` 的输出为：
+
+```text
+kernel_execve: pid = 2, name = "waitkill".
+wait child 1.
+child 2.
+child 1.
+100 ticks
+  ...（共 6 条）
+kill parent ok.
+100 ticks
+  ...（共 6 条）
+kill child1 ok.
+100 ticks
+100 ticks
+all user-mode processes have quit.
+init check memory pass.
+```
+
+> 【截图 5-8】`spin` 和 `waitkill` 的输出，需要包含 `kill returns 0`、`kill parent ok.`、`kill child1 ok.` 以及最后的 `init check memory pass.`。
+
+![](./report.assets/5-8.png)
+
+分析：
+
+1. **`spin` 验证 `kill` 一个正在运行的进程。** 子进程是一个不会主动让出 CPU 的死循环。父进程 `yield` 三次让子进程运行，然后调用 `kill(pid)` 得到 0，再 `waitpid` 回收。`do_kill` 只是给子进程置位 `PF_EXITING`，并不停止它；子进程是在下一次时钟中断返回用户态时，由 `trap()` 发现 `PF_EXITING` 后调用 `do_exit(-E_KILLED)` 结束的。这条路径能走通，也说明时钟中断确实能打断一个死循环的用户进程。这里的三条 `100 ticks` 对应父进程的三次 `yield`：父进程每次让出 CPU 后，都要等到下一个置位 `need_resched` 的 100 节拍，才能从死循环的子进程手里拿回 CPU。
+2. **`waitkill` 验证 `kill` 一个正在睡眠的进程，以及孤儿的过继。** 进程树是：主进程（PID 2）有两个子进程，`child 1` 是死循环，`child 2` 先 `yield` 六次，然后依次 `kill` 主进程和 `child 1`。主进程此时睡在 `waitpid` 里，`wait_state` 是 `WT_CHILD`，带有 `WT_INTERRUPTED` 位，所以 `do_kill` 在置位 `PF_EXITING` 之后立即 `wakeup_proc` 唤醒它；它醒来后在 `do_wait` 里发现 `PF_EXITING`，调用 `do_exit(-E_KILLED)`。主进程退出时，它的两个子进程变成孤儿，被过继给 `initproc`。随后 `child 2` 杀死死循环的 `child 1` 并正常退出。最后 `init_main` 的 `do_wait` 循环把过继来的两个子进程和 `user_main` 全部回收，打印 `all user-mode processes have quit.` 和 `init check memory pass.`。
+3. **这一个程序同时覆盖了 `do_kill`、`do_exit` 的过继、`do_wait` 的 `PF_EXITING` 检查和 `init_main` 的回收循环**，其中任何一环出错，要么出现僵尸进程残留，`init_main` 的进程表断言失败，要么父进程永远睡眠，QEMU 停在这里。输出两段各 6 条 `100 ticks`，对应 `child 2` 的两组各 6 次 `yield`。
+
+#### 5.5.5 异常相关的程序：被内核终止的进程
+
+```bash
+make build-faultread && make qemu
+make build-faultreadkernel && make qemu
+make build-testbss && make qemu
+make build-divzero && make qemu
+```
+
+`faultread` 的输出为（寄存器内容省略）：
+
+```text
+kernel_execve: pid = 2, name = "faultread".
+trapframe at 0xffffffffc04acee0
+  zero     0x00000000
+  ra       0x008000d8
+  sp       0x7ffffff0
+  ...
+  status   0x00046020
+  epc      0x008004c6
+  tval 0x00000000
+  cause    0x0000000d
+killed by kernel.
+100 ticks
+all user-mode processes have quit.
+init check memory pass.
+```
+
+`faultreadkernel` 与 `testbss` 的差别只在最后几行：
+
+```text
+  status   0x00046020
+  epc      0x0080052c
+  tval 0xfac00000
+  cause    0x0000000d
+killed by kernel.
+```
+
+```text
+Making sure bss works right...
+Yes, good.  Now doing a wild write off the end...
+testbss may pass.
+  ...
+  status   0x00046020
+  epc      0x008005d0
+  tval 0x00c02000
+  cause    0x0000000f
+killed by kernel.
+```
+
+`divzero` 的输出为：
+
+```text
+kernel_execve: pid = 2, name = "divzero".
+value is -1.
+user panic at user/divzero.c:32:
+    FAIL: T.T
+
+100 ticks
+all user-mode processes have quit.
+init check memory pass.
+```
+
+> 【截图 5-9】`faultread` 与 `testbss` 的输出，需要包含 `cause` 一行和 `killed by kernel.`。
+
+![](./report.assets/5-9.png)
+
+分析：
+
+1. **三种非法访存都被内核识别并终止。** `faultread` 读地址 `0`，`cause = 0xd`（13，load page fault），`tval = 0`；`faultreadkernel` 读 `0xfac00000`，同样是 `cause = 0xd`，`tval` 就是出错地址；`testbss` 先成功地清零并读写了 4 MiB 的 `.bss`，再写到数组末尾之后的 `0xc02000`，`cause = 0xf`（15，store page fault）。这三个地址都不在进程的任何 VMA 里，页表里也没有映射。内核没有按需分页的缺页处理，`exception_handler` 只会先让 `cow_resolve` 判断是不是合法的 COW 写，这三次都不是（地址不在 VMA 内，或没有对应的 PTE），于是落到最后一个分支：打印 trapframe 和 `killed by kernel.`，然后 `do_exit(-E_KILLED)`。
+2. **`status = 0x00046020` 说明这些异常来自用户态。** 其中 `SPP`（第 8 位）为 0，表示陷入前处于 U 态，`SPIE`（`0x20`）为 1，`SUM`（`0x40000`）为 1。所以这个分支里 `trap_in_kernel(tf)` 为假，只终止进程，不会 panic。
+3. **被杀的进程被完整地回收了。** 三个程序都打印了 `all user-mode processes have quit.` 和 `init check memory pass.`，说明进程被杀之后 `do_exit` 释放了它的地址空间并变成僵尸，`init_main` 的 `do_wait` 正常回收了它，内核状态保持一致，没有因为一个坏进程而 panic 或卡死。没有这个终止分支时，异常返回后会重新执行同一条出错的指令，进程会一直重复缺页，这些程序会跑到评分脚本的超时才结束。
+4. **`divzero` 的结果与 x86 不同，属于正常。** RISC-V 的整数除法不会因为除数为 0 而陷入，而是返回 `-1`，所以程序打印 `value is -1.`，随后执行到源码里本来不应到达的 `panic("FAIL: T.T")`，由用户库的 `__panic` 打印 `user panic` 并 `exit(-E_PANIC)`。评分脚本对这个程序只要求出现 `value is -1.` 和 `init check memory pass.`，不禁止 `user panic`，进程正常退出并被回收，所以通过。
+5. **`badsegment` 和 `softint` 是 x86 测试的占位。** `badsegment` 原本通过加载 TSS 段选择子触发异常，RISC-V 没有这个概念，程序只调用 `panic`；`softint` 原本执行 `int $14`，该行已被注释掉，程序直接退出。两者都只验证内核能正常启动、运行用户程序并回收，输出中分别是 `user panic at user/badsegment.c:26` 和直接的 `all user-mode processes have quit.`。
+
+### 5.6 COW 测试 `cowtest`
+
+最后我们运行 Challenge 的专用测试：
+
+```bash
+make build-cowtest && make qemu
+```
+
+得到的输出为：
+
+```text
+kernel_execve: pid = 2, name = "cowtest".
+cowtest pass.
+100 ticks
+all user-mode processes have quit.
+init check memory pass.
+```
+
+> 【截图 5-10】`make build-cowtest && make qemu` 的输出，需要包含 `cowtest pass.`。
+
+![](./report.assets/5-10.png)
+
+分析：
+
+1. **测试分两个阶段。** 第一阶段重复 12 轮：父进程 `fork` 一个子进程，子进程和父进程分别向同一个全局变量和同一页数组写入不同的值，之后都要读回自己写的值。因为 `fork` 之后两边共享同一物理页，第一次写入必然触发 store page fault，由 `cow_resolve` 复制页面，两边的写入互不可见才能通过断言。第二阶段同时存在 4 个子进程，页面被 5 个进程共享，每个子进程写入自己的值，最后父进程的数据必须保持不变。
+2. **内核写 COW 页的路径也被覆盖。** 子进程的退出码通过 `waitpid` 写入一个按页对齐的缓冲区。这次写入由内核执行：`do_wait` 在 S 态向用户页做 store，而这页此时是共享的只读 COW 页，会在内核态触发 store page fault。`exception_handler` 的 COW 分支只检查异常原因和 `current`，不区分来自哪个特权级，所以同样能修复并重试这条 store。
+3. **输出 `cowtest pass.` 意味着全部断言通过，且回收正确。** 12 轮 `fork`/`exit`/`wait` 反复共享、复制、释放页面，之后 `init_main` 的进程表检查和 `all user-mode processes have quit.` 都正常，说明引用计数没有出现提前释放（会让另一方读到垃圾数据）或漏释放（会让 `exit_mmap` 的断言失败）。这个测试连同 5.3 中的 `exit`、`forktest` 一起通过，说明 COW 版 `fork` 在功能上与基础版一致。
+
+### 5.7 对照实验
+
+上面的测试都是“正确实现能通过”。为了确认关键设计确实是必要的，而不是碰巧能跑，我们在 `/tmp` 的副本里各去掉一处实现，观察内核的反应，工作区的代码没有改动。
+
+#### 5.7.1 去掉 `exception_handler` 里的 `tf->epc += 4`
+
+```bash
+rm -rf /tmp/lab5_mutA && mkdir /tmp/lab5_mutA
+tar -C . --exclude=.git --exclude=.vscode --exclude=bin --exclude=obj -cf - . | tar -C /tmp/lab5_mutA -xf -
+cd /tmp/lab5_mutA
+sed -i '/tf->epc += 4;/d' kern/trap/trap.c
+make build-hello
+timeout 10 qemu-system-riscv64 -machine virt -nographic -bios default \
+    -kernel bin/ucore.img -serial file:/tmp/lab5_mutA.out -monitor none -no-reboot
+sed -n '/++ setup timer/,$p' /tmp/lab5_mutA.out | head -6
+wc -l /tmp/lab5_mutA.out
+```
+
+得到的输出为：
+
+```text
+++ setup timer interrupts
+kernel_execve: pid = 2, name = "hello".
+Hsyscall: invalid system call number 0 from pid 2
+syscall: invalid system call number -3 from pid 2
+syscall: invalid system call number -3 from pid 2
+syscall: invalid system call number -3 from pid 2
+25203 /tmp/lab5_mutA.out
+```
+
+> 【截图 5-11】上述命令的输出，需要包含 `H` 紧跟着 `syscall: invalid system call number 0` 以及重复的 `-3` 行。
+
+![](./report.assets/5-11.png)
+
+分析：
+
+1. **第一个字符 `H` 能正常输出。** 第一次 `ecall` 的调用号是 `SYS_putc`、参数是字符 `H`，系统调用本身执行成功，返回值 0 写入 `a0`。
+2. **返回后程序陷入循环。** 没有前移 `epc`，`sret` 回到的仍然是那条 `ecall`。此时 `a0` 已经被覆盖成上一次的返回值 0，用户程序再次执行 `ecall` 就变成了调用号 0 的系统调用；`syscall()` 拒绝它并把 `-E_INVAL`（即 `-3`）写入 `a0`，下一次 `ecall` 的调用号又变成 `-3`，如此无限重复。10 秒内串口输出文件共有 25203 行，其中 25109 行是同一句 `invalid system call number -3`，`hello` 永远打印不出第二个字符，也到不了 `hello pass.`。
+3. **这既说明 `epc` 前移不可省略，也验证了调用号的边界检查。** 调用号 0 和 `-3` 都被拒绝，内核没有 panic，也没有用它们去索引分发表。如果 `syscall()` 没有检查下界，`-3` 会读到 `syscalls[]` 之外的内存并跳转过去，结果将是不可预测的崩溃。
+
+#### 5.7.2 让用户页不带 `PTE_U`
+
+```bash
+rm -rf /tmp/lab5_mutE && mkdir /tmp/lab5_mutE
+tar -C . --exclude=.git --exclude=.vscode --exclude=bin --exclude=obj -cf - . | tar -C /tmp/lab5_mutE -xf -
+cd /tmp/lab5_mutE
+sed -i 's/perm = PTE_U | PTE_V;/perm = PTE_V;/' kern/process/proc.c
+make build-hello
+timeout 10 qemu-system-riscv64 -machine virt -nographic -bios default \
+    -kernel bin/ucore.img -serial file:/tmp/lab5_mutE.out -monitor none -no-reboot
+sed -n '/++ setup timer/,$p' /tmp/lab5_mutE.out
+```
+
+得到的输出为（寄存器内容省略）：
+
+```text
+++ setup timer interrupts
+kernel_execve: pid = 2, name = "hello".
+trapframe at 0xffffffffc04acee0
+  ...
+  sp       0x80000000
+  ...
+  status   0x00046020
+  epc      0x00800020
+  tval 0x00800020
+  cause    0x0000000c
+killed by kernel.
+100 ticks
+all user-mode processes have quit.
+init check memory pass.
+Welcome to the kernel debug monitor!!
+Type 'help' for a list of commands.
+K>
+```
+
+> 【截图 5-12】上述命令的输出，需要包含 `epc`、`tval`、`cause` 三行和 `killed by kernel.`。
+
+![](./report.assets/5-12.png)
+
+分析：
+
+1. **进程在第一条指令就被终止。** `cause = 0xc`（12，instruction page fault），`epc` 和 `tval` 都是 `0x800020`，也就是 `user.ld` 规定的程序入口。ELF 段的页没有 `PTE_U`，U 态取指时硬件判定为非法访问。这说明 `PTE_U` 是用户与内核页面隔离的硬件基础，`load_icode` 必须为用户页带上它。
+2. **这个失败位置本身也证明了启动链的其余部分是对的。** 控制流确实以 U 态到达了 `epc = e_entry`（`status` 的 `SPP` 位为 0），栈指针是 `USTACKTOP`（`sp = 0x80000000`），说明 `load_icode` 构造的 trapframe 和 `kernel_execve` 的 `__trapret` 路径都已经生效，只是页权限不对。
+3. **异常终止路径同样可靠。** 进程被 `do_exit(-E_KILLED)` 结束后，`init_main` 回收了它，打印 `all user-mode processes have quit.` 和 `init check memory pass.`，内核仍然停在正常的 `K>` 提示符。
+
 ---
 
 ## 六、实验总结与收获

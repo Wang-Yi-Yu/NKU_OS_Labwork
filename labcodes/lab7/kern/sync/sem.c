@@ -17,6 +17,7 @@
 #include <proc.h>
 #include <sync.h>
 #include <assert.h>
+#include <deadlock.h>
 
 /**
  * @brief Initialise a semaphore.
@@ -25,6 +26,8 @@
  */
 void sem_init(semaphore_t *sem, int value) {
     sem->value = value;
+    sem->is_mutex = (value == 1);
+    sem->owner = 0;
     wait_queue_init(&(sem->wait_queue));
 }
 
@@ -43,6 +46,7 @@ static __noinline void __up(semaphore_t *sem, uint32_t wait_state) {
     local_intr_save(intr_flag);
     {
         wait_t *wait;
+        deadlock_on_release(sem);
         if ((wait = wait_queue_first(&(sem->wait_queue))) == NULL) {
             sem->value++;
         } else {
@@ -71,6 +75,11 @@ static __noinline uint32_t __down(semaphore_t *sem, uint32_t wait_state) {
     local_intr_save(intr_flag);
     if (sem->value > 0) {
         sem->value--;
+        deadlock_on_acquire(sem);
+        local_intr_restore(intr_flag);
+        return 0;
+    }
+    if (deadlock_on_wait(sem)) {
         local_intr_restore(intr_flag);
         return 0;
     }
@@ -118,7 +127,9 @@ bool try_down(semaphore_t *sem) {
     bool intr_flag, ret = 0;
     local_intr_save(intr_flag);
     if (sem->value > 0) {
-        sem->value--, ret = 1;
+        sem->value--;
+        ret = 1;
+        deadlock_on_acquire(sem);
     }
     local_intr_restore(intr_flag);
     return ret;

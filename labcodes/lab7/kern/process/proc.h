@@ -80,6 +80,8 @@ extern list_entry_t proc_list;
  * @var proc_struct::lab6_run_pool  node linking the process into the skew heap rq->lab6_run_pool (Stride)
  * @var proc_struct::lab6_stride    current Stride value; the runnable process with the smallest one runs next
  * @var proc_struct::lab6_priority  priority, set by lab6_set_priority(); the Stride pass is BIG_STRIDE / priority
+ * @var proc_struct::rcu_read_depth nesting of rcu_read_lock(); 0 means the process is not in a read-side section
+ * @var proc_struct::rcu_gp_seen    newest grace-period number for which this process has been quiescent
  * @note Do not read tf or context before copy_thread() has initialised them.
  */
 struct proc_struct {
@@ -106,6 +108,8 @@ struct proc_struct {
     skew_heap_entry_t lab6_run_pool;         // lab6 only: the entry in the Stride run pool
     uint32_t lab6_stride;                    // lab6 only: the current stride of the process
     uint32_t lab6_priority;  // lab6 only: priority, set by lab6_set_priority(uint32_t)
+    int rcu_read_depth;                      // lab7 RCU: nesting of rcu_read_lock(); 0 is a quiescent reader
+    unsigned rcu_gp_seen;                    // lab7 RCU: newest grace period this process has passed
 };
 
 /** @brief Flag in proc_struct::flags: the process has been asked to exit (set by do_kill). */

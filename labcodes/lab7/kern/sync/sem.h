@@ -20,10 +20,14 @@
  *                              in this implementation: the sleeping processes are counted by wait_queue,
  *                              not by a negative value
  * @var semaphore_t::wait_queue processes sleeping in down(), in arrival order
+ * @var semaphore_t::is_mutex   1 if sem_init was given 1 (a mutex tracked by the deadlock detector)
+ * @var semaphore_t::owner      pid of the process that holds a mutex, or 0 if nobody holds it
  */
 typedef struct {
     int value;
     wait_queue_t wait_queue;
+    int is_mutex;
+    int owner;
 } semaphore_t;
 
 /**

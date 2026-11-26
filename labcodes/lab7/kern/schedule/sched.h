@@ -124,6 +124,15 @@ void wakeup_proc(struct proc_struct *proc);
  */
 void schedule(void);
 /**
+ * @brief Run idleproc once so it is switched out, then return to the caller.
+ *
+ * synchronize_rcu() needs a quiescent state from idleproc. schedule() never selects idleproc
+ * while the caller is still runnable, so the grace period switches here: the caller is queued,
+ * idleproc runs, and its cpu_idle() loop schedules the caller back. The switch out of idleproc
+ * goes through proc_run(), which reports the quiescent state.
+ */
+void sched_switch_idle(void);
+/**
  * @brief Arm a timer: insert it into the timer list in expiry order (lab7; see sched.c).
  * @param timer timer set up by timer_init(), with expires > 0 and not already armed
  */

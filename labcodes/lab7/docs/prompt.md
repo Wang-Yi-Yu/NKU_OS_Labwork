@@ -82,4 +82,141 @@
 
 ### 2.2 2414015-鲁昕宁
 
+**Challenge 1：在 ucore 中实现简化的死锁和重入探测机制**
+
+````markdown
+[PROMPT]
+**任务**：在 lab7 里为互斥信号量加上简化的死锁与重入探测。探测对象只限 `sem_init(sem, 1)` 得到的互斥量。需要识别三类事件：同一进程再次进入自己已持有的互斥量（重入）、互斥量已被别的进程持有时又有进程取得它（多个进程进入同一临界区）、进程之间出现环形等待（死锁的环形等待条件，同时说明同时满足互斥、持有并等待、不可抢占）。发现任何一类时打印探测信息；默认处理是进入内核 monitor。另外提供一个自检，自检期间不得进入 monitor，并且返回后进程表与调用前一致。
+
+**操作要求**：你必须在项目中修改实际文件。新增 `kern/sync/deadlock.h` 和 `kern/sync/deadlock.c`（`Makefile` 已把 `kern/sync` 列入 `KSRCDIR`，不必改编译脚本）。在 `kern/sync/sem.h` 的 `semaphore_t` 末尾增加字段，并在 `sem_init`、`__down`、`__up`、`try_down` 中调用本模块的钩子。不要改管程、哲学家就餐和 `check_sync()` 的逻辑。在 `init_main()` 里、`check_sync()` 之前调用 `deadlock_check()`。探测代码的注释使用英文。
+
+**输出要求**：直接进行文件操作，使用下面 [RELY]、[GUARANTEE]、[SPECIFICATION] 的信息，以工程中的真实代码为准。不要实现银行家算法，不要改调度类。
+
+[RELY]
+
+- `semaphore_t`（`kern/sync/sem.h`）现有字段只有 `int value` 和 `wait_queue_t wait_queue`。`value` 不会变成负数：没有资源时进程睡在 `wait_queue` 上。`sem_init(sem, value)`、`down`、`up`、`try_down` 的实现在 `kern/sync/sem.c` 的 `__down`、`__up`、`try_down` 中，这些操作已经用 `local_intr_save` / `local_intr_restore` 包住对 `value` 和等待队列的修改。
+- 互斥量是 `sem_init(sem, 1)`。初值不是 1 的信号量（哲学家的叉子计数、条件变量内部的信号量）不参与探测。
+- 进程：全局 `current`、`idleproc`、`proc_list`；`current->pid`。本实验是单 hart，一个时刻只有一个 `current`。
+- 进入 monitor：`void kmonitor(struct trapframe *tf)`（`kern/debug/kmonitor.h`）。探测路径调用 `kmonitor(NULL)`。`kmonitor` 会读命令行并停住，所以启动路径上的自检不能走到这次调用。
+- 打印使用 `cprintf`。创建内核线程使用已有的 `kernel_thread`。等待某个子进程结束使用已有的 `do_wait(pid, NULL)`，失败时再 `schedule()` 让出 CPU。`do_exit` 由 `kernel_thread_entry` 在线程函数返回后调用，自检线程返回即可。
+
+[GUARANTEE]
+
+- `semaphore_t` 末尾增加：`int is_mutex`（`sem_init` 的初值为 1 时置 1，否则 0）、`int owner`（持有者 pid，无人持有时为 0）。`sem_init` 必须给这两个字段赋初值。
+- 下列钩子，声明在 `deadlock.h`，定义在 `deadlock.c`。`sem.c` 在关中断的临界区内调用它们：
+
+```c
+void deadlock_on_acquire(semaphore_t *sem);
+int deadlock_on_wait(semaphore_t *sem);
+void deadlock_on_release(semaphore_t *sem);
+```
+
+- `deadlock_on_acquire`：`__down` 在 `value > 0` 并完成 `value--` 之后调用；`try_down` 在成功取走一个单位之后调用。只对 `is_mutex == 1` 有动作。
+- `deadlock_on_wait`：`__down` 在 `value == 0`、尚未 `wait_current_set` 之前调用。返回 1 表示已经报告违规，调用方不得把 `current` 放入等待队列，也不得 `schedule()`，本次 `down` 直接返回。返回 0 表示照常睡眠。
+- `deadlock_on_release`：`__up` 在修改 `value` 或唤醒等待者之前调用。只对 `is_mutex == 1` 有动作。
+- 默认报告函数打印一行并调用 `kmonitor(NULL)`。自检可以临时换掉这个报告函数，自检结束必须换回。
+- `void deadlock_check(void);` 在 `init_main()` 中、`check_sync()` 之前调用。
+
+不新增系统调用。允许在 `deadlock.c` 内使用 `static` 辅助函数。
+
+[SPECIFICATION]
+
+**deadlock_on_acquire**
+
+- **Pre-Condition**：`sem` 是互斥量，本次 `down` 或 `try_down` 已经把 `value` 减 1，调用方持有关中断后的临界区。
+- **Post-Condition**：未发现违规时 `sem->owner` 等于 `current->pid`。
+- **Case 1**：`owner` 为 0。把 `owner` 设为 `current->pid`。
+- **Case 2**：`owner` 等于 `current->pid`。这是重入。打印包含 pid 和 “reenter” 的一行，调用报告函数，不改 `owner`。
+- **Case 3**：`owner` 是另一个非 0 pid。这是多个进程进入同一临界区。打印包含两个 pid 和 “multi-enter” 的一行，调用报告函数，不改 `owner`。
+
+**deadlock_on_wait**
+
+- **Pre-Condition**：`sem->value == 0`，`current` 尚未挂上 `sem->wait_queue`。
+- **Post-Condition**：返回 1 时没有等待边被留下，调用方不睡眠。返回 0 时，若这是互斥量且 `owner` 非 0，则记下一条“`current` 等待 `owner`”的边。
+- **Case 1**：不是互斥量，或 `owner` 为 0。返回 0，不记边。
+- **Case 2**：`owner` 等于 `current->pid`。这是自己等待自己，按重入报告，删除本进程相关的等待边，返回 1。
+- **Case 3**：`owner` 是其他进程。记下等待边后，若等待边组成环，则打印环上的 pid，并说明已观察到互斥（`is_mutex`）、持有并等待（当前进程的 `owner` 身份存在于别的互斥量上，或环长大于 1）、不可抢占（`up` 之前不会抢走 `owner`）、环形等待。然后删除本进程刚刚记下的边，调用报告函数，返回 1。没有环则返回 0。
+- **Requirements**：等待边用定长数组保存，容量至少 32，不得按 `MAX_PROCESS` 分配邻接矩阵。数组满时打印 “deadlock table full” 并按发现事件处理（报告函数，返回 1）。
+
+**deadlock_on_release**
+
+- **Pre-Condition**：调用方即将执行 `__up` 的等待队列或 `value++` 逻辑。
+- **Post-Condition**：若 `is_mutex` 为 1 且 `owner` 等于 `current->pid`，则 `owner` 变为 0，并删掉所有 holder 为该 pid 且信号量是 `sem` 的等待边。不是互斥量，或 `owner` 不是 `current` 时，不改 `owner`。
+
+**deadlock_check**
+
+- **Pre-Condition**：由 `init_main` 调用，中断已经开启，`current` 是 `initproc`。报告函数已被换成只记录事件、不调用 `kmonitor` 的函数。
+- **Post-Condition**：返回前报告函数恢复为默认的 `kmonitor` 路径。本函数创建的内核线程都已退出并被 `do_wait` 回收。没有进程睡在自检用的信号量上。串口至少出现一行自检通过的信息，包含 “deadlock check”。
+- **Case 1（重入）**：在 `initproc` 上对一个互斥量 `down` 两次。第二次必须走 `deadlock_on_wait` 的 Case 2 并返回，不得睡眠。然后 `up` 一次，使 `owner` 回到 0、`value` 回到 1。
+- **Case 2（环形等待）**：两个内核线程和两个互斥量 A、B。线程 1 取得 A 后让出 CPU；线程 2 取得 B 后让出 CPU；线程 1 再 `down(B)`，此时没有环，必须真的睡眠；线程 2 再 `down(A)`，必须查出环、不睡眠。线程 2 随后 `up(B)` 唤醒线程 1，两边各自释放自己持有的互斥量后返回。
+- **Requirements**：自检失败时 `panic`，不要调用 `kmonitor`。不得改动哲学家就餐用的信号量。
+````
+
+**Challenge 2：参考 Linux 的 RCU 机制，在 ucore 中实现简化的 RCU 机制**
+
+````markdown
+[PROMPT]
+**任务**：在单 hart 的 ucore 上实现简化的 QSBR 型 RCU：读者用 `rcu_read_lock` / `rcu_read_unlock` 标记读端临界区，写者发布新数据后调用 `synchronize_rcu`，等到每个其他进程都经过一次静止状态再返回。静止状态定义为：该进程的读端嵌套深度为 0，并且要么正睡在调度之外，要么在一次上下文切换时被换出。读端临界区内不许睡眠，也不许调用 `synchronize_rcu`。提供一个会在启动时跑完的自检。
+
+**操作要求**：你必须在项目中修改实际文件。新增 `kern/sync/rcu.h` 和 `kern/sync/rcu.c`。在 `struct proc_struct` 中增加本模块的两个字段，并在 `alloc_proc()` 里初始化。在 `proc_run()` 调用 `switch_to` 之前通知 RCU。在 `init_main()` 里、`deadlock_check()` 之后、`check_sync()` 之前调用 `rcu_check()`。不要改 `check_sync()`、调度类和信号量语义。注释使用英文。
+
+**输出要求**：直接进行文件操作，使用下面 [RELY]、[GUARANTEE]、[SPECIFICATION] 的信息，以工程中的真实代码为准。不要实现 `call_rcu` 回调队列，不要做每 CPU 的 `rcu_data`。
+
+[RELY]
+
+- 进程控制块在 `kern/process/proc.h` 的 `struct proc_struct`。`alloc_proc()` 在 `kern/process/proc.c`，`kmalloc` 不清零，新增字段必须在这里赋值。进程状态包含 `PROC_RUNNABLE`、`PROC_SLEEPING`、`PROC_ZOMBIE`。全局有 `current`、`idleproc`、`proc_list`。遍历用 `list_next` 和 `le2proc(le, list_link)`，跳过 `proc_list` 的头结点。
+- `proc_run(struct proc_struct *proc)` 在切换前把 `current` 改成 `proc`，局部变量 `prev` 是被换出的进程。上下文切换函数是 `switch_to`。
+- 让出 CPU：`schedule()`。`current->need_resched = 1` 后调用 `schedule()` 会选下一个进程。内核线程用 `kernel_thread` 创建，函数返回后进入 `do_exit`。父进程用 `do_wait(pid, NULL)` 回收；返回非 0 时先 `schedule()` 再等。
+- 单 hart：读端临界区不会被另一个 hart 并行执行，但会被 `schedule()` 换出。因此宽限期必须在换出点观察读端深度，不能假设“调用 `synchronize_rcu` 时其他进程都已经不在读端”。
+
+[GUARANTEE]
+
+- `struct proc_struct` 增加 `int rcu_read_depth` 和 `unsigned rcu_gp_seen`。`alloc_proc()` 把二者设为 0。
+- 下列接口声明在 `rcu.h`：
+
+```c
+void rcu_read_lock(void);
+void rcu_read_unlock(void);
+void rcu_note_context_switch(struct proc_struct *prev);
+void synchronize_rcu(void);
+void rcu_check(void);
+```
+
+- `proc_run()` 在 `switch_to` 之前调用 `rcu_note_context_switch(prev)`。
+- `rcu.c` 内用一个 `static unsigned rcu_gp`，初值 0。允许 `static` 辅助函数。不新增系统调用。
+
+[SPECIFICATION]
+
+**rcu_read_lock**
+
+- **Pre-Condition**：`current` 非空。
+- **Post-Condition**：`current->rcu_read_depth` 比调用前大 1。可以嵌套。
+
+**rcu_read_unlock**
+
+- **Pre-Condition**：`current->rcu_read_depth > 0`。深度已经是 0 时 `panic`。
+- **Post-Condition**：深度减 1。减到 0 时把 `current->rcu_gp_seen` 设为当前的 `rcu_gp`，表示该进程对目前已经开始的宽限期处于静止状态。
+
+**rcu_note_context_switch**
+
+- **Pre-Condition**：`prev` 是即将被换出的进程，由 `proc_run` 在 `switch_to` 之前调用。
+- **Post-Condition**：仅当 `prev->rcu_read_depth == 0` 时，把 `prev->rcu_gp_seen` 设为当前 `rcu_gp`。深度大于 0 时不修改 `rcu_gp_seen`。
+
+**synchronize_rcu**
+
+- **Pre-Condition**：`current` 非空，且 `current->rcu_read_depth == 0`。深度大于 0 时打印 “synchronize_rcu in read-side” 并立即返回，不得递增 `rcu_gp`。
+- **Post-Condition**：返回时，除 `current` 和 `PROC_ZOMBIE` 以外，`proc_list` 上的每个进程以及 `idleproc` 的 `rcu_gp_seen` 都不小于本次宽限期编号。`current` 自己的 `rcu_gp_seen` 也设为这个编号。
+- **Case 1**：把 `rcu_gp` 加 1，得到本次目标编号 `target`。
+- **Case 2**：扫描 `idleproc` 和 `proc_list`。跳过 `current` 和 `PROC_ZOMBIE`。若进程的 `rcu_read_depth == 0` 且状态是 `PROC_SLEEPING`，直接把它的 `rcu_gp_seen` 写成 `target`（它不在读端，也不占着 CPU）。若进程 `rcu_read_depth > 0` 且状态是 `PROC_SLEEPING`，打印 “sleep in rcu read-side” 并 `panic`。
+- **Case 3**：若仍有进程的 `rcu_gp_seen < target`，置 `current->need_resched = 1` 并调用 `schedule()`，然后回到 Case 2。不得忙等。
+- **Requirements**：不在本函数里释放调用者的旧对象。旧对象在本函数返回之后才可以由调用者释放。
+
+**rcu_check**
+
+- **Pre-Condition**：由 `init_main` 调用，此时中断已开。调用返回后 `nr_process` 与进入前相同，`check_sync()` 仍能按原样运行。
+- **Post-Condition**：串口有一行包含 “rcu check ok”。自检创建的内核线程已被 `do_wait` 回收。
+- **Case 1**：有一个全局指针，初始指向对象 A。读者线程 `rcu_read_lock` 后读到 A，置一个“读者已进入”的标志，再 `schedule()` 让出 CPU，醒回后仍能读到 A，然后 `rcu_read_unlock` 并返回。写者线程等到该标志后把指针改到对象 B，调用 `synchronize_rcu`，返回之后才把对象 A 写成哨兵值。读者在持锁期间观察到的值不得是哨兵值。写者在读者尚未 `rcu_read_unlock` 时不得从 `synchronize_rcu` 返回：读者让出 CPU 之后、解锁之前，写者完成标志仍为 0。
+- **Requirements**：自检失败 `panic`。不要调用 `kmonitor`。
+````
+
 ### 2.3 2411622-张雨函

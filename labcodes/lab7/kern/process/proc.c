@@ -30,6 +30,7 @@
 #include <stdlib.h>
 #include <assert.h>
 #include <unistd.h>
+#include <rcu.h>
 
 /* ------------- process/thread mechanism design&implementation -------------
 (an simplified Linux process/thread mechanism )
@@ -197,6 +198,10 @@ static struct proc_struct *alloc_proc(void) {
     skew_heap_init(&proc->lab6_run_pool);
     proc->lab6_stride = 0;
     proc->lab6_priority = 1;
+    // kmalloc does not clear the PCB. A leftover depth would hide a reader, and a leftover
+    // grace-period stamp would let synchronize_rcu return before this process has been quiescent.
+    proc->rcu_read_depth = 0;
+    proc->rcu_gp_seen = 0;
     return proc;
 }
 
@@ -344,7 +349,10 @@ void proc_run(struct proc_struct *proc) {
         //    process has its own pgdir. satp = MODE(Sv39) | PPN; sfence.vma drops stale entries.
         write_csr(satp, ((uintptr_t)SATP_MODE_SV39 << 60) | (proc->pgdir >> RISCV_PGSHIFT));
         flush_tlb();
-        // 3. Switch the register context. This call returns only when prev is scheduled in again.
+        // 3. Record a quiescent state for the outgoing thread when it is not inside rcu_read_lock.
+        //    current already names the incoming thread, so the note must be given prev explicitly.
+        rcu_note_context_switch(prev);
+        // 4. Switch the register context. This call returns only when prev is scheduled in again.
         switch_to(&(prev->context), &(proc->context));
     }
     local_intr_restore(intr_flag);
@@ -1224,7 +1232,10 @@ static int init_main(void *arg) {
 
     // lab7: the dining philosophers (semaphores and monitor). check_sync() creates its own kernel
     // threads and reaps them before it returns, so it leaves the process table as it found it.
+    extern void deadlock_check(void);
     extern void check_sync(void);
+    deadlock_check();
+    rcu_check();
     check_sync();
 
     while (do_wait(0, NULL) == 0) {

@@ -174,6 +174,24 @@ void schedule(void) {
     local_intr_restore(intr_flag);
 }
 
+void sched_switch_idle(void) {
+    bool intr_flag;
+
+    local_intr_save(intr_flag);
+    {
+        // The running process is not in the queue. Put it back so idle's schedule() can return
+        // here. A second insert would break the run queue.
+        if (current != idleproc && current->state == PROC_RUNNABLE && current->rq == NULL) {
+            sched_class_enqueue(current);
+        }
+        // cpu_idle() only calls schedule() when this flag is set. Set it before the switch, so
+        // the idle thread leaves again as soon as its context resumes.
+        idleproc->need_resched = 1;
+        proc_run(idleproc);
+    }
+    local_intr_restore(intr_flag);
+}
+
 /**
  * @brief Arm a timer: insert it into the timer list so that the list stays sorted by expiry.
  *

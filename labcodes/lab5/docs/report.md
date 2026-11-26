@@ -645,7 +645,7 @@ int do_kill(int pid)
 
 #### 4.5.1 模块功能描述
 
-**完成说明（2411622张雨函）：** 在普通 `fork` 中共享已映射物理页。原本可写的父子 PTE 清除 `PTE_W` 并设置软件位 `PTE_COW`；原本只读的页面继续共享，但不设置 COW。写入产生 `CAUSE_STORE_PAGE_FAULT` 后，内核仅对位于可写 VMA 且带 COW 标记的有效 PTE 解故障：引用计数大于 1 时分配、复制、替换页面；引用计数为 1 时直接恢复可写权限。其他缺页仍走原有异常路径。
+在普通 `fork` 中共享已映射物理页。原本可写的父子 PTE 清除 `PTE_W` 并设置软件位 `PTE_COW`；原本只读的页面继续共享，但不设置 COW。写入产生 `CAUSE_STORE_PAGE_FAULT` 后，内核仅对位于可写 VMA 且带 COW 标记的有效 PTE 解故障：引用计数大于 1 时分配、复制、替换页面；引用计数为 1 时直接恢复可写权限。其他缺页仍走原有异常路径。
 
 状态转换：`独占可写(ref=1) → fork → 共享只读+COW(ref≥2) → 写故障 → 私有可写(ref=1)`；另一分支在其他引用退出后变成 `只读+COW(ref=1) → 写故障 → 原页恢复可写`。解除映射和进程退出调用现有 `page_remove_pte` / `exit_mmap`，每解除一处映射减少一次引用，计数为零才释放。COW 位与 VMA 的 `VM_WRITE` 必须同时成立，因此原生只读页不会因写故障被升级。
 
@@ -653,31 +653,102 @@ int do_kill(int pid)
 
 #### 4.5.2 最终提示词
 
-> 基于现有 Lab5 的 `copy_mm → dup_mmap → copy_range`、`page_insert`、`exception_handler` 与 `do_exit`，实现单核 ucore 的写时复制。普通 fork 共享已映射页；只将原本可写的映射降为只读并加软件 COW 标记，原本只读的映射保持只读。写缺页时验证 VMA 和 PTE；多引用时复制，单引用时原地恢复写权限；维护引用计数和 TLB。异常中的内核写用户缓冲区也应能处理合法 COW 故障。补充父子写入隔离、多子进程共享与退出回收的测试。将改动限定在挑战相关路径，说明测试结果和剩余限制。
+以下是经过迭代优化后，最终用于实现该功能的提示词：
+
+````markdown
+[PROMPT]
+**任务**：在现有 Lab5 基础上实现 Copy on Write（COW）挑战。普通 `fork` 不立即复制用户物理页，而是让父子进程共享物理页；只有发生合法写入时，才为写入方建立私有可写页。实现必须保持父子进程的写隔离，并正确维护物理页引用计数。
+
+**操作要求**：
+
+1. 以当前仓库真实代码为准，只修改 COW 所需的内存管理、缺页异常和挑战测试路径；不要重写已经完成的基础功能。
+2. 在 `kern/mm/mmu.h` 中增加软件 COW 标记；在 `kern/mm/pmm.c`、`kern/mm/vmm.c` 中实现共享映射、COW 权限转换和写故障解析；在 `kern/trap/trap.c` 中接入 `CAUSE_STORE_PAGE_FAULT` 的 COW 分支；在 `user/cowtest.c` 中补充测试。
+3. 保留现有函数签名、进程生命周期和页表布局。修改处保留 `lab5` 定位注释，并使用完成者标识 `2411622张雨函`。
+4. 不把原本只读的页面错误标记为 COW，也不能因为一次写故障绕过 VMA 权限检查。
+
+**输出要求**：直接修改实际文件并说明每个修改点的原因。实现完成后编译并运行 COW 专用测试，同时回归 `forktest`、`exit` 和非法访问测试；记录实际输出、剩余限制和未覆盖的并发场景。
+
+[RELY]
+1. `dup_mmap()` 负责复制父进程的 VMA；`copy_range()` 按页遍历源地址空间；`page_insert()` 会增加新映射的引用计数并处理旧映射；`page_remove_pte()` 和 `exit_mmap()` 在解除映射时减少引用计数。
+2. `vma_struct::vm_flags` 中的 `VM_WRITE` 表示该虚拟区域允许写入；页表叶子权限中的 `PTE_W` 表示硬件当前允许写入；`PTE_COW` 只用于记录“原本可写、现在因共享而暂时只读”的软件状态。
+3. 写缺页的故障地址由 `trapframe.tval` 提供，原因码为 `CAUSE_STORE_PAGE_FAULT`。修复成功后不能前移 `sepc`，因为原来的 store 指令必须重新执行。
+4. `page_ref()`、`alloc_page()`、`free_page()` 和 `page_insert()` 是页面引用计数与物理页分配的现有接口；`tlb_invalidate()` 用于页表权限变化后的局部 TLB 失效。
+5. `mm_lock` 用于保护同一地址空间内 COW 检查、引用计数判断和 PTE 替换；本实验只在单 hart 环境验证。
+
+[GUARANTEE]
+需要实现或更新以下接口，函数签名必须与当前仓库一致：
+
+```c
+#define PTE_COW                                      // kern/mm/mmu.h
+int copy_range(pde_t *to, pde_t *from, uintptr_t start,
+               uintptr_t end, bool share);           // kern/mm/pmm.c
+int dup_mmap(struct mm_struct *to, struct mm_struct *from); // kern/mm/vmm.c
+int cow_resolve(struct mm_struct *mm, uintptr_t addr);      // kern/mm/vmm.c
+void exception_handler(struct trapframe *tf);         // kern/trap/trap.c
+```
+
+允许新增 COW 专用测试，但不得改变基础系统调用和进程管理接口。
+
+[SPECIFICATION]
+**共享映射与 COW 标记**
+
+- Pre-Condition：`from` 是有效用户页表，`to` 是已建立页目录的空地址空间，遍历范围页对齐且位于用户地址空间。
+- Post-Condition：普通 fork 对每个有效用户叶子建立同一物理页的映射并增加引用计数；原本带 `PTE_W` 的页面在父子两侧都清除 `PTE_W`、设置 `PTE_COW`，原本只读页面保持只读且不设置 COW。
+- Case 1：`share == 0` 时建立独立物理副本；若源页带 `PTE_COW`，新副本应恢复 `PTE_W` 并清除 `PTE_COW`。
+- Case 2：目标页表、VMA 或新物理页分配失败时返回错误码，并由调用者回收已经建立的部分映射。
+- Requirements：只有目标页映射成功后才修改父页的权限；修改父页和子页后都必须使对应 TLB 项失效。
+
+**cow_resolve**
+
+- Pre-Condition：`mm` 不为空，故障地址位于用户地址空间，当前故障为写访问，目标 VMA 带 `VM_WRITE`，叶子 PTE 有效、带 `PTE_COW` 且没有 `PTE_W`。
+- Post-Condition：成功时当前进程获得同一虚拟地址的可写、无 COW 标记映射，原 store 指令可重试；失败时不改变权限，返回 `-E_INVAL` 或 `-E_NO_MEM`。
+- Case 1：物理页引用计数大于 1，分配新页、复制完整页内容、建立新页映射，并使旧页引用计数减一。
+- Case 2：物理页引用计数等于 1，直接恢复原页的 `PTE_W` 并清除 `PTE_COW`，不额外分配页面。
+- Case 3：页面原本只读、VMA 不可写、PTE 无效或没有 COW 标记时，不能升级权限，继续执行原有非法缺页处理。
+- Requirements：检查、引用计数判断、PTE 替换在 `mm_lock` 保护下完成；替换后失效 TLB；不能修改其他进程的页表。
+
+**exception_handler 与测试**
+
+- `CAUSE_STORE_PAGE_FAULT` 先调用 `cow_resolve()`；返回 0 时保留原 `sepc` 并返回，使 faulting store 重试；其他结果沿用原有异常处理。
+- `cowtest` 至少覆盖父子分别写入、多子进程共享、子进程退出后的引用计数回收，以及内核向 COW 用户缓冲区写退出码。
+````
 
 #### 4.5.3 实现迭代过程
 
-1. 检查基础代码：普通 fork 原先传入 `share=0`，`copy_range` 对每页分配私有副本；普通用户写故障直接终止进程。确认 `page_insert` / `page_remove_pte` 已经维护映射引用计数。
-2. 加入 `PTE_COW`、共享映射与写故障解析。映射子页成功后才清除父页写权限并失效父页的 TLB 项；分配失败时，已降权的父页仍可在下一次写故障中按 `ref=1` 恢复。
-3. 增加 `cowtest`：反复 fork，父子分别写全局数据页；`waitpid` 向专门对齐的一页写入退出码，以覆盖内核态写 COW 用户页的路径；再创建四个同时存在的子进程，分别写入并回收。运行 `make build-cowtest`，QEMU 输出 `cowtest pass.`。原有 `forktest`、`exit` 也分别输出 `forktest pass.`、`exit pass.`；`faultreadkernel` 仍因非法访问被终止。
+##### 第一次迭代
 
-**限制：** 当前实验是单 hart；`mm_lock` 保护同一地址空间的解析，不能直接推断多核并发安全。没有实现文件映射、按需分页或多核 TLB 同步。分配失败回滚通过代码审查和构建验证，未强行耗尽全部物理内存。
+阅读基础代码后发现，`dup_mmap()` 调用 `copy_range(..., share = 0)`，普通 `fork` 会立即复制所有物理页；`exception_handler()` 也没有合法写缺页的处理分支。直接修改测试程序无法验证 COW。
 
-#### 4.5.4 问题解答
-
-> 说明该用户程序是何时被预先加载到内存中的？与我们常用操作系统的加载有何区别，原因是什么？
-
-用户 ELF 在构建内核时被编译并作为二进制数据链接进内核镜像；启动时镜像进入内存，`kernel_execve` / `load_icode` 再从其中建立用户页表并复制程序段。常见操作系统在运行时从文件系统读取可执行文件，还可按需装页；本实验用内嵌方式避开文件系统依赖，以便集中练习进程和地址空间管理。
-
-Dirty COW 的关键风险是权限检查与实际写入之间的竞态。此实现只允许具有 `VM_WRITE` 且 PTE 带 `PTE_COW` 的地址恢复写权限；共享页写入时先取得私有副本，再修改映射，避免直接改写其他进程可见的物理页。该设计没有在多核环境中验证，若移植到多核，还需将页面引用计数、PTE 检查与替换组织成跨核同步的原子协议，并处理跨核 TLB 失效。
+将 `PTE_W` 和软件 COW 标记分开：原本可写页在 fork 后清除 `PTE_W`、设置 `PTE_COW`；原本只读页可以共享但不能设置 COW。写缺页时必须同时检查 VMA 的 `VM_WRITE`、有效 PTE 和 `PTE_COW`，成功修复后保留原 `sepc`，重新执行触发故障的 store。解除映射继续依靠现有引用计数路径。对照 `mmu.h`、`pmm.c`、`vmm.c` 和 `trap.c` 检查了这些前置条件，确认该方案没有改变基础系统调用和进程生命周期接口，并据此确定了 `PTE_COW`、`cow_resolve()` 和 `CAUSE_STORE_PAGE_FAULT` 三个实现切入点。
 
 ---
 
-#### 4.5.5 测试结果
+##### 第二次迭代
 
-手动运行 `make build-cowtest` 后，QEMU 输出 `cowtest pass.`、`all user-mode processes have quit.` 和 `init check memory pass.`。`forktest` 输出 `forktest pass.`，`exit` 输出 `exit pass.`，三项测试都正常进入内核监视器，没有出现 `initproc exit` panic。
+初步接入共享映射后，COW 写入需要处理两个不同情况：物理页仍被多个地址空间引用时必须复制；其他进程退出后只剩一个引用时可以直接恢复写权限。此外，父页只有在子页映射成功后才能清除 `PTE_W`，否则内存分配失败会破坏父进程的原有权限。
 
-完整评分脚本执行结果为 `Total Score: 130/130`，所有基础检查均为 `OK`。COW 专用测试另外覆盖了父子写入隔离、多个子进程同时共享、退出后的回收，以及 `waitpid` 向 COW 用户缓冲区写退出码的路径。
+先用 `page_insert()` 建立子映射，成功后才把父 PTE 的 `PTE_W` 替换成 `PTE_COW`，并对父页执行 TLB 失效；`page_ref > 1` 时复制完整页，`page_ref == 1` 时清除 COW 并恢复写权限；原本只读页没有 COW 标记时必须继续走非法访问路径；COW 修复成功不能增加 `sepc`。
+
+---
+
+##### 第三次迭代
+
+仅测试父子进程分别修改全局变量，只能证明最基本的写隔离，不能覆盖多个子进程同时共享、最后一个引用恢复写权限，以及内核向用户缓冲区写退出码的路径。
+
+测试分为两段：反复 fork 并让父子写同一全局数据页，检查双方读回自己的值；再同时创建多个子进程，每个子进程写不同位置并退出，父进程检查自己的数据未变。退出码缓冲区应独立占一页并按页对齐，避免测试结果受到普通栈布局影响。增加 `user/cowtest.c` 后运行 `make build-cowtest`，QEMU 输出 `cowtest pass.`、`all user-mode processes have quit.` 和 `init check memory pass.`；回归运行 `forktest`、`exit` 和非法访问测试，分别得到 `forktest pass.`、`exit pass.` 和预期的进程终止结果。完整评分脚本记录为 `Total Score: 130/130`。
+
+**最终结果：**
+
+经过 3 次迭代，该模块最终：
+
+- ✅ 编译通过
+- ✅ `cowtest` 覆盖父子写入隔离、多个子进程共享、退出回收和内核写用户缓冲区
+- ✅ `forktest`、`exit` 等基础进程测试通过
+- ✅ 原生只读页不会因写缺页被错误升级为可写
+- ✅ 引用计数、PTE 权限和局部 TLB 失效路径符合设计
+- ✅ 完整评分脚本结果为 `Total Score: 130/130`
+- ✅ 功能符合预期
+
 
 ### 4.6 分支任务：gdb 调试系统调用以及返回
 
@@ -694,6 +765,10 @@ add-symbol-file obj/__user_exit.out
 ```
 
 随后在 user/libs/syscall.c 的 syscall 函数设置断点，并用 x/i $pc 或 disassemble /r syscall 定位实际 ecall 指令。一次实测中，ecall 位于 0x800102，a0=30（SYS_putc），a1=0x49（字符 I），用户栈为 0x7ffffe40。
+
+![图 4.6-1：RISC-V GDB 定位用户态 ecall](report.assets/gdb_1.png)
+
+**图 4.6-1 分析：** 截图展示了 ucore 一侧的 RISC-V GDB 如何加载用户程序符号并定位 `ecall`。`add-symbol-file obj/__user_exit.out` 把嵌入内核镜像的用户 ELF 符号加入 GDB，因此断点可以落到 `user/libs/syscall.c:36` 的 `syscall` 函数。临时断点命中时，`x/i $pc` 显示当前指令是 `ecall`，且 `pc = 0x800102`，说明异常尚未发生，正好停在用户态请求内核服务之前。寄存器中 `a0 = 0x1e = 30` 对应 `SYS_putc`，`a1 = 0x49 = 73` 是字符 `I`，`sp = 0x7ffffe40` 是用户栈指针。此时应在用户 GDB 保持暂停，再切换到 QEMU GDB 观察同一条指令的模拟过程。
 
 #### 4.6.2 ecall 进入内核
 
@@ -717,11 +792,19 @@ break helper_raise_exception if exception == 8 && env->priv == 0
 
 在 riscv_cpu_do_interrupt 中，实测 cause=8、async=0、medeleg=0xb109，((medeleg >> 8) & 1)=1。委托完成后，env->priv=1，env->pc=0xffffffffc0200da0，env->sepc=0x800102，env->scause=8，mstatus.SPP=0。QEMU 因此把用户态异常交给 S 态，保存原 pc 和异常原因，并跳转到 stvec 指向的 \_\_alltraps。
 
+![图 4.6-2：QEMU GDB 命中 ecall 异常辅助函数](report.assets/gdb_2.png)
+
+**图 4.6-2 分析：** QEMU GDB 在 `helper_raise_exception` 处命中条件断点，`exception = 8` 对应 RISC-V 的环境调用异常，`env->pc = 0x800102` 与图 4.6-1 中用户态 `ecall` 的地址完全一致，`env->priv = 0` 表明异常发生前 CPU 处于 U 态。回溯中的 `code_gen_buffer → cpu_tb_exec → cpu_loop_exec_tb → cpu_exec` 说明客户机指令先由 TCG 翻译成宿主机代码，再在 QEMU 的执行循环中调用异常辅助函数。这里还没有进入 ucore 的 `exception_handler`；QEMU 先负责保存客户机异常现场、设置 `scause/sepc`，再依据委托配置把控制权转交给 S 态的 `stvec`。
+
 #### 4.6.3 ucore 系统调用处理
 
 exception_handler 收到的 trapframe 为 tf->cause=0x8、tf->epc=0x800102、tf->gpr.sp=0x7ffffe40、tf->gpr.a0=30、tf->gpr.a1=0x49，且 tf->status 的 SPP 位为 0。
 
 exception_handler 先把 epc 增加 4，再调用 syscall。因此 syscall 中看到 epc=0x800106、a0=30、a1=0x49。调用栈经过 exception_handler、syscall 和 sys_putc；sys_putc 收到 arg[0]=73，即字符 I，并返回 0。
+
+![图 4.6-3：ucore exception_handler 中的系统调用 trapframe](report.assets/gdb_3.png)
+
+**图 4.6-3 分析：** 这张截图显示 QEMU 已经把异常交给 ucore，GDB 在 `exception_handler` 的入口停下。`tf->cause = 0x8` 与用户态 `ecall` 相符，`tf->epc = 0x800102` 仍指向触发异常的 `ecall`，说明内核必须先执行 `tf->epc += 4`，再调用 `syscall()`，否则 `sret` 后会重复执行同一条指令。`tf->gpr.a0 = 30` 和 `tf->gpr.a1 = 0x49` 保留了用户态传入的系统调用号和参数；`syscall()` 将它们转换为 `arg[0] = 73`，调用 `sys_putc`，并把返回值写回 trapframe 的 `a0`。截图还证明该 trapframe 的寄存器值与图 4.6-1 的用户态寄存器保持一致，说明 `SAVE_ALL` 已经正确保存了现场。
 
 #### 4.6.4 sret 返回用户态
 
@@ -729,11 +812,90 @@ exception_handler 先把 epc 增加 4，再调用 syscall。因此 syscall 中�
 
 宿主机 GDB 在 helper_sret 命中时观察到 env->priv=1、env->sepc=0x800106、env->mstatus=0x8000000000046020。helper_sret 返回前 retpc=0x800106、env->priv=0、env->mstatus=0x8000000000046002。
 
+![图 4.6-4：QEMU GDB 命中 sret 辅助函数](report.assets/gdb_4.png)
+
+**图 4.6-4 分析：** QEMU GDB 以 `env->priv == 1 && env->sepc == 0x800106` 设置条件断点，命中 `helper_sret` 时说明客户机正在从 S 态执行异常返回。此时 `env->priv = 1` 表示 `sret` 执行前仍处于内核态，`env->sepc = 0x800106` 是 ucore 已经把 `ecall` 跳过 4 字节后的返回地址。`helper_sret` 会读取 `mstatus.SPP`，将特权级从 S 态恢复为 U 态，并把 `sepc` 作为下一条客户机指令地址。截图中的 TCG 调用栈与图 4.6-2 相同，说明 `sret` 也由翻译块执行，再进入 QEMU 的特权级切换辅助函数。
+
 sret 后 RISC-V GDB 观察到 pc=0x800106、sp=0x7ffffe40、a0=0。pc 是 ecall 后的下一条指令，sp 恢复为用户栈，a0 是 SYS_putc 的成功返回值。
+
+![图 4.6-5：sret 后用户态寄存器恢复结果](report.assets/gdb_5.png)
+
+**图 4.6-5 分析：** `sret` 返回后，RISC-V GDB 在用户程序的 `syscall+50` 处停下，`pc = 0x800106`，正是 `ecall` 后的下一条 `sd a0, 28(sp)` 指令，证明异常返回地址已经正确前移。`sp = 0x7ffffe40` 恢复为图 4.6-1 中的用户栈指针，说明 `RESTORE_ALL` 在切换回 U 态前恢复了用户栈；`a0 = 0` 是 `SYS_putc` 的成功返回值，说明内核写回 trapframe 的结果已经被用户库读取。结合图 4.6-4，可以得到完整闭环：QEMU 保存 U 态现场并进入 S 态，ucore 分发系统调用，再由 `RESTORE_ALL` 和 `sret` 恢复 U 态继续执行。
 
 #### 4.6.5 QEMU TCG 和调试问题
 
-ecall 的关键路径为：
+本次调试按照“先定位客户机指令，再观察 QEMU 异常入口，随后回到 ucore，最后跟踪 `sret` 返回”的顺序进行。每一步都先在一个 GDB 中暂停，再在另一个 GDB 中设置断点和观察寄存器，避免两个调试器同时继续运行导致断点错过。
+
+---
+
+##### 第一步：加载用户程序符号并定位 `ecall`
+
+直接在 ucore GDB 中对 `user/libs/syscall.c` 设置断点时提示没有对应源文件。原因是 `make gdb` 默认只加载内核 ELF 的符号，用户 ELF 虽然被链接进内核镜像，但其调试符号没有自动加入。
+
+手动加载对应用户 ELF 的符号表，例如 `add-symbol-file obj/__user_exit.out`；加载后先在 `user/libs/syscall.c` 的 `syscall` 函数断点，再用 `si` 和 `x/i $pc` 找到真正执行的 `ecall`。执行 `add-symbol-file obj/__user_exit.out` 后成功命中 `user/libs/syscall.c:36`。图 4.6-1 显示当前 `pc = 0x800102`，指令为 `ecall`，`a0 = 30`（`SYS_putc`），`a1 = 0x49`（字符 `I`），说明客户机此时仍处于用户态，尚未进入异常处理。
+
+---
+
+##### 第二步：在 QEMU 中观察 `ecall` 的异常入口
+
+ucore GDB 停在 `ecall` 前时，QEMU GDB 仍显示 `Continuing`。如果直接在 QEMU GDB 输入断点命令，调试器仍处于运行状态，无法安全设置新的观察点。
+
+在 QEMU GDB 终端按 `Ctrl+C` 中断继续状态，然后设置：
+
+```gdb
+break helper_raise_exception if exception == 8 && env->priv == 0
+continue
+```
+
+再回到 ucore GDB 单步执行 `ecall`。
+
+图 4.6-2 命中 `helper_raise_exception`，`exception = 8`、`env->pc = 0x800102`、`env->priv = 0`。这三个值分别说明发生的是环境调用异常、异常指令地址与图 4.6-1 一致、异常发生前处于 U 态。回溯中的 `code_gen_buffer → cpu_tb_exec → cpu_loop_exec_tb → cpu_exec` 说明 QEMU 先通过 TCG 翻译客户机指令，再在执行循环中调用异常辅助函数。
+
+---
+
+##### 第三步：回到 ucore 检查 trapframe 和系统调用参数
+
+QEMU 已经命中异常辅助函数，但还需要确认硬件模拟产生的 `scause/sepc` 是否和 ucore 收到的 trapframe 一致，以及系统调用参数是否在保存和恢复过程中保持不变。
+
+在 `exception_handler` 入口检查 `tf->cause`、`tf->epc`、`tf->gpr.a0` 和 `tf->gpr.a1`；`CAUSE_USER_ECALL` 的 `epc` 仍指向 `ecall`，必须先加 4，否则 `sret` 会回到同一条指令并重复触发系统调用。
+
+图 4.6-3 中 `tf->cause = 0x8`、`tf->epc = 0x800102`、`tf->gpr.a0 = 30`、`tf->gpr.a1 = 0x49`，与图 4.6-1 和图 4.6-2 的现场对应。ucore 执行 `tf->epc += 4` 后，`syscall()` 按约定把 `a1` 转成 `arg[0] = 73`，调用 `sys_putc` 并将返回值写回 trapframe 的 `a0`。
+
+---
+
+##### 第四步：定位并观察 `sret` 的 QEMU 实现
+
+`ecall` 处理完成后，需要观察 QEMU 如何根据 `sstatus.SPP`/`mstatus.SPP` 把 CPU 从 S 态切换回 U 态。此时必须先移除或避开 `helper_raise_exception` 断点，否则后续运行会反复停在已经完成的异常入口。
+
+清理不再需要的 `ecall` 断点，在 QEMU GDB 设置条件断点：
+
+```gdb
+break helper_sret if env->priv == 1 && env->sepc == 0x800106
+continue
+```
+
+让 ucore GDB 运行到 `__trapret` 中 `sret` 执行前。图 4.6-4 命中 `helper_sret`，执行前 `env->priv = 1`、`env->sepc = 0x800106`。这表明当前仍在 S 态，且返回地址已经是 `ecall` 后的下一条指令。QEMU 的 `helper_sret` 根据保存的特权级位恢复 U 态，并把 `sepc` 作为返回 PC；调用栈再次经过 TCG 执行路径，说明 `sret` 与 `ecall` 一样由翻译后的客户机代码驱动。
+
+---
+
+##### 第五步：验证 `sret` 后的用户态现场
+
+图 4.6-5 中 ucore GDB 已回到用户程序的 `syscall+50`，当前指令是 `sd a0, 28(sp)`，`pc = 0x800106`，`sp = 0x7ffffe40`，`a0 = 0`。这验证了三点：`ecall` 的返回地址前移了 4 字节；用户栈从 trapframe 正确恢复；`sys_putc` 的返回值 0 已经被用户库读到。至此完成“U 态 `ecall` → QEMU 异常模拟 → S 态 ucore 系统调用 → QEMU `sret` → U 态继续执行”的完整闭环。
+
+---
+
+##### 调试问题、TCG 分析和 AI 交互总结
+
+本次调试中遇到的主要问题及解决方法如下：
+
+| 问题 | 排查思路 | AI 建议与实际验证 |
+| --- | --- | --- |
+| GDB 找不到用户程序源文件 | 检查用户 ELF 是否独立生成、内核是否只加载了 `obj/kernel.sym` | 使用 `add-symbol-file obj/__user_exit.out`，随后成功命中 `user/libs/syscall.c:36` |
+| QEMU GDB 显示 `Continuing`，无法设置断点 | 判断另一个 GDB 是否暂停了客户机，以及当前 GDB 是否正在运行 | 按建议按 `Ctrl+C` 中断 QEMU GDB，再设置 `helper_raise_exception` 条件断点，成功捕获 `exception=8` |
+| `sret` 断点容易被前面的异常断点干扰 | 按异常返回顺序清理 `helper_raise_exception` 断点，再设置 `helper_sret` 条件 | 使用 `env->priv == 1 && env->sepc == 0x800106` 缩小命中范围，成功观察特权级恢复 |
+| 如何解释 TCG 调用栈 | 对照 QEMU 的 RISC-V helper、TCG 执行循环和客户机 PC | 确认 `code_gen_buffer`、`cpu_tb_exec` 等位于客户机指令翻译和执行路径中 |
+
+`ecall` 的关键路径为：
 
 ```text
 trans_ecall
@@ -743,7 +905,7 @@ trans_ecall
   -> 更新 sepc、scause、mstatus 并跳转 stvec
 ```
 
-sret 的关键路径为：
+`sret` 的关键路径为：
 
 ```text
 翻译后的 sret
@@ -752,9 +914,7 @@ sret 的关键路径为：
   -> 返回 sepc
 ```
 
-TCG 将 RISC-V 指令翻译成宿主机代码，code_gen_buffer 和 cpu_tb_exec 出现在调用栈中。Lab2 的地址翻译调试也经过 TCG，但本次重点是异常、特权级和控制流返回。
-
-调试中遇到的主要问题有：用户程序符号未自动加载，需要 add-symbol-file；安装目录中的 QEMU stripped 版本没有 helper 函数符号，需要改用带 debug_info 的构建；两个 GDB 同时控制运行时，continue 显示 Continuing 代表正在等待另一终端让目标 CPU 执行下一条指令，必须明确交替使用 continue 和 si。
+TCG 将 RISC-V 指令翻译成宿主机代码，`code_gen_buffer` 和 `cpu_tb_exec` 出现在调用栈中。Lab2 的地址翻译调试同样经过 TCG，但当时重点是访存和页表遍历；本次重点是异常、特权级、CSR 更新和控制流返回。调试记录说明，双重 GDB 的关键不是同时让两个调试器自由运行，而是用 ucore GDB 控制客户机停点，用 QEMU GDB 观察同一条客户机指令在模拟器内部的处理阶段。
 
 ---
 

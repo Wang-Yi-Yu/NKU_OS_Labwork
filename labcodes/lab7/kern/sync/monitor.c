@@ -51,3 +51,28 @@ void monitor_free(monitor_t *mtp, size_t num_cv) {
 }
 
 //lab7 function1 YOUR CODE
+
+void cond_wait(condvar_t *cvp) {
+    monitor_t *mtp = cvp->owner;
+
+    cvp->count++;
+    if (mtp->next_count > 0) {
+        up(&(mtp->next));
+    } else {
+        up(&(mtp->mutex));
+    }
+
+    down(&(cvp->sem));
+    cvp->count--;
+}
+
+void cond_signal(condvar_t *cvp) {
+    monitor_t *mtp = cvp->owner;
+
+    if (cvp->count > 0) {
+        mtp->next_count++;
+        up(&(cvp->sem));
+        down(&(mtp->next));
+        mtp->next_count--;
+    }
+}

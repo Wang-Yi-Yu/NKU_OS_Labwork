@@ -203,6 +203,40 @@ monitor_t mt, *mtp = &mt;  // monitor
 
 //lab7 function2 YOUR CODE
 
+static void monitor_leave_condvar(void) {
+    if (mtp->next_count > 0) {
+        up(&(mtp->next));
+    } else {
+        up(&(mtp->mutex));
+    }
+}
+
+static void phi_test_condvar(int i) {
+    if (state_condvar[i] == HUNGRY && state_condvar[LEFT] != EATING &&
+        state_condvar[RIGHT] != EATING) {
+        state_condvar[i] = EATING;
+        cond_signal(&(mtp->cv[i]));
+    }
+}
+
+static void phi_take_forks_condvar(int i) {
+    down(&(mtp->mutex));
+    state_condvar[i] = HUNGRY;
+    phi_test_condvar(i);
+    if (state_condvar[i] != EATING) {
+        cond_wait(&(mtp->cv[i]));
+    }
+    monitor_leave_condvar();
+}
+
+static void phi_put_forks_condvar(int i) {
+    down(&(mtp->mutex));
+    state_condvar[i] = THINKING;
+    phi_test_condvar(LEFT);
+    phi_test_condvar(RIGHT);
+    monitor_leave_condvar();
+}
+
 //---------- philosophers using monitor (condition variable) ----------------------
 /**
  * @brief Thread body of one philosopher in the monitor version.

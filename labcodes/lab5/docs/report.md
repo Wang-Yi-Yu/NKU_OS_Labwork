@@ -689,9 +689,9 @@ Dirty COW 的关键风险是权限检查与实际写入之间的竞态。此实�
 
 实验使用 exit 用户程序。用户程序符号不会由 make gdb 自动加载，因此在 RISC-V GDB 中执行：
 
-~~~gdb
+```gdb
 add-symbol-file obj/__user_exit.out
-~~~
+```
 
 随后在 user/libs/syscall.c 的 syscall 函数设置断点，并用 x/i $pc 或 disassemble /r syscall 定位实际 ecall 指令。一次实测中，ecall 位于 0x800102，a0=30（SYS_putc），a1=0x49（字符 I），用户栈为 0x7ffffe40。
 
@@ -699,23 +699,23 @@ add-symbol-file obj/__user_exit.out
 
 用户态断点处记录：
 
-~~~text
+```text
 pc = 0x800102
 instruction = ecall
 a0 = 30
 a1 = 0x49
 sp = 0x7ffffe40
-~~~
+```
 
 宿主机 GDB 在 QEMU 的 helper_raise_exception 设置条件断点：
 
-~~~gdb
+```gdb
 break helper_raise_exception if exception == 8 && env->priv == 0
-~~~
+```
 
 命中结果为 exception=8、env->pc=0x800102、env->priv=0。调用栈包含 code_gen_buffer、cpu_tb_exec、cpu_loop_exec_tb 和 cpu_exec，说明这条 RISC-V 指令由 TCG 翻译块执行。
 
-在 riscv_cpu_do_interrupt 中，实测 cause=8、async=0、medeleg=0xb109，((medeleg >> 8) & 1)=1。委托完成后，env->priv=1，env->pc=0xffffffffc0200da0，env->sepc=0x800102，env->scause=8，mstatus.SPP=0。QEMU 因此把用户态异常交给 S 态，保存原 pc 和异常原因，并跳转到 stvec 指向的 __alltraps。
+在 riscv_cpu_do_interrupt 中，实测 cause=8、async=0、medeleg=0xb109，((medeleg >> 8) & 1)=1。委托完成后，env->priv=1，env->pc=0xffffffffc0200da0，env->sepc=0x800102，env->scause=8，mstatus.SPP=0。QEMU 因此把用户态异常交给 S 态，保存原 pc 和异常原因，并跳转到 stvec 指向的 \_\_alltraps。
 
 #### 4.6.3 ucore 系统调用处理
 
@@ -725,7 +725,7 @@ exception_handler 先把 epc 增加 4，再调用 syscall。因此 syscall 中�
 
 #### 4.6.4 sret 返回用户态
 
-__trapret 中 RESTORE_ALL 根据 SPP 判断返回特权级，恢复 sstatus、sepc 和用户 sp 后执行 sret。实测 sret 地址为 0xffffffffc0200e66，执行前 sp=0x7ffffe40、sepc=0x800106、sscratch=0xffffffffc04ad000、a0=0。
+\_\_trapret 中 RESTORE_ALL 根据 SPP 判断返回特权级，恢复 sstatus、sepc 和用户 sp 后执行 sret。实测 sret 地址为 0xffffffffc0200e66，执行前 sp=0x7ffffe40、sepc=0x800106、sscratch=0xffffffffc04ad000、a0=0。
 
 宿主机 GDB 在 helper_sret 命中时观察到 env->priv=1、env->sepc=0x800106、env->mstatus=0x8000000000046020。helper_sret 返回前 retpc=0x800106、env->priv=0、env->mstatus=0x8000000000046002。
 
@@ -735,22 +735,22 @@ sret 后 RISC-V GDB 观察到 pc=0x800106、sp=0x7ffffe40、a0=0。pc 是 ecall 
 
 ecall 的关键路径为：
 
-~~~text
+```text
 trans_ecall
   -> helper_raise_exception
   -> riscv_raise_exception
   -> riscv_cpu_do_interrupt
   -> 更新 sepc、scause、mstatus 并跳转 stvec
-~~~
+```
 
 sret 的关键路径为：
 
-~~~text
+```text
 翻译后的 sret
   -> helper_sret
   -> 根据 mstatus.SPP 恢复特权级
   -> 返回 sepc
-~~~
+```
 
 TCG 将 RISC-V 指令翻译成宿主机代码，code_gen_buffer 和 cpu_tb_exec 出现在调用栈中。Lab2 的地址翻译调试也经过 TCG，但本次重点是异常、特权级和控制流返回。
 
@@ -799,8 +799,6 @@ user/testbss.c:53:13: warning: array subscript 1049600 is above array bounds of 
 + ld bin/kernel
 riscv64-unknown-elf-objcopy bin/kernel --strip-all -O binary bin/ucore.img
 ```
-
-> 【截图 5-1】`make clean && make` 的终端输出，需要包含两条 warning 以及最后的 `+ ld bin/kernel` 和 `objcopy` 行。
 
 ![](./report.assets/5-1.png)
 
@@ -856,8 +854,6 @@ K>
 
 输出停在 `K>` 提示符处，需要按 `Ctrl-A` 再按 `X` 才能退出 QEMU。
 
-> 【截图 5-2】`make qemu` 运行到 `K>` 提示符的终端输出，需要包含 `kernel_execve` 一行到 `K>` 的全部内容。
-
 ![](./report.assets/5-2.png)
 
 分析：
@@ -882,10 +878,10 @@ make grade
 脚本会先清理工作区，把代码复制到临时目录 `/tmp/lab5_grade`，由 `tools/inject.py` 往副本里注入三个内核测试，然后对 13 个用户程序逐个编译、在 QEMU 中运行，并在串口输出里查找期望的字符串。我们得到的结果为：
 
 ```text
-badsegment:              (2.1s)
+badsegment:              (2.2s)
   -check result:                             OK
   -check output:                             OK
-divzero:                 (2.1s)
+divzero:                 (3.7s)
   -check result:                             OK
   -check output:                             OK
 softint:                 (2.1s)
@@ -900,7 +896,7 @@ faultreadkernel:         (2.1s)
 hello:                   (2.1s)
   -check result:                             OK
   -check output:                             OK
-testbss:                 (3.5s)
+testbss:                 (2.1s)
   -check result:                             OK
   -check output:                             OK
 pgdir:                   (2.1s)
@@ -909,13 +905,13 @@ pgdir:                   (2.1s)
 yield:                   (7.2s)
   -check result:                             OK
   -check output:                             OK
-badarg:                  (12.3s)
+badarg:                  (14.0s)
   -check result:                             OK
   -check output:                             OK
-exit:                    (10.7s)
+exit:                    (9.2s)
   -check result:                             OK
   -check output:                             OK
-spin:                    (5.2s)
+spin:                    (5.1s)
   -check result:                             OK
   -check output:                             OK
 forktest:                (2.1s)
@@ -923,8 +919,6 @@ forktest:                (2.1s)
   -check output:                             OK
 Total Score: 130/130
 ```
-
-> 【截图 5-3】`make grade` 的完整终端输出，需要包含最后一行 `Total Score: 130/130`。
 
 ![](./report.assets/5-3.png)
 
@@ -990,8 +984,6 @@ Type 'help' for a list of commands.
 K>
 ```
 
-> 【截图 5-4】上述命令最后一条 `sed` 的输出，需要包含三条 `[Test ...] PASS` 和 `syscall: invalid system call number 0` 那一行。
-
 ![](./report.assets/5-4.png)
 
 分析：
@@ -1044,8 +1036,6 @@ all user-mode processes have quit.
 init check memory pass.
 ```
 
-> 【截图 5-5】`make build-pgdir && make qemu` 的输出，需要包含 `BEGIN` 到 `END` 之间的整张页表。
-
 ![](./report.assets/5-5.png)
 
 分析：
@@ -1095,8 +1085,6 @@ all user-mode processes have quit.
 init check memory pass.
 ```
 
-> 【截图 5-6】`forktest` 的输出（`I am child 31` 到 `init check memory pass.`），如果希望更完整，可以再补一张 `forktree` 的截图。
-
 ![](./report.assets/5-6.png)
 
 分析：
@@ -1124,8 +1112,6 @@ badarg pass.
 all user-mode processes have quit.
 init check memory pass.
 ```
-
-> 【截图 5-7】`badarg` 的输出，需要包含 `fork ok.` 和 `badarg pass.`。
 
 ![](./report.assets/5-7.png)
 
@@ -1175,8 +1161,6 @@ kill child1 ok.
 all user-mode processes have quit.
 init check memory pass.
 ```
-
-> 【截图 5-8】`spin` 和 `waitkill` 的输出，需要包含 `kill returns 0`、`kill parent ok.`、`kill child1 ok.` 以及最后的 `init check memory pass.`。
 
 ![](./report.assets/5-8.png)
 
@@ -1251,7 +1235,9 @@ init check memory pass.
 
 > 【截图 5-9】`faultread` 与 `testbss` 的输出，需要包含 `cause` 一行和 `killed by kernel.`。
 
-![](./report.assets/5-9.png)
+![](./report.assets/5-9-1.png)
+
+![](./report.assets/5-9-2.png)
 
 分析：
 
@@ -1278,8 +1264,6 @@ cowtest pass.
 all user-mode processes have quit.
 init check memory pass.
 ```
-
-> 【截图 5-10】`make build-cowtest && make qemu` 的输出，需要包含 `cowtest pass.`。
 
 ![](./report.assets/5-10.png)
 
@@ -1316,10 +1300,8 @@ Hsyscall: invalid system call number 0 from pid 2
 syscall: invalid system call number -3 from pid 2
 syscall: invalid system call number -3 from pid 2
 syscall: invalid system call number -3 from pid 2
-25203 /tmp/lab5_mutA.out
+54140 /tmp/lab5_mutA.out
 ```
-
-> 【截图 5-11】上述命令的输出，需要包含 `H` 紧跟着 `syscall: invalid system call number 0` 以及重复的 `-3` 行。
 
 ![](./report.assets/5-11.png)
 
@@ -1364,8 +1346,6 @@ Type 'help' for a list of commands.
 K>
 ```
 
-> 【截图 5-12】上述命令的输出，需要包含 `epc`、`tval`、`cause` 三行和 `killed by kernel.`。
-
 ![](./report.assets/5-12.png)
 
 分析：
@@ -1382,14 +1362,14 @@ K>
 
 1. 本实验中的知识点，以及与 OS 原理的对应：
 
-| 实验中的知识点 | 对应的 OS 原理 | 含义与差异 |
-| --- | --- | --- |
-| 用户库把系统调用号放入 `a0`、参数放入 `a1`～`a5` 后执行 `ecall`；内核在 `syscall()` 里分发，结果写回 `a0` | 系统调用：用户态获得内核服务的受控入口 | 原理上对应“陷入 + 内核服务例程 + 返回”。本实验用 RISC-V 的 U 态 `ecall` 和统一的 `trapframe`，没有单独的系统调用门或 fast syscall 指令 |
-| `RESTORE_ALL` 根据 `sstatus.SPP` 设置 `sscratch`；用户态陷入时 `SAVE_ALL` 用 `sp` 与 `sscratch` 交换栈指针 | 双栈模型：用户栈与内核栈分离 | 完整操作系统里，用户线程在内核栈上保存 Trap 现场。本实验用 `sscratch` 在两种栈之间切换，规模小，但机制与“用户代码不在内核栈上跑”一致 |
-| `kernel_execve` 构造 trap 返回路径；`load_icode` 解析 ELF、建 VMA、装段、设用户栈和 `trapframe` | 程序装载：把可执行文件映射进地址空间并跳到入口 | 用户程序二进制链接进内核镜像，由 `KERNEL_EXECVE` 宏引用，不是从磁盘或文件系统按路径打开。装载发生在 `exec` 路径上，没有独立的动态链接器 |
-| `do_fork` 复制 `mm`、页表和用户页内容；子进程 `trapframe` 里 `a0` 为 0 | `fork`：子进程继承父进程映像并得到新执行实体 | 本实验按 VMA 预映射并复制页，没有做写时复制（Challenge 另做）。子进程第一次被调度时的现场由 `copy_thread` 布置，与 lab4 内核线程首次运行链类似 |
-| `do_execve` 回收旧 `mm`，`load_icode` 建立新映像；`do_exit` 释放 `mm` 后变僵尸，`do_wait` 回收 PCB | 进程生命周期：创建、替换映像、退出与收尸 | `init_main` 的 `do_wait` 循环负责收掉用户进程和孤儿，形成与 Unix 中 init 进程收尸相近的结构。没有独立的信号、作业控制或会话 |
-| 访问用户指针前经 `user_mem_check`，页表项带 `PTE_U` | 内存保护：内核不信任用户地址 | 检查的是当前进程的 VMA 与页权限，还没有缺页异常驱动的按需分配 |
+| 实验中的知识点                                                                                             | 对应的 OS 原理                                 | 含义与差异                                                                                                                                     |
+| ---------------------------------------------------------------------------------------------------------- | ---------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| 用户库把系统调用号放入 `a0`、参数放入 `a1`～`a5` 后执行 `ecall`；内核在 `syscall()` 里分发，结果写回 `a0`  | 系统调用：用户态获得内核服务的受控入口         | 原理上对应“陷入 + 内核服务例程 + 返回”。本实验用 RISC-V 的 U 态 `ecall` 和统一的 `trapframe`，没有单独的系统调用门或 fast syscall 指令         |
+| `RESTORE_ALL` 根据 `sstatus.SPP` 设置 `sscratch`；用户态陷入时 `SAVE_ALL` 用 `sp` 与 `sscratch` 交换栈指针 | 双栈模型：用户栈与内核栈分离                   | 完整操作系统里，用户线程在内核栈上保存 Trap 现场。本实验用 `sscratch` 在两种栈之间切换，规模小，但机制与“用户代码不在内核栈上跑”一致           |
+| `kernel_execve` 构造 trap 返回路径；`load_icode` 解析 ELF、建 VMA、装段、设用户栈和 `trapframe`            | 程序装载：把可执行文件映射进地址空间并跳到入口 | 用户程序二进制链接进内核镜像，由 `KERNEL_EXECVE` 宏引用，不是从磁盘或文件系统按路径打开。装载发生在 `exec` 路径上，没有独立的动态链接器        |
+| `do_fork` 复制 `mm`、页表和用户页内容；子进程 `trapframe` 里 `a0` 为 0                                     | `fork`：子进程继承父进程映像并得到新执行实体   | 本实验按 VMA 预映射并复制页，没有做写时复制（Challenge 另做）。子进程第一次被调度时的现场由 `copy_thread` 布置，与 lab4 内核线程首次运行链类似 |
+| `do_execve` 回收旧 `mm`，`load_icode` 建立新映像；`do_exit` 释放 `mm` 后变僵尸，`do_wait` 回收 PCB         | 进程生命周期：创建、替换映像、退出与收尸       | `init_main` 的 `do_wait` 循环负责收掉用户进程和孤儿，形成与 Unix 中 init 进程收尸相近的结构。没有独立的信号、作业控制或会话                    |
+| 访问用户指针前经 `user_mem_check`，页表项带 `PTE_U`                                                        | 内存保护：内核不信任用户地址                   | 检查的是当前进程的 VMA 与页权限，还没有缺页异常驱动的按需分配                                                                                  |
 
 2. 通过整组实验串联起来，可以看到用户进程建立在哪些前提上：
 

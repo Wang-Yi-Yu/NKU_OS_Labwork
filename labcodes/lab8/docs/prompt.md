@@ -133,6 +133,45 @@ int do_fork(uint32_t clone_flags, uintptr_t stack, struct trapframe *tf)    // l
 
 #### 2.1.2 功能模块二：SFS 文件读写功能
 
+````markdown
+[PROMPT]
+**任务**：补全 lab8 的"SFS 文件读写"功能模块，修改 `kern/fs/sfs/sfs_inode.c`：在标记 `lab8 function2 YOUR CODE` 的位置生成完整的 `sfs_io_nolock()` 函数定义（含函数签名、局部变量、参数检查、读写函数指针选择、首块/中间块/尾块三段处理、`out:` 收尾和文件大小更新）。该函数把文件偏移 `offset` 开始的 `*alenp` 字节在内存缓冲区与 SFS 磁盘块之间传输，**读和写共用同一份实现**。
+
+**操作要求**：你必须在项目中修改实际文件，保留现有代码，只在标记位置补全，并把其中的 `YOUR CODE` 替换为学号 `2414007`；位于它之后的 `sfs_io()`、`sfs_read()`、`sfs_write()` 已经提供，不得删除或重新设计。生成的是完整的函数定义，不要只填写某一段。所有新增代码的注释使用英文，函数使用 Doxygen 风格。
+
+**输出要求**：直接进行文件操作，使用下面 [RELY]、[GUARANTEE]、[SPECIFICATION] 部分的信息，以工程真实代码为准，不要引入无关功能。
+
+[RELY]
+1. 数据结构（`sfs.h`）：`struct sfs_disk_inode { uint32_t size; uint16_t type; uint16_t nlinks; uint32_t blocks; uint32_t direct[SFS_NDIRECT]; uint32_t indirect; }`（`size` 是文件字节数，`blocks` 是已分配的数据块数）；`struct sfs_inode { struct sfs_disk_inode *din; uint32_t ino; bool dirty; ... }`（修改 `din` 后必须置 `dirty`，inode 回收或同步时才会写回磁盘）；`struct sfs_fs`；常量 `SFS_BLKSIZE`（4096，等于页大小）、`SFS_MAX_FILE_SIZE`（`unsigned long`，128 MiB）、`SFS_TYPE_DIR`；`off_t` 是 64 位有符号整数，`size_t` 是 64 位无符号整数；错误码 `E_INVAL`。
+2. 块映射（同文件中已定义，位于本函数之前）：`static int sfs_bmap_load_nolock(struct sfs_fs *sfs, struct sfs_inode *sin, uint32_t index, uint32_t *ino_store)`——把文件的第 `index` 个逻辑块映射为磁盘块号并存入 `*ino_store`。`index` 必须不大于 `din->blocks`（断言）；`index == din->blocks` 表示在文件末尾追加一个新块（分配并清零，`din->blocks` 加 1）。**文件的逻辑块在磁盘上不保证连续。**
+3. 块 I/O（`sfs_io.c`，声明在 `sfs.h`）：`int sfs_rbuf(struct sfs_fs *sfs, void *buf, size_t len, uint32_t blkno, off_t offset)` 与 `int sfs_wbuf(...)`（同样的参数）——在**一个**磁盘块内、从块内偏移 `offset` 起读/写 `len` 字节，要求 `offset + len <= SFS_BLKSIZE`（断言）；写操作内部是"读整块、改局部、写回整块"。`int sfs_rblock(struct sfs_fs *sfs, void *buf, uint32_t blkno, uint32_t nblks)` 与 `int sfs_wblock(...)`——从磁盘块 `blkno` 起**连续** `nblks` 个**整块**的读/写。以上函数成功返回 0，否则返回设备错误码。
+4. 调用者约定：`sfs_io()` 已经持有该 inode 的信号量，并在返回前用 `*alenp` 推进 `iobuf` 的位置；因此本函数不得再加锁，且 `*alenp` 必须在所有返回路径上都表示"已经成功传输的字节数"。传入的 inode 一定是普通文件（目录由上层拒绝）。
+5. 其他：`assert`、`ROUNDUP_DIV` 等通用宏。
+
+[GUARANTEE]
+需要实现以下函数，签名必须与下面一致，并放在 `sfs_io()` 之前：
+
+```c
+static int sfs_io_nolock(struct sfs_fs *sfs, struct sfs_inode *sin, void *buf, off_t offset,
+                         size_t *alenp, bool write);                      // lab8 function2
+```
+
+允许新增 `static` 辅助函数，不得改变公开接口，不得修改 `sfs_io`、`sfs_read`、`sfs_write`。
+
+[SPECIFICATION]
+**sfs_io_nolock**
+- Pre-Condition：调用者持有 `sin` 的信号量；`sin->din` 描述一个普通文件；`*alenp` 是请求传输的字节数；`buf` 指向至少 `*alenp` 字节的内存（读时是可写的目的缓冲区，写时是源缓冲区）。
+- Post-Condition：成功时返回 0；`*alenp` 等于实际传输的字节数（可能小于请求值）；若是写操作且传输区间越过了原来的文件末尾，则 `sin->din->size` 等于 `offset + *alenp` 并且 `sin->dirty` 为真；读操作绝不改变文件大小。失败时返回对应的错误码，`*alenp` 保留失败之前已经完整传输的字节数。
+- Case 1（参数检查）：`offset` 为负数或不小于 `SFS_MAX_FILE_SIZE`，返回 `-E_INVAL`，`*alenp` 为 0；请求长度为 0，返回 0，`*alenp` 为 0；请求区间越过 `SFS_MAX_FILE_SIZE` 时把区间缩短到该上限，不报错。区间终点的计算不能发生整数溢出（请求长度可能极大）。
+- Case 2（读到文件尾）：读操作的区间终点不能超过 `din->size`。`offset` 不小于 `din->size` 时返回 0，`*alenp` 为 0（EOF）；区间跨过文件尾时只传输到文件尾为止。
+- Case 3（写）：写操作不受 `din->size` 限制，可以扩展文件，新增的块由块映射函数在文件末尾追加。起始块号大于 `din->blocks`（出现空洞）时返回 `-E_INVAL`，不得触发块映射函数的断言。
+- Case 4（首块不对齐）：`offset` 不是块边界时，先处理它所在的块：区间延伸到下一块时，传输从块内偏移到该块末尾为止；整个区间都落在这一块内时，传输到区间终点为止。这一段必须用带块内偏移的缓冲区读/写函数，且此前必须通过块映射函数取得磁盘块号。若整个区间已在这一块内处理完，必须立即结束，不得再执行后面的尾块处理。
+- Case 5（中间完整块）：区间内部完整的块用整块读/写函数传输。每个逻辑块都必须通过块映射函数求出磁盘块号，不得假定它们在磁盘上连续：磁盘块号恰好连续的相邻块可以合并为一次多块传输，遇到不连续处必须先传完已合并的部分，再从该处开始新的一段。
+- Case 6（尾块不对齐）：区间终点不是块边界时，处理最后一块的前面部分，同样用带块内偏移（偏移为 0）的缓冲区读/写函数，先经过块映射函数。
+- Case 7（错误）：块映射或磁盘读写任何一步出错，立即停止后续传输，返回该错误码；已经成功传输的字节数保留在 `*alenp` 中，并且对已经写入的部分仍然要更新文件大小和 `dirty`。
+- Requirements：读和写必须共用一份分块逻辑，两者的差别只体现在所选用的缓冲区函数、整块函数，以及区间终点和大小更新的处理上；不得绕过块映射函数自行计算磁盘地址；不得在本函数内加锁；函数必须以一个 `out:` 收尾位置统一写回 `*alenp` 并处理大小更新。
+````
+
 #### 2.1.3 功能模块三：基于文件系统的用户程序加载与执行
 
 ### 2.2 2414015-鲁昕宁

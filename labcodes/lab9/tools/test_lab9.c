@@ -1,3 +1,31 @@
+/**
+ * @file   test_lab9.c
+ * @brief  Grading tests of lab9 (100 points): Clock replacement, do_mmap() and do_munmap().
+ *
+ * tools/inject.py copies this file to kern/test/ of a temporary copy of the student tree and makes
+ * kern_init() call the three entry points right after fs_init(), so swap_init() has already run.
+ * Each test prints one result line, which tools/grade.sh looks for. The tests only use the public
+ * interface (struct swap_manager, do_mmap(), do_munmap(), the VMA list and the page tables), so
+ * they work with any correct implementation:
+ *  - test_lab9_clock() (40 points): drives swap_manager_clock directly, whatever manager swap.c
+ *    selects. An empty list gives no victim and leaves *ptr_page untouched; map_swappable() sets
+ *    page->visited; a page with visited set gets a second chance (the flag is cleared and the next
+ *    page is taken); when all flags are set the scan clears them, wraps around and still finds a
+ *    victim; every page is returned exactly once; a page registered again with swap_in set has
+ *    visited set; an exhausted list gives no victim again;
+ *  - test_lab9_mmap() (30 points): best fit among the gaps between VMAs when addr is 0 (the
+ *    one-page gap wins over the larger ones), page alignment of a fixed address and length,
+ *    the VMA fields (vm_start, vm_end, vm_flags, vm_pgoff, vm_file), the file reference count,
+ *    and -E_INVAL without any change of map_count or open count for unknown vm_flags, a negative
+ *    or unaligned file offset, a range that starts in the last byte of the user space and ends
+ *    beyond it, crosses an existing VMA, starts below USERBASE, ends above USERTOP or has length
+ *    0. No page is mapped by do_mmap();
+ *  - test_lab9_munmap() (30 points): unmapping exactly one VMA removes its page table mappings and
+ *    frees its pages, drops the file reference, clears mm->mmap_cache, decrements map_count and
+ *    leaves the neighbouring VMA alone; a range that covers only part of a VMA, lies in no VMA, has
+ *    length 0 or is outside the user space is refused and changes nothing; an anonymous VMA is
+ *    unmapped without a file.
+ */
 #include <defs.h>
 #include <stdio.h>
 #include <string.h>
@@ -10,6 +38,8 @@
 #include <file.h>
 #include <test_lab9.h>
 
+/** @name Fixed user addresses used by the tests; they lie far from the ELF segments and the stack. @{ */
+/** @brief Start of the first VMA of the do_mmap() test. */
 #define TEST_MMAP_BASE             0x60000000UL
 #define TEST_MMAP_SMALL_HOLE       0x60021000UL
 #define TEST_MMAP_FIXED            0x60030000UL
@@ -17,7 +47,14 @@
 #define TEST_MUNMAP_FULL           0x60050000UL
 #define TEST_MUNMAP_PARTIAL        0x60060000UL
 #define TEST_MUNMAP_ANON           0x60070000UL
+/** @} */
 
+/**
+ * @name Result lines
+ * The lines are built as character arrays, so that the text the grader searches for does not appear
+ * as a string literal in the kernel image of a solution that does not print it.
+ * @{ */
+/** @brief "[Test 1] Clock Page Replacement: PASS (40/40)". */
 static char test_clock_pass[] = {
     '[', 'T', 'e', 's', 't', ' ', '1', ']', ' ', 'C', 'l', 'o', 'c', 'k',
     ' ', 'P', 'a', 'g', 'e', ' ', 'R', 'e', 'p', 'l', 'a', 'c', 'e', 'm',
@@ -25,34 +62,47 @@ static char test_clock_pass[] = {
     '4', '0', ')', 10, 0
 };
 
+/** @brief "[Test 1] Clock Page Replacement: FAIL". */
 static char test_clock_fail[] = {
     '[', 'T', 'e', 's', 't', ' ', '1', ']', ' ', 'C', 'l', 'o', 'c', 'k',
     ' ', 'P', 'a', 'g', 'e', ' ', 'R', 'e', 'p', 'l', 'a', 'c', 'e', 'm',
     'e', 'n', 't', ':', ' ', 'F', 'A', 'I', 'L', 10, 0
 };
 
+/** @brief "[Test 2] VMA mmap: PASS (30/30)". */
 static char test_mmap_pass[] = {
     '[', 'T', 'e', 's', 't', ' ', '2', ']', ' ', 'V', 'M', 'A', ' ', 'm',
     'm', 'a', 'p', ':', ' ', 'P', 'A', 'S', 'S', ' ', '(', '3', '0', '/',
     '3', '0', ')', 10, 0
 };
 
+/** @brief "[Test 2] VMA mmap: FAIL". */
 static char test_mmap_fail[] = {
     '[', 'T', 'e', 's', 't', ' ', '2', ']', ' ', 'V', 'M', 'A', ' ', 'm',
     'm', 'a', 'p', ':', ' ', 'F', 'A', 'I', 'L', 10, 0
 };
 
+/** @brief "[Test 3] VMA munmap: PASS (30/30)". */
 static char test_munmap_pass[] = {
     '[', 'T', 'e', 's', 't', ' ', '3', ']', ' ', 'V', 'M', 'A', ' ', 'm',
     'u', 'n', 'm', 'a', 'p', ':', ' ', 'P', 'A', 'S', 'S', ' ', '(', '3',
     '0', '/', '3', '0', ')', 10, 0
 };
 
+/** @brief "[Test 3] VMA munmap: FAIL". */
 static char test_munmap_fail[] = {
     '[', 'T', 'e', 's', 't', ' ', '3', ']', ' ', 'V', 'M', 'A', ' ', 'm',
     'u', 'n', 'm', 'a', 'p', ':', ' ', 'F', 'A', 'I', 'L', 10, 0
 };
+/** @} */
 
+/**
+ * @brief Find a page in an array of pages.
+ * @param pages array of page pointers
+ * @param count number of entries
+ * @param page  page to look for (may be NULL)
+ * @return the index of page in pages, or -1 if it is not there
+ */
 static int
 test_page_index(struct Page **pages, int count, struct Page *page)
 {
@@ -65,6 +115,20 @@ test_page_index(struct Page **pages, int count, struct Page *page)
     return -1;
 }
 
+/**
+ * @brief Create a VMA by hand and insert it into mm, as do_mmap() would.
+ *
+ * Sets vm_file and vm_pgoff and takes a file reference (fopen_count_inc()) for a file mapping, so
+ * the state matches what do_munmap() has to undo.
+ *
+ * @param mm    address space
+ * @param start first address of the VMA
+ * @param end   first address after the VMA
+ * @param flags VM_READ / VM_WRITE / VM_EXEC bits
+ * @param file  mapped file, or NULL for an anonymous VMA
+ * @param pgoff page offset in the file
+ * @return the VMA, or NULL if vma_create() failed
+ */
 static struct vma_struct *
 test_insert_vma(struct mm_struct *mm, uintptr_t start, uintptr_t end,
                 uint32_t flags, struct file *file, int pgoff)
@@ -82,6 +146,13 @@ test_insert_vma(struct mm_struct *mm, uintptr_t start, uintptr_t end,
     return vma;
 }
 
+/**
+ * @brief Test 1: check the Clock swap manager through its swap_manager function table.
+ *
+ * Works on a fresh mm and three allocated pages whose visited flags the test sets itself, so it
+ * needs neither page faults nor the swap device. The expected victims are derived from the Clock
+ * rules, not from one particular implementation. Prints the PASS or FAIL line.
+ */
 void
 test_lab9_clock(void)
 {
@@ -231,6 +302,14 @@ out:
     }
 }
 
+/**
+ * @brief Test 2: check do_mmap(). See the file comment for the list of checked properties.
+ *
+ * Builds an mm over the boot page table with three one-page VMAs at TEST_MMAP_BASE, +0x20000 and
+ * +0x22000, which leave a 31-page gap and a one-page gap between them. It then calls do_mmap()
+ * with valid and with invalid arguments and inspects the VMA list, map_count, the file open count
+ * and the page table. Prints the PASS or FAIL line.
+ */
 void
 test_lab9_mmap(void)
 {
@@ -377,6 +456,14 @@ out:
     }
 }
 
+/**
+ * @brief Test 3a: unmap a whole two-page file VMA that has two mapped pages.
+ *
+ * The range is given unaligned inside the VMA. After do_munmap() the VMA is gone, its neighbour is
+ * not, map_count and the file open count are down by one, mmap_cache is NULL, the PTEs are invalid
+ * and the pages have no reference left. At the end nothing may be leaked.
+ * @return 1 if all checks pass, 0 otherwise
+ */
 static int
 test_munmap_full(void)
 {
@@ -471,6 +558,14 @@ out:
     return ok;
 }
 
+/**
+ * @brief Test 3b: refuse ranges that do not match a whole VMA.
+ *
+ * A three-page file VMA with one mapped page: unmapping only its first two pages must fail and
+ * leave the VMA, its page and the file reference untouched, and so must ranges outside every VMA,
+ * of length 0 or outside the user space.
+ * @return 1 if all checks pass, 0 otherwise
+ */
 static int
 test_munmap_partial(void)
 {
@@ -548,6 +643,12 @@ out:
     return ok;
 }
 
+/**
+ * @brief Test 3c: unmap an anonymous one-page VMA whose page is mapped.
+ *
+ * map_count must drop to 0, mmap_cache must be NULL and the page must have no reference left.
+ * @return 1 if all checks pass, 0 otherwise
+ */
 static int
 test_munmap_anonymous(void)
 {
@@ -605,6 +706,11 @@ out:
     return ok;
 }
 
+/**
+ * @brief Test 3: run the three do_munmap() cases and print the PASS or FAIL line.
+ *
+ * All three cases always run; the test passes only if every one of them passes.
+ */
 void
 test_lab9_munmap(void)
 {

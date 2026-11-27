@@ -1,10 +1,38 @@
+/**
+ * @file   exit.c
+ * @brief  Test fork(), exit() and waitpid() return values.
+ *
+ * The parent forks a child that yields seven times and exits with the value of magic. The parent
+ * checks that waitpid() returns that exit code, and that a second waitpid() and wait() both fail
+ * because no children are left.
+ *
+ * tools/grade.sh of lab8 ran this program from sh and checked its pass line (the lab9 grade.sh
+ * does not run it); the output is:
+ *   I am the parent. Forking the child...
+ *   I am the parent, waiting now..
+ *   I am the child.
+ *   waitpid <pid> ok. (regex: waitpid.*ok.*)
+ *   exit pass.
+ *   all user-mode processes have quit.
+ *   init check memory pass.
+ *
+ * The kernel_execve line is printed only when user_main() starts the program itself
+ * (make build-exit); a program started from sh does not print it.
+ */
 #include <stdio.h>
 #include <ulib.h>
 
+/** @brief Exit code that the child passes to exit() and the parent must get back from waitpid(). */
 int magic = -0x10384;
 
-int
-main(void) {
+/**
+ * @brief Entry point of the test program.
+ *
+ * Fork a child that calls exit(magic). The parent waits for it and checks the code,
+ * then checks that there is no second child to wait for.
+ * @return 0 on success.
+ */
+int main(void) {
     int pid, code;
     cprintf("I am the parent. Forking the child...\n");
     if ((pid = fork()) == 0) {
@@ -17,9 +45,8 @@ main(void) {
         yield();
         yield();
         exit(magic);
-    }
-    else {
-        cprintf("I am parent, fork a child pid %d\n",pid);
+    } else {
+        cprintf("I am parent, fork a child pid %d\n", pid);
     }
     assert(pid > 0);
     cprintf("I am the parent, waiting now..\n");
@@ -31,4 +58,3 @@ main(void) {
     cprintf("exit pass.\n");
     return 0;
 }
-

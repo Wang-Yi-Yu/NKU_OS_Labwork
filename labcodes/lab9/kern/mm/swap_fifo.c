@@ -1,3 +1,18 @@
+/**
+ * @file   swap_fifo.c
+ * @brief  First-In-First-Out page replacement (lab9): the reference swap manager of the framework.
+ *
+ * FIFO keeps all swappable pages in a queue in the order they became resident (the most recent at
+ * the back) and always evicts the page at the front, i.e. the one that has been in memory the
+ * longest. The bookkeeping is tiny, but FIFO ignores how often a page is used, so a hot page that
+ * was loaded early is evicted anyway, and it shows Belady's anomaly (more frames can cause more
+ * page faults).
+ *
+ * The queue is a circular doubly linked list (libs/list.h) whose head is the global pra_list_head.
+ * Pages are linked through struct Page::pra_page_link, and le2page() (memlayout.h) turns a list
+ * node back into its page. The manager is made of the functions below and the table
+ * swap_manager_fifo at the end of the file, which is what swap.c uses.
+ */
 #include <defs.h>
 #include <riscv.h>
 #include <stdio.h>
@@ -6,140 +21,131 @@
 #include <swap_fifo.h>
 #include <list.h>
 
-/* [wikipedia]The simplest Page Replacement Algorithm(PRA) is a FIFO algorithm. The first-in, first-out
- * page replacement algorithm is a low-overhead algorithm that requires little book-keeping on
- * the part of the operating system. The idea is obvious from the name - the operating system
- * keeps track of all the pages in memory in a queue, with the most recent arrival at the back,
- * and the earliest arrival in front. When a page needs to be replaced, the page at the front
- * of the queue (the oldest page) is selected. While FIFO is cheap and intuitive, it performs
- * poorly in practical application. Thus, it is rarely used in its unmodified form. This
- * algorithm experiences Belady's anomaly.
- *
- * Details of FIFO PRA
- * (1) Prepare: In order to implement FIFO PRA, we should manage all swappable pages, so we can
- *              link these pages into pra_list_head according the time order. At first you should
- *              be familiar to the struct list in list.h. struct list is a simple doubly linked list
- *              implementation. You should know howto USE: list_init, list_add(list_add_after),
- *              list_add_before, list_del, list_next, list_prev. Another tricky method is to transform
- *              a general list struct to a special struct (such as struct page). You can find some MACRO:
- *              le2page (in memlayout.h), (in future labs: le2vma (in vmm.h), le2proc (in proc.h),etc.
+/**
+ * @brief Head of the FIFO queue of swappable pages (a sentinel node). Front = list_next(head).
+ * @note The list is global, so all address spaces share one queue.
  */
-
 list_entry_t pra_list_head;
-/*
- * (2) _fifo_init_mm: init pra_list_head and let  mm->sm_priv point to the addr of pra_list_head.
- *              Now, From the memory control struct mm_struct, we can access FIFO PRA
+/**
+ * @brief Initialise an empty queue and make mm->sm_priv point to it.
+ * @param mm address space; afterwards the FIFO queue can be reached from mm
+ * @return 0
  */
-static int
-_fifo_init_mm(struct mm_struct *mm)
-{     
-     list_init(&pra_list_head);
-     mm->sm_priv = &pra_list_head;
-     //cprintf(" mm->sm_priv %x in fifo_init_mm\n",mm->sm_priv);
-     return 0;
+static int _fifo_init_mm(struct mm_struct *mm) {
+    list_init(&pra_list_head);
+    mm->sm_priv = &pra_list_head;
+    return 0;
 }
-/*
- * (3)_fifo_map_swappable: According FIFO PRA, we should link the most recent arrival page at the back of pra_list_head qeueue
+/**
+ * @brief Register a page as swappable: link it at the back of the queue (the most recent arrival).
+ * @param mm      address space; mm->sm_priv is the queue head
+ * @param addr    virtual address of the page (unused)
+ * @param page    the physical page
+ * @param swap_in 1 if the page was just swapped in, 0 if newly allocated (unused)
+ * @return 0
  */
-static int
-_fifo_map_swappable(struct mm_struct *mm, uintptr_t addr, struct Page *page, int swap_in)
-{
-    list_entry_t *head=(list_entry_t*) mm->sm_priv;
-    list_entry_t *entry=&(page->pra_page_link);
- 
+static int _fifo_map_swappable(struct mm_struct *mm, uintptr_t addr, struct Page *page,
+                               int swap_in) {
+    list_entry_t *head = (list_entry_t *)mm->sm_priv;
+    list_entry_t *entry = &(page->pra_page_link);
+
     assert(entry != NULL && head != NULL);
-    //record the page access situlation
-    //(1)link the most recent arrival page at the back of the pra_list_head qeueue.
     list_add_before(head, entry);
     return 0;
 }
-/*
- *  (4)_fifo_swap_out_victim: According FIFO PRA, we should unlink the  earliest arrival page in front of pra_list_head qeueue,
- *                            then set the addr of addr of this page to ptr_page.
+/**
+ * @brief Choose the victim: unlink the earliest arrival, at the front of the queue.
+ * @param mm       address space; mm->sm_priv is the queue head
+ * @param ptr_page receives the victim page
+ * @param in_tick  must be 0
+ * @return 0
+ * @warning The queue must not be empty: an empty queue makes list_next(head) the head itself, which
+ *          is not inside a struct Page.
  */
-static int
-_fifo_swap_out_victim(struct mm_struct *mm, struct Page ** ptr_page, int in_tick)
-{
-     list_entry_t *head=(list_entry_t*) mm->sm_priv;
-         assert(head != NULL);
-     assert(in_tick==0);
-     /* Select the victim */
-     //(1)  unlink the  earliest arrival page in front of pra_list_head qeueue
-     //(2)  set the addr of addr of this page to ptr_page
-    list_entry_t* entry = list_next(head);
+static int _fifo_swap_out_victim(struct mm_struct *mm, struct Page **ptr_page, int in_tick) {
+    list_entry_t *head = (list_entry_t *)mm->sm_priv;
+    assert(head != NULL);
+    assert(in_tick == 0);
+    list_entry_t *entry = list_next(head);
     list_del(entry);
     *ptr_page = le2page(entry, pra_page_link);
     return 0;
 }
 
-static int
-_fifo_check_swap(void) {
+/**
+ * @brief Access sequence for check_swap(): the page fault count after every access under FIFO.
+ *
+ * Four frames hold the pages a (0x1000), b, c and d, which arrived in this order. Writing page e
+ * (0x5000) evicts the oldest page, a, and each later access then faults or not exactly as the
+ * asserts say (pgfault_num ends at 11). A wrong count fails an assertion.
+ * @return 0
+ */
+static int _fifo_check_swap(void) {
     cprintf("write Virt Page c in fifo_check_swap\n");
     *(unsigned char *)0x3000 = 0x0c;
-    assert(pgfault_num==4);
+    assert(pgfault_num == 4);
     cprintf("write Virt Page a in fifo_check_swap\n");
     *(unsigned char *)0x1000 = 0x0a;
-    assert(pgfault_num==4);
+    assert(pgfault_num == 4);
     cprintf("write Virt Page d in fifo_check_swap\n");
     *(unsigned char *)0x4000 = 0x0d;
-    assert(pgfault_num==4);
+    assert(pgfault_num == 4);
     cprintf("write Virt Page b in fifo_check_swap\n");
     *(unsigned char *)0x2000 = 0x0b;
-    assert(pgfault_num==4);
+    assert(pgfault_num == 4);
     cprintf("write Virt Page e in fifo_check_swap\n");
     *(unsigned char *)0x5000 = 0x0e;
-    assert(pgfault_num==5);
+    assert(pgfault_num == 5);
     cprintf("write Virt Page b in fifo_check_swap\n");
     *(unsigned char *)0x2000 = 0x0b;
-    assert(pgfault_num==5);
+    assert(pgfault_num == 5);
     cprintf("write Virt Page a in fifo_check_swap\n");
     *(unsigned char *)0x1000 = 0x0a;
-    assert(pgfault_num==6);
+    assert(pgfault_num == 6);
     cprintf("write Virt Page b in fifo_check_swap\n");
     *(unsigned char *)0x2000 = 0x0b;
-    assert(pgfault_num==7);
+    assert(pgfault_num == 7);
     cprintf("write Virt Page c in fifo_check_swap\n");
     *(unsigned char *)0x3000 = 0x0c;
-    assert(pgfault_num==8);
+    assert(pgfault_num == 8);
     cprintf("write Virt Page d in fifo_check_swap\n");
     *(unsigned char *)0x4000 = 0x0d;
-    assert(pgfault_num==9);
+    assert(pgfault_num == 9);
     cprintf("write Virt Page e in fifo_check_swap\n");
     *(unsigned char *)0x5000 = 0x0e;
-    assert(pgfault_num==10);
+    assert(pgfault_num == 10);
     cprintf("write Virt Page a in fifo_check_swap\n");
     assert(*(unsigned char *)0x1000 == 0x0a);
     *(unsigned char *)0x1000 = 0x0a;
-    assert(pgfault_num==11);
+    assert(pgfault_num == 11);
     return 0;
 }
 
 
-static int
-_fifo_init(void)
-{
+/** @brief Global initialisation of the manager: nothing to do. @return 0 */
+static int _fifo_init(void) {
     return 0;
 }
 
-static int
-_fifo_set_unswappable(struct mm_struct *mm, uintptr_t addr)
-{
+/** @brief A page became unswappable: FIFO does not support that and does nothing. @return 0 */
+static int _fifo_set_unswappable(struct mm_struct *mm, uintptr_t addr) {
     return 0;
 }
 
-static int
-_fifo_tick_event(struct mm_struct *mm)
-{ return 0; }
+/** @brief Timer tick hook: FIFO does nothing. @return 0 */
+static int _fifo_tick_event(struct mm_struct *mm) {
+    return 0;
+}
 
 
-struct swap_manager swap_manager_fifo =
-{
-     .name            = "fifo swap manager",
-     .init            = &_fifo_init,
-     .init_mm         = &_fifo_init_mm,
-     .tick_event      = &_fifo_tick_event,
-     .map_swappable   = &_fifo_map_swappable,
-     .set_unswappable = &_fifo_set_unswappable,
-     .swap_out_victim = &_fifo_swap_out_victim,
-     .check_swap      = &_fifo_check_swap,
+/** @brief The FIFO swap manager: binds the functions above to the swap_manager interface of swap.h. */
+struct swap_manager swap_manager_fifo = {
+    .name = "fifo swap manager",
+    .init = &_fifo_init,
+    .init_mm = &_fifo_init_mm,
+    .tick_event = &_fifo_tick_event,
+    .map_swappable = &_fifo_map_swappable,
+    .set_unswappable = &_fifo_set_unswappable,
+    .swap_out_victim = &_fifo_swap_out_victim,
+    .check_swap = &_fifo_check_swap,
 };

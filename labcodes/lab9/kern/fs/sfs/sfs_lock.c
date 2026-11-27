@@ -1,44 +1,50 @@
+/**
+ * @file   sfs_lock.c
+ * @brief  The two semaphores of an SFS volume: lock/unlock of the fs semaphore and of the io
+ *         semaphore.
+ *
+ * sfs_fs has two locks that every SFS function uses (sfs.h describes them): fs_sem protects the
+ * in-memory inode table and the loading and reclaiming of inodes, io_sem protects the device and
+ * the shared scratch block sfs_buffer. These four functions are thin wrappers around down() and
+ * up() (sem.h); the lock functions may sleep.
+ */
 #include <defs.h>
 #include <sem.h>
 #include <sfs.h>
 
-
-/*
- * lock_sfs_fs - lock the process of  SFS Filesystem Rd/Wr Disk Block
+/**
+ * @brief Take the fs semaphore of a volume.
  *
- * called by: sfs_load_inode, sfs_sync, sfs_reclaim
+ * Used by sfs_load_inode(), sfs_sync() and sfs_reclaim() (sfs_fs.c and sfs_inode.c).
+ * @param sfs mounted volume
  */
-void
-lock_sfs_fs(struct sfs_fs *sfs) {
+void lock_sfs_fs(struct sfs_fs *sfs) {
     down(&(sfs->fs_sem));
 }
 
-/*
- * lock_sfs_io - lock the process of SFS File Rd/Wr Disk Block
+/**
+ * @brief Take the io semaphore of a volume.
  *
- * called by: sfs_rwblock, sfs_clear_block, sfs_sync_super
+ * Taken by the block-level functions of sfs_io.c (sfs_rwblock(), sfs_rbuf(), sfs_wbuf(),
+ * sfs_clear_block(), sfs_sync_super()). It is the innermost SFS lock.
+ * @param sfs mounted volume
  */
-void
-lock_sfs_io(struct sfs_fs *sfs) {
+void lock_sfs_io(struct sfs_fs *sfs) {
     down(&(sfs->io_sem));
 }
 
-/*
- * unlock_sfs_fs - unlock the process of  SFS Filesystem Rd/Wr Disk Block
- *
- * called by: sfs_load_inode, sfs_sync, sfs_reclaim
+/**
+ * @brief Release the fs semaphore taken by lock_sfs_fs().
+ * @param sfs mounted volume
  */
-void
-unlock_sfs_fs(struct sfs_fs *sfs) {
+void unlock_sfs_fs(struct sfs_fs *sfs) {
     up(&(sfs->fs_sem));
 }
 
-/*
- * unlock_sfs_io - unlock the process of sfs Rd/Wr Disk Block
- *
- * called by: sfs_rwblock sfs_clear_block sfs_sync_super
+/**
+ * @brief Release the io semaphore taken by lock_sfs_io().
+ * @param sfs mounted volume
  */
-void
-unlock_sfs_io(struct sfs_fs *sfs) {
+void unlock_sfs_io(struct sfs_fs *sfs) {
     up(&(sfs->io_sem));
 }

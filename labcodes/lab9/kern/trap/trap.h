@@ -1,8 +1,26 @@
+/**
+ * @file   trap.h
+ * @brief  Trap frame layout and the C-side trap interface.
+ *
+ * A trap (interrupt or exception) enters the kernel at __alltraps in trapentry.S, which pushes a
+ * struct trapframe on the kernel stack and calls trap(). The assembly macros SAVE_ALL/RESTORE_ALL
+ * and the structs below must agree: x0..x31 are stored at offsets 0..31 words, followed by the
+ * four CSRs status, epc, tval, cause at words 32..35, 36 words in total. forkrets() also uses
+ * it: the first return of a new thread or process is built from a trap frame, so the same layout
+ * is required for threads that were never trapped. In lab5 a trap frame can describe a return to
+ * user mode as well.
+ */
 #ifndef __KERN_TRAP_TRAP_H__
 #define __KERN_TRAP_TRAP_H__
 
 #include <defs.h>
 
+/**
+ * @brief The 32 general-purpose registers x0..x31, in register-number order.
+ *
+ * Field order must match the STORE/LOAD offsets in trapentry.S (x<n> at n * REGBYTES). The
+ * stored `sp` is the stack pointer at the time of the trap, not the trap frame address.
+ */
 struct pushregs {
     uintptr_t zero;  // Hard-wired zero
     uintptr_t ra;    // Return address
@@ -38,19 +56,49 @@ struct pushregs {
     uintptr_t t6;    // Temporary
 };
 
+/**
+ * @brief Complete CPU state saved at trap time; passed to trap() by pointer.
+ *
+ * Also used to start a new kernel thread: kernel_thread() fills a temporary frame so that
+ * the first sret of the thread lands in kernel_thread_entry (see proc.c / do_fork).
+ */
 struct trapframe {
-    struct pushregs gpr;
-    uintptr_t status;
-    uintptr_t epc;
-    uintptr_t tval;
-    uintptr_t cause;
+    struct pushregs gpr; /**< General-purpose registers. */
+    uintptr_t status;    /**< sstatus: saved privilege and interrupt-enable bits. */
+    uintptr_t epc; /**< sepc: address to return to (the trapping or interrupted instruction). */
+    uintptr_t
+        tval; /**< stval: extra trap information, e.g. faulting address or instruction bits. */
+    uintptr_t cause; /**< scause: top bit set for an interrupt, the low bits give the cause code. */
 };
 
+/**
+ * @brief C entry point of every trap, called from __alltraps with the saved trap frame.
+ *
+ * When it returns, __trapret restores the registers from the (possibly modified) frame and
+ * executes sret.
+ *
+ * @param tf pointer to the trap frame on the kernel stack
+ */
 void trap(struct trapframe *tf);
+/**
+ * @brief Install __alltraps as the S-mode trap entry (stvec) and enable SUM.
+ */
 void idt_init(void);
+/**
+ * @brief Dump a trap frame (all registers and the four CSRs) to the console.
+ * @param tf trap frame to print
+ */
 void print_trapframe(struct trapframe *tf);
-void print_regs(struct pushregs* gpr);
+/**
+ * @brief Print the 32 general-purpose registers of a trap frame.
+ * @param gpr register block to print
+ */
+void print_regs(struct pushregs *gpr);
+/**
+ * @brief Tell whether a trap was taken from kernel mode.
+ * @param tf trap frame of the trap
+ * @return true if sstatus.SPP is set in the frame (the trap came from S mode), false for U mode
+ */
 bool trap_in_kernel(struct trapframe *tf);
 
 #endif /* !__KERN_TRAP_TRAP_H__ */
-

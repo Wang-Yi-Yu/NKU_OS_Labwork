@@ -18,6 +18,7 @@
 |   lab6   | [Here](labcodes/lab6/) | [Here](labcodes/lab6/docs/report.md) | [Here](labcodes/lab6/docs/prompt.md) |
 |   lab7   | [Here](labcodes/lab7/) | [Here](labcodes/lab7/docs/report.md) | [Here](labcodes/lab7/docs/prompt.md) |
 |   lab8   | [Here](labcodes/lab8/) | [Here](labcodes/lab8/docs/report.md) | [Here](labcodes/lab8/docs/prompt.md) |
+|   lab9   | [Here](labcodes/lab9/) | [Here](labcodes/lab9/docs/report.md) | [Here](labcodes/lab9/docs/prompt.md) |
 
 ## 3. QEMU 8.2+OpenSBI v1.3 环境下的适配修改
 
@@ -25,13 +26,15 @@ lab 框架原本针对 QEMU 4.x + OpenSBI v0.4 编写。本仓库的实验环境
 
 > 若某次实验并没有新的针对 QEMU 8.2+OpenSBI v1.3 环境的适配性修改，不要在改项下新增内容。
 
-1. **用 `-kernel` 加载内核，不再用 `-device loader`。** 将 `Makefile` 中 `qemu`、`debug`、`test` 目标以及 `tools/grade.sh` 里的 `-device loader,file=bin/ucore.img,addr=0x80200000` 改为 `-kernel bin/ucore.img`。OpenSBI v1.3 使用 `fw_dynamic`，需要由 QEMU 通过 `-kernel` 告知下一级镜像的入口；用旧写法时启动信息里的 `Domain0 Next Address` 是 `0`，内核根本不会被执行。改对之后该项应为 `0x0000000080200000`。lab8 骨架同样是旧写法，评分脚本 `tools/grade.sh` 里对应的是变量 `qemuopts`（不是命令行），记得一并改掉。
+1. **用 `-kernel` 加载内核，不再用 `-device loader`。** 将 `Makefile` 中 `qemu`、`debug`、`test` 目标以及 `tools/grade.sh` 里的 `-device loader,file=bin/ucore.img,addr=0x80200000` 改为 `-kernel bin/ucore.img`。OpenSBI v1.3 使用 `fw_dynamic`，需要由 QEMU 通过 `-kernel` 告知下一级镜像的入口；用旧写法时启动信息里的 `Domain0 Next Address` 是 `0`，内核根本不会被执行。改对之后该项应为 `0x0000000080200000`。lab8、lab9 骨架同样是旧写法，评分脚本 `tools/grade.sh` 里对应的是变量 `qemuopts`（不是命令行），记得一并改掉。
 2. **在 `kern/init/entry.S` 的启动页表中增加 `0x80000000` 的恒等映射。** 在 `boot_page_table_sv39` 的第 2 项（对应虚拟地址 `0x80000000`，1 GiB 大页）写入 `.quad (0x80000 << 10) | 0xcf`，权限为 VRWXAD。原因是 `csrw satp` 之后紧跟的几条指令仍然从低物理地址 `0x802000xx` 取指：QEMU 4.x 会在与 `csrw` 同一个已翻译的基本块内继续执行，只映射高地址就够；QEMU 8.x 在写 `satp` 之后会用新页表重新取指，缺少低地址映射会触发指令页错误，内核在没有任何输出的情况下卡死。
 3. **把 `SAVE_ALL` 中的 `sbadaddr` 改为 `stval`（lab3 起）。** `trapentry.S` 里原有 `csrr s3, sbadaddr`，新版 binutils（本环境为 riscv64-unknown-elf-gcc 15.1）已经删除这个旧名字，汇编时报 `unknown CSR 'sbadaddr'`。`sbadaddr` 就是特权架构 1.9 中 `stval` 的旧称，改成 `csrr s3, stval` 后语义完全相同。`libs/riscv.h` 中的 `DECLARE_CSR(sbadaddr, ...)` 只是宏声明、没有被使用，不需要改。
 4. **保留 lab2 的物理内存布局宏，以便回填 lab2 代码。** lab3 的 `kern/mm/memlayout.h` 骨架没有 `PHYSICAL_MEMORY_END`、`KERNEL_BEGIN_PADDR`、`KERNEL_BEGIN_VADDR`，而 lab2 的 `page_init` 需要用到 `PHYSICAL_MEMORY_END`，不加回去会编译失败。这一项与 QEMU 版本无关，但每次把 lab2 代码带到新实验时都要检查。
 5. **QEMU 8.x 不接受带 U/A/D 位的非叶子页表项（lab4 起）。** RISC-V 规范里非叶子项（R=W=X=0）的 U/A/D 是保留位，QEMU 8.x 会判定为非法翻译。lab4 骨架的 `get_pte()` 给中间层写 `PTE_U | PTE_V`，一旦真正通过这些中间项访问虚拟地址（`check_boot_pgdir()` 里 `page_insert` 映射 `0x100` 后 `strcpy`）就触发 store page fault；此时 `idt_init()` 还没执行，`stvec` 未设置，现象是内核反复重启、不停打印 `DTB Init`。可以用 `qemu ... -d int -D log` 看到 `store_page_fault`，`tval` 就是出错的虚拟地址。适配：`get_pte()` 创建中间页表项时改用 `ptd_create()`（只有 `PTE_V`），并删除 `check_pgdir()` 里 `assert(boot_pgdir_va[0] & PTE_U)`（它断言的正是这个写法）。叶子项上的 `PTE_U` 不受影响。
 6. **GCC 15 把 `-Wint-conversion` 和 `-Wincompatible-pointer-types` 升级成错误（lab4 起）。** lab4 骨架的 `kmalloc.c`（整数传给 `kva2page()`）和 `tools/test_lab4.c`（`void (*)(void *)` 传给 `kernel_thread`）依赖旧行为。适配：在 `Makefile` 的 `CFLAGS` 里加 `-Wno-error=int-conversion -Wno-error=incompatible-pointer-types`，不改动老师给的代码；编译时会看到相应警告，属正常现象。
 7. **GCC 15 把用户程序 `divzero` 里的除零折叠成别的值（lab5 起）。** `user/divzero.c` 原本靠 `1 / zero` 触发 RISC-V 的除零行为：RISC-V 的 `div` 指令不会陷入异常，而是返回 -1，评分脚本据此检查输出行 `value is -1.`。除零在 C 里是未定义行为，GCC 15 在 `-O2` 下把 `1 / x` 改写成 `(x + 1 < 3) ? x : 0`，`zero` 为 0 时程序打印的是 `value is 0.`，该用例拿不到分；只把 `zero` 改成 `volatile` 没有用，因为被折叠的是除法本身。适配：把被除数也改成 `volatile int one = 1;`，写成 `one / zero`，编译器就必须真正发出 `div` 指令。反汇编里能看到 `sltiu` 而没有 `div`，就是遇到了这个问题。
+8. **GCC 15 默认 `-fno-common`（lab9）。** lab9 骨架里的 `swap_fifo.c` 和 `swap_clock.c` 都写了 `list_entry_t pra_list_head;`（没有 `static`）。旧版 GCC 会把这种"试探性定义"合并成一个 common 符号，GCC 10 起默认 `-fno-common`，链接时报 `multiple definition of 'pra_list_head'`。适配：在 `Makefile` 的 `CFLAGS` 里加 `-fcommon`，同样不改动老师给的代码。
+9. **lab9 的 `sfs.img` 只有 480 kB，`-g` 不能加到用户程序上（lab9）。** 前面实验的 `Makefile` 在全局 `CFLAGS` 里加了 `-g`，但 lab9 骨架的 `dd ... bs=1kB count=480` 装不下带调试信息的用户程序（约 1.2 MB，不带 `-g` 约 260 kB），`mksfs` 报 `out of disk space`，且评分用的是学生自己的 `Makefile`。适配：`-g` 只加在内核的 `KCFLAGS` 上，用户程序不带调试信息。
 
 ## 4. 迁移前期实验代码时的一些修改
 
@@ -73,3 +76,15 @@ lab 框架原本针对 QEMU 4.x + OpenSBI v0.4 编写。本仓库的实验环境
 - `proc_init()` 里 idle 进程要自己 `files_create()` 再 `files_count_inc()`（`alloc_proc()` 只负责把 `filesp` 置 NULL），`do_exit()` 里要 `put_files(current)`。`do_execve()` 变成 `(name, argc, argv)`，`kernel_execve()` 变成 `(name, argv)`，仍然沿用 lab5 的做法：调完 `do_execve()` 直接跳到 `__trapret`，不需要原版的 `ebreak`。
 - `pmm_init()`：lab8 骨架新增了 `switch_kernel_memorylayout()`，`boot_pgdir_va` 不再指向 `boot_page_table_sv39`，而是重新建的内核页表（`entry.S` 多了一页 `bootstackguard` 做栈保护页）。前面实验里"`pmm_init` 直接把 `boot_pgdir_va` 指向 `boot_page_table_sv39`"那段要换掉；第 3 节第 2 条的 `0x80000000` 恒等映射仍要保留。
 - 用户库：骨架的 `user/libs/syscall.c` 没有 `sys_exec()`，要补；`printfmt`/`vprintfmt` 多了 `fd` 参数，`error_string` 要补 12 个新错误码的名字；`unistd.h` 里没有 `SYS_brk`；`forktree` 的 `DEPTH` 改成了 3。`umain(argc, argv)` 的参数来自 `a0`/`a1`，而 `initcode.S` 只是 `call umain`，所以 `load_icode()` 要在 trapframe 里设置 `a0 = argc`、`a1 = argv`（`sh` 不带参数时不设也能跑，带脚本参数时会读到错误的 `argc`）。
+
+### Lab 9
+
+- 评分注入脚本 `tools/inject.py` 靠字符串定位插入点：`kern/init/init.c` 里必须恰好有一行 `#include <fs.h>`，`kern_init()` 里必须有 `fs_init();`（测试插在最后一处 `fs_init();` 之后），`Makefile` 里 `KINCLUDE`、`KSRCDIR` 必须写成 `变量 += ...` 的形式，且 `kern/test/` 目录不能存在。`kern_init()` 里 `swap_init()` 要放在 `fs_init()` 之前。
+- lab8 为了让 `swapfs.c` 能编译，在 `swapfs.h` 里补了 `swap_offset()` 和 `max_swap_offset`。lab9 的 `swap.h` 自带这两个定义，要从 `swapfs.h` 里删掉，否则宏重复定义；`max_swap_offset` 的定义也移到了 `swap.c`。
+- `struct Page` 没有 `visited` 字段，但任务书、Clock 算法和注入的测试（`pages[i]->visited`）都要用，要在 `memlayout.h` 里补上 `int visited;`。
+- `exception_handler()` 骨架留空，缺页分发要自己补：`CAUSE_LOAD_PAGE_FAULT` / `CAUSE_STORE_PAGE_FAULT` 交给骨架里的 `pgfault_handler()`（调用 `do_pgfault()`），成功就直接返回；失败时沿用 lab5 的处理，内核态 panic，用户态打印 `killed by kernel.` 并 `do_exit(-E_KILLED)`。没有这一步，`check_pgfault()` 和 `check_swap()` 都过不了。
+- 用户态 `syscall()` 现在把第 6 个参数放在 `a6`（`mmap` 有 6 个参数），但内核 `syscall()` 骨架只读 `a1`~`a5`，`sys_mmap` 读到的 `arg[5]`（offset）是越界的栈垃圾。要把 `arg` 改成 `arg[6]` 并读 `tf->gpr.a6`。
+- `user/libs/initcode.S` 骨架又退回成只有 `call umain`。lab8 的写法要保留：`exec` 的返回路径会把 `a0` 覆盖成 `sys_exec` 的返回值 0，所以 `_start` 要从栈上读 `argc`/`argv`（`ld a0, 0(sp); addi a1, sp, 8`）。
+- `user/testmmap.c` 没有 `#include <stdio.h>`，`cprintf` 未声明，编译不过；`user/libs/mmap.h` 只有四行（`#ifndef`、`#define`、一个空的 `#include`，没有 `#endif`），没有任何文件包含它，已补成合法的空头文件。
+- `E_EOF`（25）是新增的错误码，`libs/printfmt.c` 的 `error_string` 要补上名字，否则 `%e` 打印成 `error 25`。
+- `swap.c` 默认选的是 FIFO（`sm = &swap_manager_fifo`）。注入的 Clock 测试直接调用 `swap_manager_clock`，不依赖这个选择；想让整个系统用 Clock，要在 `swap.c` 里包含 `swap_clock.h` 并改这一行。

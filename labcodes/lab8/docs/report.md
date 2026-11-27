@@ -306,9 +306,121 @@ static int sfs_io_nolock(struct sfs_fs *sfs, struct sfs_inode *sin, void *buf, o
 
 #### 4.3.1 模块功能描述
 
+**需要实现/修改的函数：**
+
+```c
+static int load_icode(int fd, int argc, char **kargv);   // kern/process/proc.c（lab8 function3，整个函数）
+_start:                                                  // user/libs/initcode.S（取 argc/argv 的入口代码）
+```
+
+**功能说明：**
+
+`load_icode` 把文件描述符 `fd` 对应的 ELF 用户程序装载到当前进程的新地址空间，并让进程从 ELF 入口返回用户态。调用关系是 `sys_exec`（或 `kernel_execve`）→ `do_execve`（复制参数、关闭旧文件、打开 ELF、释放旧 `mm`）→ `load_icode`。进入时 `current->mm` 为 `NULL`，`current->tf` 指向内核栈顶的 trapframe。所有从文件的读取都通过已提供的 `load_icode_read` 完成（它先 `sysfile_seek` 再 `sysfile_read`，必须恰好读满）；因为此时 `current->mm == NULL`，`sysfile_read` 只要求目的地址是内核地址，所以可以把文件内容直接读进新分配物理页的内核虚拟地址。函数按下面七步进行：
+
+1. **创建地址空间。** `mm_create` 新建 `mm_struct`，`setup_pgdir` 分配页目录并把内核映射复制进去（保证切换到新页表后内核代码仍可执行）。
+2. **读取并检查 ELF 头。** `load_icode_read(fd, &elf, sizeof(elf), 0)` 读出 ELF 头，读失败返回其错误码，`e_magic != ELF_MAGIC` 返回 `-E_INVAL_ELF`。
+3. **遍历程序头，装载每个 `PT_LOAD` 段。** 第 `i` 个程序头在文件偏移 `e_phoff + i * sizeof(struct proghdr)` 处，同样用 `load_icode_read` 读出。非 `PT_LOAD` 或 `p_memsz == 0` 的跳过；`p_filesz > p_memsz` 或 `p_va + p_memsz` 回绕的是非法 ELF，返回 `-E_INVAL_ELF`。按 `ELF_PF_R/W/X` 设置 VMA 标志（`VM_READ/WRITE/EXEC`）和页表权限：总含 `PTE_U | PTE_V`，可读加 `PTE_R`，可写加 `PTE_W | PTE_R`（RISC-V 不允许只写页），可执行加 `PTE_X`；然后 `mm_map` 建立覆盖 `[p_va, p_va + p_memsz)` 的 VMA。接着**逐页**装入内容：从 `ROUNDDOWN(p_va, PGSIZE)` 起，每个页都 `pgdir_alloc_page` 分配并映射，立刻**整页清零**（`alloc_page` 不清零页内容），然后只把落在 `[p_va, p_va + p_filesz)` 内的部分读入。对每个页取 `lo = max(页起始, p_va)`、`hi = min(页末尾, p_va + p_filesz)`，若 `lo < hi`，就把文件中接下来的 `hi - lo` 字节读到页内偏移 `lo - 页起始` 处，并把文件偏移前进 `hi - lo`。这样一套规则同时解决了三个问题：段起始地址不页对齐时，第一页的前面部分保持为零、文件内容从正确的页内偏移开始放；包含文件末尾的那一页只读到 `p_filesz` 为止；`p_filesz` 到 `p_memsz` 之间的 **BSS**，无论落在同一页的后半部分还是后面的整页，都因为先清零而自然为零。关键是 `p_filesz` 和 `p_memsz` 的区分：文件里只有前者那么多字节，只读这么多，不会把 BSS 当作文件内容去读（那会读到文件之外）。
+4. **关闭文件。** 所有段读完后文件已经不需要了，`sysfile_close(fd)`。失败路径上不用关，进程 `do_exit` 时会统一关闭。
+5. **建立用户栈并准备参数。** `mm_map` 建立 `VM_READ | VM_WRITE | VM_STACK` 的栈 VMA，范围 `[USTACKTOP - USTACKSIZE, USTACKTOP)`。参数按进程入口的常见布局从 `USTACKTOP` 向下放：先是各个参数字符串（含结尾 NUL），然后是以 `NULL` 结尾的指针数组 `uargv[0..argc]`，最后是 `argc`；栈指针 `sp` 按 16 字节对齐并指向 `argc`，`uargv` 位于 `sp + 8`。先计算字符串总长 `str_size`，得到 `str_base = ROUNDDOWN(USTACKTOP - str_size, 16)`，`sp = ROUNDDOWN(str_base - (argc + 2) * 8, 16)`，其中 `argc + 2` 个字分别给 `argc` 和 `argc + 1` 个指针。若 `sp` 落到栈 VMA 最低的保护页以内，返回 `-E_INVAL`。因为本实验没有缺页处理（`do_pgfault` 没有定义），无法按需补页，所以要在装载时就为栈分配物理页：至少 4 页，并且能容纳整个参数块；这些页同样 `pgdir_alloc_page` 之后整页清零，避免把旧数据暴露给用户程序。不全部分配 256 页，是因为 `fork` 会逐页复制已映射的页。
+6. **切换到新地址空间并写入参数。** 所有可能失败的步骤都完成后，才让新 `mm` 生效：`mm_count_inc`，设置 `current->mm` 和 `current->pgdir`（页目录物理地址），`lsatp(PADDR(mm->pgdir))` 并 `flush_tlb()`。切换之后，内核（`sstatus.SUM` 已置位）可以直接通过用户虚拟地址访问新栈，把字符串、`uargv` 数组（每项指向对应字符串在用户栈中的地址，最后一项为 `NULL`）和 `argc` 写进去。这一步之后不会再失败，所以不需要处理"页表已切换但出错"的回退。
+7. **设置 trapframe。** 先保存原来的 `status`，再 `memset` 清空整个 trapframe，设置 `epc = e_entry`（ELF 入口）、`sp` 为上面算好的栈指针、`a0 = argc`、`a1 = uargv`；`status` 在原值上置位 `SSTATUS_SPIE`（`sret` 后开中断）并清除 `SSTATUS_SPP`（`sret` 返回 U 态），原值要保留，因为 `RESTORE_ALL` 会用它整体恢复 `sstatus`（其中包括内核依赖的 `SUM`）。函数返回 0 后，`do_execve` 返回，`kernel_execve` 跳到 `__trapret`（或用户态的系统调用返回路径）完成特权级切换。
+
+**失败清理。** 任一步出错（`mm_create`/`setup_pgdir` 失败、读取失败、ELF 魔数或段非法、`mm_map` 失败、物理页分配失败、参数放不进栈），都按获取顺序的反方向释放：如果已经建立过 VMA，先 `exit_mmap`（释放已映射的物理页和页表，此时 `mm_count` 仍为 0，满足它的要求），再 `put_pgdir` 释放页目录，最后 `mm_destroy` 释放 `mm_struct`；在 VMA 建立之前失败（`mm_create` 之后读 ELF 头失败）则跳过 `exit_mmap`。出错后 `current->mm` 仍为 `NULL`，`do_execve` 随后让进程 `do_exit`，不会留下半初始化的地址空间。
+
+**入口代码 `_start`。** `initcode.S` 里的 `_start` 原来只有 `call umain`，参数靠 `a0`/`a1` 传递。这对 `kernel_execve` 启动的程序（直接 `j __trapret`）成立，但对用户态通过 `sys_exec` 启动的程序不成立：`syscall()` 在 `do_execve` 返回后会把返回值 0 写回 trapframe 的 `a0`，覆盖 `load_icode` 设置的 `argc`。因此 `_start` 改为从栈上读取：`ld a0, 0(sp)` 取 `argc`，`addi a1, sp, 8` 取 `argv`，再 `call umain`。`load_icode` 仍然设置 `a0`/`a1`，使 `kernel_execve` 路径和没有修改入口代码的程序也能正常工作。
+
 #### 4.3.2 最终提示词
 
+以下是经过迭代优化后，最终成功实现该功能的提示词：
+
+````markdown
+[PROMPT]
+**任务**：补全 lab8 的"基于文件系统的用户程序加载与执行"功能模块，涉及两个文件：`kern/process/proc.c` 中标记 `lab8 function3 YOUR CODE` 的位置，生成完整的 `static int load_icode(int fd, int argc, char **kargv)`（必须使用这个固定签名，`do_execve()` 直接调用它）；`user/libs/initcode.S` 中的 `_start`，让用户程序入口按 `load_icode` 约定的栈布局取得 `argc`/`argv`。`load_icode` 要把已经打开的 ELF 文件 `fd` 装载到当前进程的新地址空间，建立用户栈并写入命令行参数，设置好 trapframe，使进程从 ELF 入口返回用户态；任何一步失败都必须释放已创建的资源，不留下半初始化的地址空间。
+
+**操作要求**：你必须在项目中修改实际文件，保留现有代码，只在标记位置补全，并把其中的 `YOUR CODE` 替换为学号 `2414007`；`load_icode_read()`、`do_execve()`、`copy_kargv()`、`put_kargv()` 已经提供，不要删除或重写；不要修改函数名、参数类型和返回值类型。所有新增代码的注释使用英文，函数使用 Doxygen 风格。
+
+**输出要求**：直接进行文件操作，使用下面 [RELY]、[GUARANTEE]、[SPECIFICATION] 部分的信息，以工程真实代码为准，不要引入无关功能。
+
+[RELY]
+1. 文件读取：`static int load_icode_read(int fd, void *buf, size_t len, off_t offset)`（`proc.c`，已提供）——先 `sysfile_seek` 到 `offset` 再 `sysfile_read` 读 `len` 字节，**恰好读满**才返回 0，否则返回负的错误码（短读返回 -1）。`int sysfile_close(int fd)`。`sysfile_read` 通过 `copy_to_user(current->mm, ...)` 把数据交给 `buf`：`load_icode` 运行时 `current->mm` 为 `NULL`（`do_execve` 已经释放旧地址空间），此时只要求目的地址是内核地址，所以可以直接读到新分配的物理页的内核虚拟地址 `page2kva(page)`。
+2. 进程与地址空间：`mm_create()`、`setup_pgdir(mm)`（`proc.c` 内的静态函数，分配页目录并复制内核映射）、`put_pgdir(mm)`、`mm_map(mm, addr, len, vm_flags, vma_store)`（按页对齐 `addr` 和 `addr + len`，区间超出用户空间或与已有 VMA 重叠时返回 `-E_INVAL`）、`exit_mmap(mm)`（释放 VMA 对应的页和页表，要求 `mm_count == 0`）、`mm_destroy(mm)`、`mm_count_inc(mm)`；`pgdir_alloc_page(pgdir, la, perm)`（分配一个物理页并映射到 `la`，**不会清零页内容**，失败返回 `NULL`）；`page2kva`、`PADDR`、`lsatp(pa)`、`flush_tlb()`、`ROUNDDOWN`、`ROUNDUP`、`PGSIZE`；`VM_READ`、`VM_WRITE`、`VM_EXEC`、`VM_STACK`；`PTE_U`、`PTE_V`、`PTE_R`、`PTE_W`、`PTE_X`、`PTE_USER`（可读可写可执行的用户页）。`current->mm`、`current->pgdir`（页目录物理地址）、`current->tf`（内核栈顶的 trapframe）。
+3. ELF（`libs/elf.h`）：`struct elfhdr`（`e_magic`、`e_entry`、`e_phoff`、`e_phnum`）、`struct proghdr`（`p_type`、`p_flags`、`p_offset`、`p_va`、`p_filesz`、`p_memsz`）、`ELF_MAGIC`、`ELF_PT_LOAD`、`ELF_PF_X`、`ELF_PF_W`、`ELF_PF_R`。程序段的起始地址 `p_va` 可能不是页对齐的；文件中只有 `p_filesz` 字节，`p_memsz` 超出的部分是 BSS，必须为零。
+4. 用户空间布局（`memlayout.h`）：`USTACKTOP`、`USTACKSIZE`（256 页）；`EXEC_MAX_ARG_LEN`（4095）、`EXEC_MAX_ARG_NUM`（32）。用户栈 VMA 的最低一页是保护页，`user_mem_check` 不允许写入。本实验没有定义缺页处理（`do_pgfault`），无法按需补页，所以用户栈上会被访问的页必须在装载时就分配好；但全部分配会让每次 `fork` 都复制整个栈，因此只分配栈顶需要的若干页。
+5. 陷入帧与特权级：`struct trapframe`（`gpr.sp`、`gpr.a0`、`gpr.a1`、`epc`、`status`）、`SSTATUS_SPP`（为 1 表示 `sret` 返回 S 态）、`SSTATUS_SPIE`。内核在初始化时已经置位 `sstatus.SUM`，因此切换到新页表之后，S 态可以直接通过用户虚拟地址读写该页表中的用户页。`__trapret` 用 trapframe 中的 `status` 整体恢复 `sstatus`，所以必须保留原来的 `status` 值（含 `SUM`）。
+6. 调用环境：`do_execve` 在关闭进程所有已打开文件（`files_closeall`）之后才打开 ELF 文件，随后释放旧 `mm`，再调用 `load_icode(fd, argc, kargv)`；`kargv[0..argc-1]` 是内核内存中以 NUL 结尾的字符串（长度不超过 `EXEC_MAX_ARG_LEN`）；`load_icode` 返回非 0 时 `do_execve` 让进程 `do_exit`，返回 0 时释放 `kargv`。`kernel_execve` 直接 `j __trapret`，而用户态通过 `sys_exec` 进入时，`syscall()` 会在返回后把系统调用的返回值（成功时为 0）写回 trapframe 的 `a0`，**覆盖**其中的 `argc`。
+7. 用户库：`void umain(int argc, char *argv[])`（`user/libs/umain.c`）；`_start` 当前只有 `call umain`。
+
+[GUARANTEE]
+需要实现或修改以下内容，签名必须与现有声明一致：
+
+```c
+static int load_icode(int fd, int argc, char **kargv)    // kern/process/proc.c, lab8 function3
+_start:                                                  // user/libs/initcode.S
+```
+
+允许新增 `static` 辅助函数，不得改变公开接口。
+
+[SPECIFICATION]
+**load_icode**
+- Pre-Condition：`current->mm` 为 `NULL`；`current->tf` 指向内核栈顶的 trapframe；`fd` 是以只读方式打开的 ELF 文件，文件位置不作假设（每次读取都由 `load_icode_read` 先定位）；`1 <= argc <= EXEC_MAX_ARG_NUM`。
+- Post-Condition：成功时返回 0，`current->mm` 是新建的地址空间（引用计数为 1），`current->pgdir` 和 `satp` 指向它的页目录，TLB 已刷新；ELF 的每个 `PT_LOAD` 段都已按 VMA 权限装入；用户栈已建立并写入参数；trapframe 使 `sret` 后在用户态从 ELF 入口开始执行。失败时返回错误码，本函数创建的 VMA、页表、物理页、页目录和 `mm_struct` 都已释放，`current->mm` 仍为 `NULL`。
+- Case 1（ELF 头）：通过 `load_icode_read` 读取 ELF 头；读取失败返回其错误码；`e_magic` 不是 `ELF_MAGIC` 返回 `-E_INVAL_ELF`。
+- Case 2（程序头与段）：对 `e_phnum` 个程序头逐个通过 `load_icode_read` 读取（位置为 `e_phoff` 加上序号乘以程序头大小）。非 `PT_LOAD` 的跳过；`p_memsz` 为 0 的跳过；`p_filesz > p_memsz`，或 `p_va + p_memsz` 回绕，返回 `-E_INVAL_ELF`。根据 `ELF_PF_R/W/X` 设置 VMA 标志，并据此设置页表权限：总含 `PTE_U` 和 `PTE_V`，可读加 `PTE_R`，可写加 `PTE_W | PTE_R`（RISC-V 不允许只写），可执行加 `PTE_X`。用 `mm_map` 建立覆盖 `[p_va, p_va + p_memsz)` 的 VMA。
+- Case 3（装载一个段）：从 `p_va` 所在页起逐页处理，直到覆盖 `p_va + p_memsz`。每页先分配并**整页清零**，再只把落在 `[p_va, p_va + p_filesz)` 内的那部分字节从文件读入该页：首页要按 `p_va` 的页内偏移放置，包含文件尾的页只读到 `p_filesz` 为止，`p_filesz` 到 `p_memsz` 之间（BSS）和页内未被文件覆盖的部分保持为零。文件偏移从 `p_offset` 开始随已读字节数推进。
+- Case 4（装载完毕）：所有段读完后关闭 `fd`（之后不再需要）。
+- Case 5（用户栈与参数）：建立 `VM_READ | VM_WRITE | VM_STACK` 的栈 VMA，范围是 `USTACKTOP - USTACKSIZE` 到 `USTACKTOP`。参数从 `USTACKTOP` 向下依次存放：各参数字符串（含结尾 NUL）、以 NULL 结尾的指针数组 `uargv[0..argc]`、`argc`；栈指针 `sp` 按 16 字节对齐并指向 `argc`，`uargv` 位于 `sp + 8`（通常的进程入口布局）。分配并清零栈顶若干页：至少 4 页，并且足以容纳上面整个参数块；参数块放不进栈（越过保护页）时返回 `-E_INVAL`。
+- Case 6（切换地址空间）：所有可能失败的步骤完成后，才使新 `mm` 成为当前进程的地址空间：引用计数加 1，设置 `current->mm`、`current->pgdir`，写 `satp` 并刷新 TLB。然后才通过用户虚拟地址把参数字符串、`uargv` 数组和 `argc` 写入新栈。
+- Case 7（trapframe）：保存原 `status`，清空整个 trapframe，再设置：`epc` 为 ELF 入口，`sp` 为上面计算的栈指针，`a0` 为 `argc`，`a1` 为 `uargv`；`status` 在原值基础上置位 `SSTATUS_SPIE`、清除 `SSTATUS_SPP`，使 `sret` 返回用户态并开中断。其余寄存器为 0。
+- Case 8（失败清理）：`mm_create` 失败、页目录分配失败、读取失败、`mm_map` 失败、物理页分配失败、栈放不下，都要按获取的相反顺序释放：已映射的页和页表（`exit_mmap`，此时 `mm_count` 为 0）、页目录、`mm_struct`；在 VMA 建立之前失败则不需要 `exit_mmap`。
+- Requirements：所有磁盘读取都通过 `load_icode_read` 完成；只从文件读 `p_filesz` 字节，不得把整个 `p_memsz` 都当作文件内容；不得在切换到新页表之前通过用户虚拟地址访问新栈；不得在 `load_icode` 内部修改 `current->tf` 之外的执行现场。
+
+**_start（initcode.S）**
+- Pre-Condition：`sp` 指向 `load_icode` 写好的 `argc`，`argv` 数组紧随其后。
+- Post-Condition：以 `argc` 为第一个参数、`argv` 为第二个参数调用 `umain`，保留其后的死循环作为兜底。
+- Requirements：`argc` 和 `argv` 必须从栈上取（`argc` 在 `sp`，`argv` 为 `sp + 8`），不能依赖 `a0`/`a1`：用户态 `exec` 返回路径会把 `a0` 覆盖为 0；`load_icode` 仍应把 `a0`/`a1` 设置好，以便 `kernel_execve` 路径和未修改入口代码的程序可用。
+````
+
 #### 4.3.3 实现迭代过程
+
+本模块的实现经历了 2 次迭代，过程如下：
+
+---
+
+##### 第一次迭代
+
+第一版提示词生成的 `load_icode` 编译通过，`make grade` 也得到 100/100。但评分用例里没有一个带命令行参数的程序，所以为了验证"把 `argc` 和参数字符串写入用户栈"这一项，额外写了一个临时用户程序，在 `sh` 里以 `iotest a bb "c d"` 运行并打印自己的 `argc` 和 `argv`。
+
+**遇到的问题：**
+
+- 问题 1：从 `sh` 启动的程序拿到的 `argc` 为 0。程序的输出是 `iotest: argc=0 argv[argc]=NOT NULL`：没有任何 `argv[i]` 被打印，并且 `argv[argc]`（即 `argv[0]`）不是 `NULL`。第一版里 `load_icode` 把 `argc` 放进 trapframe 的 `a0`、`argv` 放进 `a1`（同时也按通常的布局写在了用户栈上），而 `_start` 只有一条 `call umain`，直接把 `a0`/`a1` 当作 `umain(argc, argv)` 的参数。`argv`（`a1`）确实是对的，错的是 `a0`。原因是用户态通过 `sys_exec` 进入内核时，`syscall()` 在 `do_execve` 成功返回后会执行 `tf->gpr.a0 = 0`，把系统调用的返回值写回 trapframe，**覆盖**了 `load_icode` 刚设置好的 `argc`。而 `sh` 本身是 `kernel_execve` 启动的，那条路径直接 `j __trapret`，不经过系统调用返回，所以 `a0` 没被覆盖，评分脚本里的 `sh`（`argc` 本来就是 1）和不带参数的 `hello` 等程序都看不出问题，只有这种"在 `sh` 里带参数运行"的场景才会暴露。
+
+**问题解决策略：**
+
+- 针对问题 1：不再依赖 `a0` 传 `argc`，改为让 `_start` 从栈上读取。这需要修改提示词的三处：在 [RELY] 中补充"用户态 `exec` 返回时 `syscall()` 会把 `a0` 覆盖为 0，而 `kernel_execve` 路径不会"这一条关键事实；在 [SPECIFICATION] 中把用户栈参数块的布局明确为"字符串 → 以 `NULL` 结尾的 `uargv` 数组 → `argc`，`sp` 16 字节对齐并指向 `argc`，`uargv` 位于 `sp + 8`"（这是通常的进程入口布局）；在 [GUARANTEE] 中把 `user/libs/initcode.S` 的 `_start` 也列入交付清单，规定它用 `ld a0, 0(sp)` 和 `addi a1, sp, 8` 取参数后再 `call umain`，并保留 `load_icode` 对 `a0`/`a1` 的设置，让 `kernel_execve` 路径和未修改入口代码的程序仍然可用。
+
+---
+
+##### 第二次迭代
+
+按修改后的提示词，`load_icode` 的栈布局和 `a0`/`a1` 设置保持不变，新增了 `initcode.S` 中 `_start` 从栈上取 `argc`/`argv` 的改动。重新编译后一次通过，用同一个带参数的测试程序重跑，没有再发现需要修复的问题。
+
+**最终结果：**
+
+经过 2 次迭代，该模块最终：
+
+- ✅ 编译通过，`proc.c` 没有新增警告，并通过项目的 `clang-format` 检查
+- ✅ `make grade` 中"sh execve"、"user sh"、"load_icode / sh runs hello"、"fork / wait / file table"、"no kernel failures"等项全部通过，总分 100/100
+- ✅ 在 `sh` 里运行带参数的临时测试程序 `iotest a bb "c d"`，输出 `argc=4 argv[0]="iotest" argv[1]="a" argv[2]="bb" argv[3]=" c d " argv[argc]=NULL`（`sh` 的词法分析把双引号替换成空格，所以第四个参数两侧各有一个空格，这是 `sh` 的行为），说明字符串、指针数组、`NULL` 终止和 `argc` 都正确
+- ✅ 之后接着在 `sh` 里运行 `hello`，得到 `Hello world!!.`、`I am process 5.`、`hello pass.`，说明 `fork` + `exec` 从文件系统加载并运行程序的完整链路正常
+- ✅ 失败路径：测试程序把镜像中的 `/exit` 文件内容覆盖成非 ELF 数据后，在 `sh` 里执行 `exit`，得到 `error: -8 - invalid elf file`（`-E_INVAL_ELF`），`sh` 继续可用，内核没有 panic，说明魔数检查和失败时的清理路径正常
+- ✅ 功能符合预期
+
+**关键改进点总结：**
+
+1. 在 [RELY] 中补充了"`syscall()` 在 `exec` 返回后会覆盖 trapframe 的 `a0`，`kernel_execve` 路径则不会"这一调用环境事实，这是第一版提示词缺失、也最难凭空想到的信息。
+2. 在 [SPECIFICATION] 中把用户栈上的参数布局写成可检查的规则（字符串、`uargv`、`argc` 的次序，`sp` 的对齐，`uargv = sp + 8`），不再只说"把参数放上栈"。
+3. 在 [GUARANTEE] 中增加了 `user/libs/initcode.S`，让入口代码从栈上取 `argc`/`argv`，不依赖会被覆盖的 `a0`。
+4. 验证方式上，用带参数的临时程序补上了评分脚本没有覆盖的场景，并顺带验证了 ELF 魔数错误时的失败路径。
 
 ---
 

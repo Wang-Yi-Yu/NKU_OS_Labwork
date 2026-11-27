@@ -4,12 +4,13 @@
  *
  * The original test loads the kernel's TSS selector into the DS register, which raises a
  * protection fault on x86. RISC-V has no TSS, so the instruction is commented out and main()
- * always reaches panic(). The grader only checks that the kernel reports this process and keeps
- * running afterwards.
+ * always reaches panic(). The kernel must report this process and keep running afterwards.
  *
- * tools/grade.sh expects these lines from this program:
- *   kernel_execve: pid = 2, name = "badsegment".
+ * Expected output (tools/grade.sh of lab8 does not check this program):
  *   init check memory pass.
+ *
+ * The kernel_execve line is printed only when user_main() starts the program itself
+ * (make build-badsegment); a program started from sh does not print it.
  */
 #include <stdio.h>
 #include <ulib.h>

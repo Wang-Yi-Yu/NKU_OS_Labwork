@@ -2,13 +2,14 @@
  * @file   faultreadkernel.c
  * @brief  Test that user-mode code cannot read kernel memory.
  *
- * 0xfac00000 is in the kernel's virtual address range, so a user-mode load from it must fail. The
- * kernel must terminate the process. The grader requires that the kernel reports the process and
- * that the user program does not print "user panic at".
+ * 0xfac00000 is above USERTOP (0x80000000), so it is outside user space, and a user-mode load
+ * from it must fail. The kernel must terminate the process, and the program must not print
+ * "user panic at".
  *
- * tools/grade.sh expects these lines from this program:
- *   kernel_execve: pid = 2, name = "faultreadkernel".
- *   must NOT contain: user panic at ...
+ * tools/grade.sh of lab8 does not check this program.
+ *
+ * The kernel_execve line is printed only when user_main() starts the program itself
+ * (make build-faultreadkernel); a program started from sh does not print it.
  */
 #include <stdio.h>
 #include <ulib.h>

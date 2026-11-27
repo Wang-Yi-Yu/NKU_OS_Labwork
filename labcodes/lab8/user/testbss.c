@@ -4,15 +4,15 @@
  *
  * bigarray is a 4 MiB global that is never initialised, so it lives in .bss. The program checks
  * that every element is 0, writes each index, reads the values back and then writes 1024 elements
- * past the end of the array. The grader only requires that the kernel does not report
- * "user panic at".
+ * past the end of the array. The program must not print "user panic at".
  *
- * tools/grade.sh expects these lines from this program:
- *   kernel_execve: pid = 2, name = "testbss".
+ * Expected output (tools/grade.sh of lab8 does not check this program):
  *   Making sure bss works right...
  *   Yes, good.  Now doing a wild write off the end...
  *   testbss may pass.
- *   must NOT contain: user panic at ...
+ *
+ * The kernel_execve line is printed only when user_main() starts the program itself
+ * (make build-testbss); a program started from sh does not print it.
  */
 #include <stdio.h>
 #include <ulib.h>

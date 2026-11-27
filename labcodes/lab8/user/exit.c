@@ -6,8 +6,7 @@
  * checks that waitpid() returns that exit code, and that a second waitpid() and wait() both fail
  * because no children are left.
  *
- * tools/grade.sh expects these lines from this program:
- *   kernel_execve: pid = 2, name = "exit".
+ * tools/grade.sh (lab8) runs this program from sh and checks its pass line; the output is:
  *   I am the parent. Forking the child...
  *   I am the parent, waiting now..
  *   I am the child.
@@ -15,7 +14,9 @@
  *   exit pass.
  *   all user-mode processes have quit.
  *   init check memory pass.
- *   must NOT contain: user panic at ...
+ *
+ * The kernel_execve line is printed only when user_main() starts the program itself
+ * (make build-exit); a program started from sh does not print it.
  */
 #include <stdio.h>
 #include <ulib.h>

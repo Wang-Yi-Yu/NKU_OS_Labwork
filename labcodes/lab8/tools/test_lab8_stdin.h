@@ -1,5 +1,9 @@
-/* 
- * lab8 grading: serve the graded commands to the console.
+/*
+ * lab8 grading fragment. tools/inject.py splices it into dev_stdin_read() in
+ * kern/fs/devs/dev_stdin.c at grading time. The fragment copies the commands of lab8_script
+ * (hello, exit, forktest, yield) into the caller's buffer as console input, as many bytes as fit
+ * in it. When the script has been handed out, the fragment falls through and the real console is
+ * read as usual.
  */
     {
         static const char lab8_script[] =

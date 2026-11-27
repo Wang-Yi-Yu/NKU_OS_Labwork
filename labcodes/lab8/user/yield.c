@@ -4,13 +4,14 @@
  *
  * The program yields five times and prints its PID and iteration after each yield.
  *
- * tools/grade.sh expects these lines from this program:
- *   kernel_execve: pid = 2, name = "yield".
+ * tools/grade.sh (lab8) runs this program from sh and checks its pass line; the output is:
  *   Hello, I am process 2.
  *   Back in process 2, iteration 0. ... iteration 4.
  *   All done in process 2.
  *   yield pass.
- *   must NOT contain: user panic at ...
+ *
+ * The kernel_execve line is printed only when user_main() starts the program itself
+ * (make build-yield); a program started from sh does not print it.
  */
 #include <ulib.h>
 #include <stdio.h>

@@ -6,8 +6,7 @@
  * CPU, kills it, and waits for it with waitpid(). Kill and wait must both return 0. The kernel must
  * preempt the spinning child (timer interrupt) or the parent would never run again.
  *
- * tools/grade.sh expects these lines from this program:
- *   kernel_execve: pid = 2, name = "spin".
+ * Expected output (tools/grade.sh of lab8 does not check this program):
  *   I am the parent. Forking the child...
  *   I am the parent. Running the child...
  *   I am the child. spinning ...
@@ -17,7 +16,9 @@
  *   spin may pass.
  *   all user-mode processes have quit.
  *   init check memory pass.
- *   must NOT contain: user panic at ...
+ *
+ * The kernel_execve line is printed only when user_main() starts the program itself
+ * (make build-spin); a program started from sh does not print it.
  */
 #include <stdio.h>
 #include <ulib.h>

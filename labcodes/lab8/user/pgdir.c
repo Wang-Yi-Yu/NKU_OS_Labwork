@@ -3,13 +3,15 @@
  * @brief  Test the SYS_pgdir system call: print the page tables of the current process.
  *
  * print_pgdir() asks the kernel to dump the page directory and page tables. The output itself
- * is not checked; the grader only requires the first and last lines below.
+ * is not checked; only the first and last lines below are required.
  *
- * tools/grade.sh expects these lines from this program:
- *   kernel_execve: pid = 2, name = "pgdir".
+ * Expected output (tools/grade.sh of lab8 does not check this program):
  *   I am 2, print pgdir.
  *   init check memory pass.
- *   ("pgdir pass." is printed but not checked by grade.sh)
+ *   ("pgdir pass." is printed but not checked)
+ *
+ * The kernel_execve line is printed only when user_main() starts the program itself
+ * (make build-pgdir); a program started from sh does not print it.
  */
 #include <stdio.h>
 #include <ulib.h>

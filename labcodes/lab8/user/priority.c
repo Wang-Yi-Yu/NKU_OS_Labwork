@@ -9,13 +9,14 @@
  * line "stride sched correct result:" shows the ratios (for example "1 2 3 4 5"); under RR they are
  * about equal.
  *
- * tools/grade.sh expects these lines from this program:
- *   kernel_execve: pid = 2, name = "priority".
+ * Expected output (tools/grade.sh of lab8 does not check this program):
  *   main: fork ok,now need to wait pids.
  *   set priority to 5 ... set priority to 1.
  *   all user-mode processes have quit.
  *   init check memory pass.
- *   must NOT contain: user panic at ...
+ *
+ * The kernel_execve line is printed only when user_main() starts the program itself
+ * (make build-priority); a program started from sh does not print it.
  */
 #include <ulib.h>
 #include <stdio.h>

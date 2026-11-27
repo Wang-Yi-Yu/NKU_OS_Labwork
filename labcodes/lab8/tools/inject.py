@@ -1,9 +1,22 @@
 #!/usr/bin/env python3
-"""Inject Lab8 grading tests into a temporary student-tree copy.
+"""Inject the Lab8 grading tests into a temporary copy of the student tree.
 
-The injector replaces the body of user_main() with test code, places a canary
-binary file, and queues console commands. The student's original sources are
-never modified.
+Usage: python3 tools/inject.py <temporary grading copy>
+
+The grading target of the Makefile runs this script on a temporary copy of the
+lab8 tree, never on the student's own sources. It makes three changes to the copy:
+
+1. kern/process/proc.c: the body of user_main() is replaced by the test code of
+   tools/test_lab8_user.h, which reads /canary through the file system and then
+   starts sh.
+2. disk0/canary: the binary file tools/canary.bin is copied into the disk0
+   directory of the copy, to be packed into the SFS image by mksfs.
+3. kern/fs/devs/dev_stdin.c: the console script of tools/test_lab8_stdin.h is
+   placed at the start of dev_stdin_read(), so that sh receives the graded
+   commands.
+
+The script stops with an error if one of the files is missing or if the
+injection has already been applied to the copy.
 """
 
 import os
@@ -11,6 +24,7 @@ import sys
 
 
 def die(message):
+    """Print an error message with the [lab8 inject] prefix and exit with status 1."""
     print("[lab8 inject] ERROR: " + message)
     raise SystemExit(1)
 
@@ -22,21 +36,25 @@ root = os.path.abspath(sys.argv[1])
 tools = os.path.dirname(os.path.abspath(__file__))
 
 def read_text(path):
+    """Return the whole content of a UTF-8 text file."""
     with open(path, "r", encoding="utf-8") as f:
         return f.read()
 
 
 def write_text(path, text):
+    """Replace the content of a UTF-8 text file with text."""
     with open(path, "w", encoding="utf-8") as f:
         f.write(text)
 
 
 def read_binary(path):
+    """Return the whole content of a file as bytes."""
     with open(path, "rb") as f:
         return f.read()
 
 
 def write_binary(path, data):
+    """Replace the content of a file with the bytes in data."""
     with open(path, "wb") as f:
         f.write(data)
 

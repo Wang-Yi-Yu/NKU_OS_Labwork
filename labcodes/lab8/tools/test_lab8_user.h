@@ -1,5 +1,8 @@
-/* 
- * lab8 grading: the replacement body for user_main().
+/*
+ * lab8 grading fragment. tools/inject.py splices it into kern/process/proc.c at grading time as
+ * the new body of user_main(). It reads the file /canary (test 1, SFS Read) and checks its 208
+ * bytes, then starts sh with KERNEL_EXECVE(sh). sh takes its commands from the console, where
+ * tools/test_lab8_stdin.h supplies them.
  */
 {
     int kfd = sysfile_open("/canary", O_RDONLY);

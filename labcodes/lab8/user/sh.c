@@ -1,3 +1,20 @@
+/**
+ * @file   sh.c
+ * @brief  The user shell: reads a command line, splits it into words and runs the program (lab8).
+ *
+ * By default user_main() in kern/process/proc.c starts sh as the first user process. sh runs in
+ * the interactive mode when started without arguments, and reads its commands from a file when
+ * given one. Each command line is processed by a child process created with fork(): runcmd()
+ * parses the line with gettoken(), applies the redirections < and >, and calls __exec()
+ * (user/libs/ulib.c), which issues SYS_exec. The kernel then loads the program from the file
+ * system through do_execve(). The shell itself waits with waitpid() and prints the error code of a
+ * failed command.
+ *
+ * Supported syntax: words separated by spaces, double quotes around words that contain spaces,
+ * the redirections "<" and ">", and the separator ";". A word that does not name an existing file
+ * is looked up in the root directory of the file system (a "/" is put in front of it). The pipe
+ * symbol "|" is recognised by the parser but not supported (see the notes of runcmd()).
+ */
 #include <ulib.h>
 #include <stdio.h>
 #include <string.h>
@@ -6,15 +23,45 @@
 #include <error.h>
 #include <unistd.h>
 
+/**
+ * @brief Print a formatted message on the standard output (descriptor 1).
+ * @param ... format string and arguments, as for printf()
+ */
 #define printf(...) fprintf(1, __VA_ARGS__)
-#define putc(c)     printf("%c", c)
+/** @brief Print one character on the standard output (descriptor 1). */
+#define putc(c) printf("%c", c)
 
-#define BUFSIZE    4096
+/** @brief Size in bytes of the line buffers of readline() and runcmd(), and of shcwd. */
+#define BUFSIZE 4096
+/** @brief Characters that separate two words of a command line. */
 #define WHITESPACE " \t\r\n"
-#define SYMBOLS    "<|>&;"
+/**
+ * @brief Characters that are tokens of their own: "<" input, ">" output, "|" pipe, "&" (not
+ *        supported), ";" command separator.
+ */
+#define SYMBOLS "<|>&;"
 
+/**
+ * @brief Working directory set by the "cd" command, as typed by the user.
+ * @note Only the child process that runs the command sets it, so the value never reaches the
+ *       shell (see the note of main()).
+ */
 char shcwd[BUFSIZE];
 
+/**
+ * @brief Split off the next token of a command line, in place.
+ *
+ * The line is changed in place: the white space before a token and the end of each token are
+ * overwritten with NUL characters, so the token is a normal C string. A double quote anywhere in
+ * a word starts a quoted part that ends at the next double quote. The quote characters are
+ * replaced by spaces (they are not removed), and white space and symbols inside the quoted part
+ * do not end the word.
+ * @param[in,out] p1  on entry, the rest of the line; on return, the rest after this token, or NULL
+ *                    if the line has no more characters
+ * @param[out]    p2  on return, the start of the token
+ * @return 'w' for a word, the symbol character ('<', '>', '|', '&' or ';') for a symbol, or 0 when
+ *         no token is left
+ */
 int gettoken(char **p1, char **p2) {
     char *s;
     if ((s = *p1) == NULL) {
@@ -44,6 +91,18 @@ int gettoken(char **p1, char **p2) {
     return token;
 }
 
+/**
+ * @brief Read one line from the standard input, echoing it, with simple line editing.
+ *
+ * Characters are read one at a time from descriptor 0 and echoed. A backspace removes the last
+ * character; a newline or carriage return ends the line and is not stored. Characters beyond
+ * BUFSIZE - 1 are dropped. The line is returned without the line terminator.
+ * @param[in] prompt  text printed before reading, or NULL for no prompt (used in command-file mode)
+ * @return a pointer to a static buffer that holds the NUL-terminated line, or NULL when the
+ *         input ends (end of file with no characters read), when a read fails, or when Ctrl-C
+ *         (character 3) is typed
+ * @note The buffer is static and is overwritten by the next call.
+ */
 char *readline(const char *prompt) {
     static char buffer[BUFSIZE];
     if (prompt != NULL) {
@@ -79,10 +138,22 @@ char *readline(const char *prompt) {
     return buffer;
 }
 
+/** @brief Print the usage line of the shell. */
 void usage(void) {
     printf("usage: sh [command-file]\n");
 }
 
+/**
+ * @brief Redirect a standard descriptor to a file.
+ *
+ * Closes @p fd2, opens @p filename and makes @p fd2 refer to it. Used for "<" and for the
+ * command-file argument of main() (fd2 = 0), and for ">" (fd2 = 1).
+ * @param[in] fd2        standard descriptor to redirect (0 = input, 1 = output)
+ * @param[in] filename   file to open
+ * @param[in] open_flags flags for open(), for example O_RDONLY or O_RDWR | O_TRUNC | O_CREAT
+ * @return 0 on success, a negative error code otherwise (for example -E_NOENT when the file does
+ *         not exist); on failure @p fd2 stays closed
+ */
 int reopen(int fd2, const char *filename, uint32_t open_flags) {
     int ret, fd1;
     close(fd2);
@@ -94,6 +165,12 @@ int reopen(int fd2, const char *filename, uint32_t open_flags) {
     return ret < 0 ? ret : 0;
 }
 
+/**
+ * @brief Check that a file can be opened for reading.
+ * @param[in] name  path of the file
+ * @return 0 if the file exists and can be opened (it is closed again), otherwise the negative
+ *         error code of open(), typically -E_NOENT
+ */
 int testfile(const char *name) {
     int ret;
     if ((ret = open(name, O_RDONLY)) < 0) {
@@ -103,6 +180,26 @@ int testfile(const char *name) {
     return 0;
 }
 
+/**
+ * @brief Parse one command line and run it.
+ *
+ * Called in a child process by main(). The tokens of the line are collected into argv: words are
+ * arguments, "<" and ">" redirect the standard input and output to the file named by the next
+ * word, and ";" runs the command so far in a child process and waits for it before the rest of the
+ * line is parsed (the "again" label). An end of line runs the command (the "runit" label): an empty
+ * command does nothing, "cd" with exactly one argument sets shcwd (any other number of arguments
+ * returns -1), and any other command is started with __exec(). If testfile() reports that argv[0]
+ * does not exist, "/" is put in front of it and the name is tried in the root directory.
+ * @param[in,out] cmd  the command line; it is changed in place by gettoken()
+ * @return 0 for an empty line and for a successful "cd"; otherwise the error code of the failing
+ *         step: the negative result of reopen(), testfile() or __exec(), or -1 for a syntax error
+ *         or too many arguments. When __exec() succeeds it does not return.
+ * @note The "|" branch is not functional: the call that creates the pipe is commented out, so
+ *       p[] is never set before it is used. Typing "|" therefore passes undefined descriptors to
+ *       dup2().
+ * @note The symbol "&" is recognised by gettoken() but has no case here, so it reports
+ *       "bad return" and fails.
+ */
 int runcmd(char *cmd) {
     static char argv0[BUFSIZE];
     static const char *argv[EXEC_MAX_ARG_NUM + 1];  //must be static!
@@ -200,6 +297,20 @@ runit:
     return __exec(argv[0], argv);
 }
 
+/**
+ * @brief Entry point of the shell.
+ *
+ * Without arguments the shell is interactive and prints the prompt "$ ". With one argument, the
+ * argument is a command file: the standard input is redirected to it and no prompt is printed.
+ * For each line read, a child process runs runcmd(); the shell waits for it and prints
+ * "error: <code> - <message>" when the command fails. The loop ends when readline() returns NULL.
+ * @param argc number of arguments, 1 or 2 (more is an error)
+ * @param argv argv[1], if present, is the command file
+ * @return 0 at the end of input or after Ctrl-C; -1 after a usage error; the error code of
+ *         reopen() if the command file cannot be opened
+ * @note The "cd" command runs in the child that executes runcmd(), so the shell never sees the new
+ *       working directory. The test on shcwd after waitpid() therefore never succeeds.
+ */
 int main(int argc, char **argv) {
     cputs("user sh is running!!!");
     int ret, interactive = 1;

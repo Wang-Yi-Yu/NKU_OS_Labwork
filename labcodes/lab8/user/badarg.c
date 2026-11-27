@@ -3,16 +3,18 @@
  * @brief  Test that waitpid() rejects bad arguments and returns the exit code of the child.
  *
  * Exercises fork(), yield(), exit() and waitpid() in the kernel. The child yields ten times and
- * exits with 0xbeaf. The parent checks that waitpid() fails for pid -1 and for a store pointer in
- * kernel space (0xC0000000), and that waitpid() on the real child returns 0 with the exit code.
+ * exits with 0xbeaf. The parent checks that waitpid() fails for pid -1 and for a store pointer
+ * outside user space (0xC0000000), and that waitpid() on the real child returns 0 with the exit
+ * code.
  *
- * tools/grade.sh expects these lines from this program:
- *   kernel_execve: pid = 2, name = "badarg".
+ * Expected output (tools/grade.sh of lab8 does not check this program):
  *   fork ok.
  *   badarg pass.
  *   all user-mode processes have quit.
  *   init check memory pass.
- *   must NOT contain: user panic at ...
+ *
+ * The kernel_execve line is printed only when user_main() starts the program itself
+ * (make build-badarg); a program started from sh does not print it.
  */
 #include <stdio.h>
 #include <ulib.h>

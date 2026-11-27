@@ -11,9 +11,9 @@
  *
  * check_sync() runs first the semaphore version and then the monitor version. The monitor version
  * uses the three functions phi_test_condvar(), phi_take_forks_condvar() and phi_put_forks_condvar()
- * (marker `lab7 function2`), which are still to be written, on top of cond_wait() and cond_signal()
- * from monitor.c. check_sync() is called from init_main() in proc.c. The grading run injects the
- * tests of tools/test_lab7.c at the start of check_sync() (see tools/inject.py).
+ * (marker `lab7 function2`, the exercise of this file), which are built on cond_wait() and
+ * cond_signal() from monitor.c. check_sync() is called from init_main() in proc.c. The grading run
+ * injects the tests of tools/test_lab7.c at the start of check_sync() (see tools/inject.py).
  */
 #include <stdio.h>
 #include <proc.h>

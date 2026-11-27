@@ -4,9 +4,10 @@
  *         cond_wait() and cond_signal() are the exercise of this file (marker `lab7 function1`
  *         at the end).
  *
- * The data structures and the meaning of their fields are described in monitor.h. The two
- * operations that are still to be written use only the semaphores of the monitor (mutex, next) and
- * of the condition variable (sem), and the counters next_count and count.
+ * The data structures and the meaning of their fields are described in monitor.h. cond_wait() and
+ * cond_signal() use only the semaphores of the monitor (mutex, next) and of the condition variable
+ * (sem), and the counters next_count and count. The monitor is of the Hoare kind: the signaling
+ * process hands the monitor to the process it wakes up and sleeps on next until it gets it back.
  */
 #include <stdio.h>
 #include <monitor.h>

@@ -722,8 +722,9 @@ static int load_icode_read(int fd, void *buf, size_t len, off_t offset) {
  *     writable). The arguments are laid out from USTACKTOP downwards: the argument strings, then
  *     the NULL-terminated pointer array uargv[], then argc, with sp 16-byte aligned and pointing at
  *     argc (uargv = sp + 8, the usual process-entry layout). The pages that hold this block, and at
- *     least 4 pages in total, are allocated and cleared now; the rest of the stack is faulted in on
- *     demand;
+ *     least 4 pages in total, are allocated and cleared now. The rest of the stack VMA stays
+ *     unmapped: this lab has no page-fault handler (do_pgfault() is not defined), so pages cannot
+ *     be added on demand and fork() only has to copy the pages that are really mapped;
  *  6. make the new mm current: reference count 1, current->mm, current->pgdir, satp and a TLB
  *     flush. Only then are the arguments written, through the user addresses of the new space
  *     (sstatus.SUM is set by the kernel, so S mode may access the U pages);
@@ -835,7 +836,8 @@ static int load_icode(int fd, int argc, char **kargv) {
     // (4) the program is in memory; the descriptor is not needed any more
     sysfile_close(fd);
 
-    // (5) the user stack. The VMA covers USTACKSIZE bytes, only the pages in use are backed now.
+    // (5) the user stack. The VMA covers USTACKSIZE bytes; only the top pages are backed (no page-fault
+    //     handler exists to add the others later).
     vm_flags = VM_READ | VM_WRITE | VM_STACK;
     if ((ret = mm_map(mm, USTACKTOP - USTACKSIZE, USTACKSIZE, vm_flags, NULL)) != 0) {
         goto bad_cleanup_mmap;

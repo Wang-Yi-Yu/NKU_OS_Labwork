@@ -5,6 +5,7 @@ SLASH	:= /
 
 V       := @
 
+# Tool names and paths. Each can be overridden on the command line, e.g. make QEMU=/opt/qemu/bin/qemu-system-riscv64
 ifndef GCCPREFIX
 GCCPREFIX := riscv64-unknown-elf-
 endif
@@ -33,6 +34,14 @@ CC		:= $(GCCPREFIX)gcc
 CFLAGS  := -mcmodel=medany -O2 -std=gnu99 -Wno-unused
 CFLAGS	+= -fno-builtin -Wall -nostdinc $(DEFS)
 CFLAGS	+= -fno-stack-protector -ffunction-sections -fdata-sections
+# GCC 14+ turned these two warnings into hard errors. Code provided with the lab (e.g. kmalloc.c passes
+# an integer to kva2page()) relies on the old behaviour, so keep them as warnings instead of editing
+# the provided code.
+CFLAGS	+= -Wno-error=int-conversion -Wno-error=incompatible-pointer-types
+# GCC 10+ defaults to -fno-common, so two tentative definitions of the same global are a link error.
+# The provided swap_fifo.c and swap_clock.c both define "list_entry_t pra_list_head;" without
+# static, so allow the old merging behaviour instead of editing the provided code.
+CFLAGS	+= -fcommon
 CTYPE	:= c S
 
 LD      := $(GCCPREFIX)ld
@@ -200,6 +209,9 @@ KSRCDIR		+= kern/init \
 			   kern/fs/devs \
 			   kern/fs/sfs
 
+# Debug info for the kernel only (gdb, make debug). The user programs are copied into sfs.img, which
+# the lab9 Makefile sizes at 480 kB; with -g they grow to about 1.2 MB and mksfs runs out of space.
+KCFLAGS		+= -g
 KCFLAGS		+= $(addprefix -I,$(KINCLUDE))
 
 $(call add_files_cc,$(call listf_cc,$(KSRCDIR)),kernel,$(KCFLAGS))
@@ -266,14 +278,17 @@ qemu: $(UCOREIMG) $(SWAPIMG) $(SFSIMG)
 		-machine virt \
 		-nographic \
 		-bios default \
-		-device loader,file=$(UCOREIMG),addr=0x80200000
+		-kernel $(UCOREIMG)
+# Old QEMU (4.x) / OpenSBI v0.4 could use -device loader,file=$(UCOREIMG),addr=0x80200000.
+# QEMU 8.2 ships OpenSBI v1.3 (fw_dynamic), which must be told the kernel entry
+# through -kernel; otherwise "Domain0 Next Address" is 0 and the kernel never starts.
 
 debug: $(UCOREIMG) $(SWAPIMG) $(SFSIMG)
 	$(V)$(QEMU) \
 		-machine virt \
 		-nographic \
 		-bios default \
-		-device loader,file=$(UCOREIMG),addr=0x80200000\
+		-kernel $(UCOREIMG) \
 		-s -S
 
 gdb:
@@ -354,3 +369,36 @@ tags:
 	$(V)find . -type f -name "*.[chS]" >cscope.files
 	$(V)cscope -bq 
 	$(V)ctags -L cscope.files
+
+# -------------------------------------------------------------------
+# code style: make format / make format-check
+#   C/H  : clang-format, rules in .clang-format (needs clang-format >= 15)
+#   *.md : Prettier 3.7.4 (the version bundled in VS Code extension
+#          esbenp.prettier-vscode 12.x), rules in .prettierrc
+#   format-c / format-md format only one kind; the *-check targets only check
+#   and never modify files.
+CLANG_FORMAT	?= clang-format
+PRETTIER		?= npx --yes prettier@3.7.4
+
+FORMAT_C_FILES	:= $(shell find kern libs user -type f \( -name '*.c' -o -name '*.h' \) 2>/dev/null | sort)
+FORMAT_MD_FILES	:= $(shell find . -type f -name '*.md' -not -path './docs/private/*' -not -path './bin/*' -not -path './obj/*' -not -path './disk0/*' 2>/dev/null | sort)
+
+.PHONY: format format-c format-md format-check format-check-c format-check-md
+
+format: format-c format-md
+
+format-c:
+	$(V)$(CLANG_FORMAT) -i --style=file $(FORMAT_C_FILES)
+	@echo "clang-format: $(words $(FORMAT_C_FILES)) files formatted"
+
+format-md:
+	$(V)$(PRETTIER) --write $(FORMAT_MD_FILES)
+
+format-check: format-check-c format-check-md
+
+format-check-c:
+	$(V)$(CLANG_FORMAT) --dry-run -Werror --style=file $(FORMAT_C_FILES)
+	@echo "clang-format: OK"
+
+format-check-md:
+	$(V)$(PRETTIER) --check $(FORMAT_MD_FILES)

@@ -739,7 +739,165 @@ static int sfs_close(struct inode *node) {
     return vop_fsync(node);
 }
 
-//lab8 function2 YOUR CODE
+//lab8 function2 2414007
+/**
+ * @fn static int sfs_io_nolock(struct sfs_fs *sfs, struct sfs_inode *sin, void *buf, off_t offset, size_t *alenp, bool write)
+ * @brief Transfer data between a memory buffer and a regular file, starting at a byte offset
+ *        (the exercise of this file; one body serves both reads and writes).
+ *
+ * *alenp is in/out: on entry the requested length, on return the number of bytes actually moved.
+ * The range [offset, endpos) is processed in up to three parts, each of which first maps its
+ * logical block to a disk block with sfs_bmap_load_nolock():
+ *  1. head: if offset is not block-aligned, the bytes from offset to the end of that block (or to
+ *     endpos when the range ends inside the same block) go through the partial-block function
+ *     sfs_rbuf() / sfs_wbuf() with the in-block offset;
+ *  2. middle: the whole blocks in between go through sfs_rblock() / sfs_wblock(). Logical blocks
+ *     are not necessarily consecutive on disk, so the disk block of every logical block is looked
+ *     up and only runs of consecutive disk blocks are sent as one multi-block transfer;
+ *  3. tail: if endpos is not block-aligned, the first endpos % SFS_BLKSIZE bytes of the last block
+ *     go through sfs_rbuf() / sfs_wbuf() with in-block offset 0.
+ * Reads and writes only differ in the four function pointers chosen up front (and in the end
+ * position and the size update), so the block arithmetic exists once.
+ *
+ * Range handling (before anything is moved):
+ *  - offset < 0 or offset >= SFS_MAX_FILE_SIZE: -E_INVAL; a length of 0 returns 0;
+ *  - the end is cut at SFS_MAX_FILE_SIZE, so a request that crosses the limit is shortened;
+ *  - read: nothing is read at or after the end of file (returns 0 with *alenp == 0) and the end is
+ *    cut at din->size;
+ *  - write: may extend the file; the new blocks are appended by sfs_bmap_load_nolock(). A start
+ *    block beyond the end of the block list (a gap, never created by sfs_tryseek()) is -E_INVAL.
+ *
+ * On an error the function returns at once with the error code and *alenp holds the bytes that
+ * were moved completely before it. A write that extended the file updates din->size to
+ * offset + *alenp and marks the inode dirty, also after a partial write; a read never changes
+ * the size.
+ * @param sfs   mounted volume
+ * @param sin   inode of the regular file
+ * @param buf   memory buffer: the destination of a read, the source of a write
+ * @param offset byte offset in the file where the transfer starts
+ * @param alenp [in/out] requested length on entry, transferred length on return
+ * @param write false to read, true to write
+ * @return 0 on success (also for a short transfer at the end of file or at SFS_MAX_FILE_SIZE),
+ *         -E_INVAL for a bad range, or the error of the block mapping or of the device
+ * @note The caller (sfs_io()) must hold the inode semaphore; this function takes no lock and must
+ *       not be given a directory.
+ */
+static int sfs_io_nolock(struct sfs_fs *sfs, struct sfs_inode *sin, void *buf, off_t offset,
+                         size_t *alenp, bool write) {
+    struct sfs_disk_inode *din = sin->din;
+    assert(din->type != SFS_TYPE_DIR);
+
+    size_t len = *alenp;
+    *alenp = 0;
+    // Validate the start, then derive the end position of the transfer.
+    if (offset < 0 || offset >= SFS_MAX_FILE_SIZE) {
+        return -E_INVAL;
+    }
+    if (len == 0) {
+        return 0;
+    }
+    if (len > SFS_MAX_FILE_SIZE - offset) {
+        len = SFS_MAX_FILE_SIZE - offset;
+    }
+    off_t endpos = offset + len;
+    if (!write) {
+        if (offset >= din->size) {
+            return 0;
+        }
+        if (endpos > din->size) {
+            endpos = din->size;
+        }
+    }
+
+    // The only differences between a read and a write: which block functions do the transfer.
+    int (*sfs_buf_op)(struct sfs_fs *sfs, void *buf, size_t len, uint32_t blkno, off_t offset);
+    int (*sfs_block_op)(struct sfs_fs *sfs, void *buf, uint32_t blkno, uint32_t nblks);
+    if (write) {
+        sfs_buf_op = sfs_wbuf, sfs_block_op = sfs_wblock;
+    } else {
+        sfs_buf_op = sfs_rbuf, sfs_block_op = sfs_rblock;
+    }
+
+    int ret = 0;
+    size_t size, alen = 0;
+    uint32_t ino;
+    off_t blkoff;
+    uint32_t blkno = offset / SFS_BLKSIZE;          // logical block where the transfer begins
+    uint32_t nblks = endpos / SFS_BLKSIZE - blkno;  // number of block boundaries it crosses
+    // sfs_bmap_load_nolock() only accepts an index up to din->blocks (append at the end).
+    if (blkno > din->blocks) {
+        return -E_INVAL;
+    }
+
+    // (1) Head: the offset is inside a block. If the range reaches into the next block, move up to
+    //     the end of this one, otherwise the whole range lies in this block.
+    if ((blkoff = offset % SFS_BLKSIZE) != 0) {
+        size = (nblks != 0) ? (SFS_BLKSIZE - blkoff) : (endpos - offset);
+        if ((ret = sfs_bmap_load_nolock(sfs, sin, blkno, &ino)) != 0) {
+            goto out;
+        }
+        if ((ret = sfs_buf_op(sfs, buf, size, ino, blkoff)) != 0) {
+            goto out;
+        }
+        alen += size;
+        buf += size;
+        // The range ended inside this block: there is no middle and no tail (the tail code below
+        // would otherwise see endpos % SFS_BLKSIZE != 0 and transfer the same bytes again).
+        if (nblks == 0) {
+            goto out;
+        }
+        blkno++, nblks--;
+    }
+
+    // (2) Middle: whole blocks. `first` is the disk block of logical block blkno; a run is
+    //     extended while the next logical block sits right behind the previous one on disk.
+    if (nblks > 0) {
+        uint32_t first, next = 0;
+        if ((ret = sfs_bmap_load_nolock(sfs, sin, blkno, &first)) != 0) {
+            goto out;
+        }
+        while (nblks > 0) {
+            uint32_t run = 1;
+            while (run < nblks) {
+                if ((ret = sfs_bmap_load_nolock(sfs, sin, blkno + run, &next)) != 0) {
+                    goto out;
+                }
+                if (next != first + run) {
+                    break;  // a gap on disk: `next` starts the following run
+                }
+                run++;
+            }
+            if ((ret = sfs_block_op(sfs, buf, first, run)) != 0) {
+                goto out;
+            }
+            alen += (size_t)run * SFS_BLKSIZE;
+            buf += (size_t)run * SFS_BLKSIZE;
+            blkno += run, nblks -= run;
+            // nblks > 0 here means the inner loop stopped at a gap, so `next` is valid.
+            first = next;
+        }
+    }
+
+    // (3) Tail: the range ends inside the block with index blkno; only its first bytes belong to us.
+    if ((size = endpos % SFS_BLKSIZE) != 0) {
+        if ((ret = sfs_bmap_load_nolock(sfs, sin, blkno, &ino)) != 0) {
+            goto out;
+        }
+        if ((ret = sfs_buf_op(sfs, buf, size, ino, 0)) != 0) {
+            goto out;
+        }
+        alen += size;
+    }
+
+out:
+    *alenp = alen;
+    // Only a write can move data past the old end of file; keep the size and the dirty flag in step.
+    if (write && offset + alen > din->size) {
+        din->size = offset + alen;
+        sin->dirty = 1;
+    }
+    return ret;
+}
 
 /**
  * @brief Common part of sfs_read() and sfs_write(): transfer data between a file and an iobuf.

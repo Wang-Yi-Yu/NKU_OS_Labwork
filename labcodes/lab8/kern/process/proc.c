@@ -153,7 +153,8 @@ void switch_to(struct context *from, struct context *to);
 //LAB4 function2 2411622
 /**
  * @fn static struct proc_struct *alloc_proc(void)
- * @brief Allocate and minimally initialise a process control block (exercise, module 2).
+ * @brief Allocate and minimally initialise a process control block (exercise, module 2; lab8 adds
+ *        the file table pointer).
  *
  * Contract:
  *  - the PCB comes from the kernel heap; on failure return NULL and leak nothing;
@@ -169,7 +170,11 @@ void switch_to(struct context *from, struct context *to);
  *  - (lab6) the scheduling fields start in a defined, not-yet-queued state: rq NULL, run_link a
  *    self-linked node, time_slice 0, lab6_run_pool an initialised skew-heap node, lab6_stride 0
  *    and lab6_priority a valid starting value. The PCB must not be put into any run queue here;
- *    that is done by the scheduler class when the process becomes runnable.
+ *    that is done by the scheduler class when the process becomes runnable;
+ *  - (lab8) filesp starts as NULL: the new process owns no file table yet. The table is created or
+ *    shared later by copy_files() in do_fork() (or by proc_init() for the idle process), never here.
+ *    Because kmalloc() does not clear memory, leaving filesp uninitialised would let copy_files(),
+ *    files_closeall() or put_files() work on a garbage pointer.
  * @return the new PCB, or NULL if the allocation failed
  * @note The returned PCB must still be PROC_UNINIT: wakeup_proc() asserts on any other state.
  */
@@ -207,7 +212,8 @@ static struct proc_struct *alloc_proc(void) {
     skew_heap_init(&proc->lab6_run_pool);
     proc->lab6_stride = 0;
     proc->lab6_priority = 1;
-    //lab8 function1-1 YOUR CODE update alloc_proc
+    //lab8 function1-1 2414007 update alloc_proc
+    proc->filesp = NULL;
     return proc;
 }
 
@@ -320,7 +326,7 @@ static int get_pid(void) {
 }
 
 //LAB4 function3 2414007
-//lab8 function1-2 YOUR CODE update proc_run
+//lab8 function1-2 2414007 update proc_run
 /**
  * @fn void proc_run(struct proc_struct *proc)
  * @brief Make @p proc the running process: switch the page table and the register context.
@@ -329,9 +335,11 @@ static int get_pid(void) {
  *  - nothing to do if proc is already current;
  *  - disable interrupts for the whole operation (local_intr_save / local_intr_restore), so a timer
  *    interrupt cannot run the scheduler in the middle of the switch;
- *  - set current = proc, then load proc->pgdir into satp (Sv39 mode) and flush the TLB. Kernel
- *    threads have pgdir == boot_pgdir_pa (the value already in use); in lab5 a user process has
- *    its own page directory, so this write is what switches the address space;
+ *  - set current = proc, then load proc->pgdir into satp with lsatp() (Sv39 mode) and flush the
+ *    TLB. Kernel threads have pgdir == boot_pgdir_pa (the value already in use). (lab8) A user
+ *    process has the page directory that copy_mm() (fork) or load_icode() (exec) stored in
+ *    proc->pgdir, so this write is what makes the process run in its own address space; without
+ *    it a process created by load_icode() would keep executing on the previous page table;
  *  - call switch_to() with the previous thread's context and the new thread's context.
  * @param proc the process to run; it must be PROC_RUNNABLE
  * @note The call returns only when the calling thread is switched in again. A brand-new thread
@@ -353,8 +361,9 @@ void proc_run(struct proc_struct *proc) {
         //    new thread already sees itself as current.
         current = proc;
         // 2. Load the new page table. A kernel thread uses boot_pgdir_pa (no change); a user
-        //    process has its own pgdir. satp = MODE(Sv39) | PPN; sfence.vma drops stale entries.
-        write_csr(satp, ((uintptr_t)SATP_MODE_SV39 << 60) | (proc->pgdir >> RISCV_PGSHIFT));
+        //    process has its own pgdir. lsatp() writes MODE(Sv39) | PPN into satp; sfence.vma
+        //    then drops the translations of the previous address space.
+        lsatp(proc->pgdir);
         flush_tlb();
         // 3. Switch the register context. This call returns only when prev is scheduled in again.
         switch_to(&(prev->context), &(proc->context));
@@ -688,7 +697,218 @@ static int load_icode_read(int fd, void *buf, size_t len, off_t offset) {
     return 0;
 }
 
-//lab8 function3 YOUR CODE update load_icode
+//lab8 function3 2414007 update load_icode
+/**
+ * @fn static int load_icode(int fd, int argc, char **kargv)
+ * @brief Build a new user address space for the current process from an ELF file that is open as
+ *        @p fd, push the program arguments and prepare the trap frame that starts the program.
+ *
+ * Precondition: current->mm is NULL (do_execve() released the old one) and current->tf points to
+ * the trap frame at the top of the kernel stack. @p fd is open for reading and its file position is
+ * not assumed: every read goes through load_icode_read(), which seeks first.
+ *
+ * Steps:
+ *  1. create an mm_struct and a page directory (setup_pgdir() copies the kernel mappings);
+ *  2. read the ELF header and check the magic number;
+ *  3. for every PT_LOAD program header (read from the file at e_phoff + i * sizeof(proghdr)):
+ *     create the VMA with the permissions of the segment (mm_map()), then walk the pages from
+ *     ROUNDDOWN(p_va) up to p_va + p_memsz. Every page is allocated with pgdir_alloc_page() and
+ *     cleared first; only the bytes that lie inside [p_va, p_va + p_filesz) are then read from the
+ *     file into it, so the first page honours the offset of an unaligned p_va, the last file page
+ *     is cut at p_filesz, and everything from p_filesz to p_memsz (the bss) stays zero. A
+ *     segment with p_filesz > p_memsz, or whose range wraps around, is rejected;
+ *  4. the descriptor is closed (everything needed is in memory now);
+ *  5. create the user stack VMA of USTACKSIZE bytes below USTACKTOP (VM_STACK, readable and
+ *     writable). The arguments are laid out from USTACKTOP downwards: the argument strings, then
+ *     the NULL-terminated pointer array uargv[], then argc, with sp 16-byte aligned and pointing at
+ *     argc (uargv = sp + 8, the usual process-entry layout). The pages that hold this block, and at
+ *     least 4 pages in total, are allocated and cleared now; the rest of the stack is faulted in on
+ *     demand;
+ *  6. make the new mm current: reference count 1, current->mm, current->pgdir, satp and a TLB
+ *     flush. Only then are the arguments written, through the user addresses of the new space
+ *     (sstatus.SUM is set by the kernel, so S mode may access the U pages);
+ *  7. rewrite the trap frame so that sret enters user mode: epc = ELF entry point, sp = the stack
+ *     pointer from step 5, a0 = argc and a1 = uargv (the arguments of umain()), SPP cleared
+ *     (return to U mode) and SPIE set (interrupts on after sret); all other registers are 0.
+ * @param fd    descriptor of the opened ELF file
+ * @param argc  number of arguments, at least 1
+ * @param kargv the argc arguments in kernel memory (kernel copies made by do_execve())
+ * @return 0 on success; -E_NO_MEM if memory runs out, -E_INVAL_ELF for a bad magic number or an
+ *         inconsistent segment, -E_INVAL if the arguments do not fit on the stack, or the error of
+ *         a failed file read. On failure everything built here is released again and current->mm is
+ *         still NULL, so the caller can exit.
+ */
+static int load_icode(int fd, int argc, char **kargv) {
+    if (current->mm != NULL) {
+        panic("load_icode: current->mm must be NULL.\n");
+    }
+
+    int ret = -E_NO_MEM;
+    struct mm_struct *mm;
+    // (1) a new, empty address space with a page directory that already maps the kernel
+    if ((mm = mm_create()) == NULL) {
+        goto bad_mm;
+    }
+    if (setup_pgdir(mm) != 0) {
+        goto bad_pgdir_cleanup_mm;
+    }
+
+    // (2) the ELF header, read through the file descriptor
+    struct elfhdr __elf, *elf = &__elf;
+    if ((ret = load_icode_read(fd, elf, sizeof(struct elfhdr), 0)) != 0) {
+        goto bad_elf_cleanup_pgdir;
+    }
+    if (elf->e_magic != ELF_MAGIC) {
+        ret = -E_INVAL_ELF;
+        goto bad_elf_cleanup_pgdir;
+    }
+
+    // (3) the program headers: map and fill every PT_LOAD segment
+    uint32_t vm_flags, perm;
+    for (int i = 0; i < elf->e_phnum; i++) {
+        struct proghdr __ph, *ph = &__ph;
+        off_t phoff = elf->e_phoff + (off_t)sizeof(struct proghdr) * i;
+        if ((ret = load_icode_read(fd, ph, sizeof(struct proghdr), phoff)) != 0) {
+            goto bad_cleanup_mmap;
+        }
+        if (ph->p_type != ELF_PT_LOAD) {
+            continue;
+        }
+        if (ph->p_filesz > ph->p_memsz || ph->p_va + ph->p_memsz < ph->p_va) {
+            ret = -E_INVAL_ELF;
+            goto bad_cleanup_mmap;
+        }
+        if (ph->p_memsz == 0) {
+            continue;
+        }
+
+        // Segment flags -> VMA flags and PTE permission bits (RISC-V: W needs R as well).
+        vm_flags = 0;
+        perm = PTE_U | PTE_V;
+        if (ph->p_flags & ELF_PF_X) {
+            vm_flags |= VM_EXEC;
+        }
+        if (ph->p_flags & ELF_PF_W) {
+            vm_flags |= VM_WRITE;
+        }
+        if (ph->p_flags & ELF_PF_R) {
+            vm_flags |= VM_READ;
+        }
+        if (vm_flags & VM_READ) {
+            perm |= PTE_R;
+        }
+        if (vm_flags & VM_WRITE) {
+            perm |= (PTE_W | PTE_R);
+        }
+        if (vm_flags & VM_EXEC) {
+            perm |= PTE_X;
+        }
+        if ((ret = mm_map(mm, ph->p_va, ph->p_memsz, vm_flags, NULL)) != 0) {
+            goto bad_cleanup_mmap;
+        }
+
+        // Fill the pages one by one. [file_start, file_end) is the part that exists in the file.
+        uintptr_t file_start = ph->p_va, file_end = ph->p_va + ph->p_filesz;
+        uintptr_t mem_end = ph->p_va + ph->p_memsz;
+        off_t file_off = ph->p_offset;
+        for (uintptr_t la = ROUNDDOWN(file_start, PGSIZE); la < mem_end; la += PGSIZE) {
+            struct Page *page;
+            if ((page = pgdir_alloc_page(mm->pgdir, la, perm)) == NULL) {
+                ret = -E_NO_MEM;
+                goto bad_cleanup_mmap;
+            }
+            // alloc_page() does not clear the page: zeroing it gives the bss, the bytes before an
+            // unaligned p_va and the tail of the last page the right value in one step.
+            void *kva = page2kva(page);
+            memset(kva, 0, PGSIZE);
+
+            uintptr_t lo = (la > file_start) ? la : file_start;
+            uintptr_t hi = (la + PGSIZE < file_end) ? la + PGSIZE : file_end;
+            if (lo < hi) {
+                if ((ret = load_icode_read(fd, kva + (lo - la), hi - lo, file_off)) != 0) {
+                    goto bad_cleanup_mmap;
+                }
+                file_off += hi - lo;
+            }
+        }
+    }
+    // (4) the program is in memory; the descriptor is not needed any more
+    sysfile_close(fd);
+
+    // (5) the user stack. The VMA covers USTACKSIZE bytes, only the pages in use are backed now.
+    vm_flags = VM_READ | VM_WRITE | VM_STACK;
+    if ((ret = mm_map(mm, USTACKTOP - USTACKSIZE, USTACKSIZE, vm_flags, NULL)) != 0) {
+        goto bad_cleanup_mmap;
+    }
+
+    // Layout, from USTACKTOP down: the strings, uargv[0..argc] (NULL at the end), argc. sp is
+    // 16-byte aligned (RISC-V ABI) and uargv = sp + 8, so that argc, argv and the strings follow
+    // each other as a program entry expects them.
+    size_t str_size = 0;
+    for (int i = 0; i < argc; i++) {
+        str_size += strnlen(kargv[i], EXEC_MAX_ARG_LEN + 1) + 1;
+    }
+    uintptr_t str_base = ROUNDDOWN(USTACKTOP - str_size, 16);
+    uintptr_t usp = ROUNDDOWN(str_base - (argc + 2) * sizeof(uintptr_t), 16);
+    char **uargv = (char **)(usp + sizeof(uintptr_t));
+    // The lowest page of a stack VMA is a guard page and must stay unused.
+    if (usp < USTACKTOP - USTACKSIZE + PGSIZE) {
+        ret = -E_INVAL;
+        goto bad_cleanup_mmap;
+    }
+
+    size_t stack_pages = ROUNDUP(USTACKTOP - usp, PGSIZE) / PGSIZE;
+    if (stack_pages < 4) {
+        stack_pages = 4;
+    }
+    for (size_t i = 1; i <= stack_pages; i++) {
+        struct Page *page;
+        if ((page = pgdir_alloc_page(mm->pgdir, USTACKTOP - i * PGSIZE, PTE_USER)) == NULL) {
+            ret = -E_NO_MEM;
+            goto bad_cleanup_mmap;
+        }
+        memset(page2kva(page), 0, PGSIZE);
+    }
+
+    // (6) the new address space becomes the one of the current process. Nothing below can fail.
+    mm_count_inc(mm);
+    current->mm = mm;
+    current->pgdir = PADDR(mm->pgdir);
+    lsatp(PADDR(mm->pgdir));
+    flush_tlb();
+
+    // Copy the arguments into the new stack through its user addresses.
+    uintptr_t str_ptr = str_base;
+    for (int i = 0; i < argc; i++) {
+        size_t len = strnlen(kargv[i], EXEC_MAX_ARG_LEN + 1);
+        memcpy((void *)str_ptr, kargv[i], len);
+        ((char *)str_ptr)[len] = '\0';
+        uargv[i] = (char *)str_ptr;
+        str_ptr += len + 1;
+    }
+    uargv[argc] = NULL;
+    *(uintptr_t *)usp = argc;
+
+    // (7) the trap frame that makes sret land at the program entry in user mode
+    struct trapframe *tf = current->tf;
+    uintptr_t sstatus = tf->status;
+    memset(tf, 0, sizeof(struct trapframe));
+    tf->gpr.sp = usp;
+    tf->gpr.a0 = argc;
+    tf->gpr.a1 = (uintptr_t)uargv;
+    tf->epc = elf->e_entry;
+    tf->status = (sstatus | SSTATUS_SPIE) & ~SSTATUS_SPP;
+    return 0;
+
+bad_cleanup_mmap:
+    exit_mmap(mm);
+bad_elf_cleanup_pgdir:
+    put_pgdir(mm);
+bad_pgdir_cleanup_mm:
+    mm_destroy(mm);
+bad_mm:
+    return ret;
+}
 
 /**
  * @brief Free the first argc argument copies of a kernel argument vector (lab8).
@@ -829,23 +1049,31 @@ execve_exit:
 
 //lab5 function3 2414007 update do_fork
 //LAB4 function2 2411622
-//lab8 function1-3 YOUR CODE update do_fork
+//lab8 function1-3 2414007 update do_fork
 /**
  * @fn int do_fork(uint32_t clone_flags, uintptr_t stack, struct trapframe *tf)
- * @brief Create a child process or thread that copies the current one (exercise, module 2).
+ * @brief Create a child process or thread that copies the current one (exercise, module 2; lab8
+ *        adds the file table).
  *
- * Contract, in this order. Each failing step must release what the earlier steps obtained:
+ * Contract, in this order. Each failing step must release what the earlier steps obtained, in the
+ * reverse order of acquisition:
  *  0. refuse when MAX_PROCESS processes exist (-E_NO_FREE_PROC);
- *  1. alloc_proc(): new PCB, still PROC_UNINIT; its parent is current, which must not be waiting
- *     (wait_state 0);
+ *  1. alloc_proc(): new PCB, still PROC_UNINIT (filesp NULL); its parent is current, which must not
+ *     be waiting (wait_state 0);
  *  2. setup_kstack(): kernel stack for the child;
- *  3. copy_mm(clone_flags, child): address space (a no-op for kernel threads; lab5 duplicates the mm of a user process);
- *  4. copy_thread(child, stack, tf): trap frame and initial context on the child's stack;
- *  5. assign a PID with get_pid() and link the child into hash_list and, with set_links(), into
+ *  3. (lab8) copy_files(clone_flags, child): the file table. With CLONE_FS the child shares the
+ *     parent's table, otherwise it gets a copy with the same open files. It either fully succeeds
+ *     (child->filesp set, reference count taken) or leaves nothing behind, so a failure here only
+ *     has to free the stack and the PCB;
+ *  4. copy_mm(clone_flags, child): address space (a no-op for kernel threads; lab5 duplicates the mm
+ *     of a user process). A failure here must also drop the file table reference taken in step 3,
+ *     with put_files();
+ *  5. copy_thread(child, stack, tf): trap frame and initial context on the child's stack;
+ *  6. assign a PID with get_pid() and link the child into hash_list and, with set_links(), into
  *     proc_list and the process tree (parent's child list, sibling links, nr_process);
- *  6. wakeup_proc(child): the child becomes PROC_RUNNABLE. This is the only step that makes it runnable;
- *  7. return the child's PID.
- * Steps 5 and 6 are the critical section: interrupts must be disabled around them.
+ *  7. wakeup_proc(child): the child becomes PROC_RUNNABLE. This is the only step that makes it runnable;
+ *  8. return the child's PID.
+ * Steps 6 and 7 are the critical section: interrupts must be disabled around them.
  * @param clone_flags CLONE_* flags; CLONE_VM means the child shares the parent's address space
  * @param stack       stack pointer for the child, or 0 for a kernel thread
  * @param tf          trap frame to copy into the child
@@ -875,17 +1103,26 @@ int do_fork(uint32_t clone_flags, uintptr_t stack, struct trapframe *tf) {
         kfree(proc);
         return ret;
     }
-    // 3. Address space. On failure release the stack and the PCB, in reverse order of acquisition.
+    // 3. File table (lab8). copy_files() cleans up after itself on failure, so no put_files() here:
+    //    proc->filesp is still NULL and there is no table to release.
+    if ((ret = copy_files(clone_flags, proc)) != 0) {
+        put_kstack(proc);
+        kfree(proc);
+        return ret;
+    }
+    // 4. Address space. On failure release the file table reference, the stack and the PCB, in
+    //    reverse order of acquisition.
     if ((ret = copy_mm(clone_flags, proc)) != 0) {
+        put_files(proc);
         put_kstack(proc);
         kfree(proc);
         return ret;
     }
 
-    // 4. Trap frame and initial context on the child's stack (cannot fail).
+    // 5. Trap frame and initial context on the child's stack (cannot fail).
     copy_thread(proc, stack, tf);
 
-    // 5.-6. Critical section: the PID scan, the list insertions and the wakeup must not be
+    // 6.-7. Critical section: the PID scan, the list insertions and the wakeup must not be
     //       interleaved with an interrupt, and the child becomes visible to schedule() only at the end.
     bool intr_flag;
     local_intr_save(intr_flag);
@@ -894,7 +1131,7 @@ int do_fork(uint32_t clone_flags, uintptr_t stack, struct trapframe *tf) {
     set_links(proc);
     wakeup_proc(proc);
     local_intr_restore(intr_flag);
-    // 7. The parent sees the child's PID; the child sees a0 == 0 (set in copy_thread()).
+    // 8. The parent sees the child's PID; the child sees a0 == 0 (set in copy_thread()).
     return proc->pid;
 }
 

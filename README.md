@@ -17,6 +17,7 @@
 |   lab5   | [Here](labcodes/lab5/) | [Here](labcodes/lab5/docs/report.md) | [Here](labcodes/lab5/docs/prompt.md) |
 |   lab6   | [Here](labcodes/lab6/) | [Here](labcodes/lab6/docs/report.md) | [Here](labcodes/lab6/docs/prompt.md) |
 |   lab7   | [Here](labcodes/lab7/) | [Here](labcodes/lab7/docs/report.md) | [Here](labcodes/lab7/docs/prompt.md) |
+|   lab8   | [Here](labcodes/lab8/) | [Here](labcodes/lab8/docs/report.md) | [Here](labcodes/lab8/docs/prompt.md) |
 
 ## 3. QEMU 8.2+OpenSBI v1.3 环境下的适配修改
 
@@ -24,7 +25,7 @@ lab 框架原本针对 QEMU 4.x + OpenSBI v0.4 编写。本仓库的实验环境
 
 > 若某次实验并没有新的针对 QEMU 8.2+OpenSBI v1.3 环境的适配性修改，不要在改项下新增内容。
 
-1. **用 `-kernel` 加载内核，不再用 `-device loader`。** 将 `Makefile` 中 `qemu`、`debug`、`test` 目标以及 `tools/grade.sh` 里的 `-device loader,file=bin/ucore.img,addr=0x80200000` 改为 `-kernel bin/ucore.img`。OpenSBI v1.3 使用 `fw_dynamic`，需要由 QEMU 通过 `-kernel` 告知下一级镜像的入口；用旧写法时启动信息里的 `Domain0 Next Address` 是 `0`，内核根本不会被执行。改对之后该项应为 `0x0000000080200000`。
+1. **用 `-kernel` 加载内核，不再用 `-device loader`。** 将 `Makefile` 中 `qemu`、`debug`、`test` 目标以及 `tools/grade.sh` 里的 `-device loader,file=bin/ucore.img,addr=0x80200000` 改为 `-kernel bin/ucore.img`。OpenSBI v1.3 使用 `fw_dynamic`，需要由 QEMU 通过 `-kernel` 告知下一级镜像的入口；用旧写法时启动信息里的 `Domain0 Next Address` 是 `0`，内核根本不会被执行。改对之后该项应为 `0x0000000080200000`。lab8 骨架同样是旧写法，评分脚本 `tools/grade.sh` 里对应的是变量 `qemuopts`（不是命令行），记得一并改掉。
 2. **在 `kern/init/entry.S` 的启动页表中增加 `0x80000000` 的恒等映射。** 在 `boot_page_table_sv39` 的第 2 项（对应虚拟地址 `0x80000000`，1 GiB 大页）写入 `.quad (0x80000 << 10) | 0xcf`，权限为 VRWXAD。原因是 `csrw satp` 之后紧跟的几条指令仍然从低物理地址 `0x802000xx` 取指：QEMU 4.x 会在与 `csrw` 同一个已翻译的基本块内继续执行，只映射高地址就够；QEMU 8.x 在写 `satp` 之后会用新页表重新取指，缺少低地址映射会触发指令页错误，内核在没有任何输出的情况下卡死。
 3. **把 `SAVE_ALL` 中的 `sbadaddr` 改为 `stval`（lab3 起）。** `trapentry.S` 里原有 `csrr s3, sbadaddr`，新版 binutils（本环境为 riscv64-unknown-elf-gcc 15.1）已经删除这个旧名字，汇编时报 `unknown CSR 'sbadaddr'`。`sbadaddr` 就是特权架构 1.9 中 `stval` 的旧称，改成 `csrr s3, stval` 后语义完全相同。`libs/riscv.h` 中的 `DECLARE_CSR(sbadaddr, ...)` 只是宏声明、没有被使用，不需要改。
 4. **保留 lab2 的物理内存布局宏，以便回填 lab2 代码。** lab3 的 `kern/mm/memlayout.h` 骨架没有 `PHYSICAL_MEMORY_END`、`KERNEL_BEGIN_PADDR`、`KERNEL_BEGIN_VADDR`，而 lab2 的 `page_init` 需要用到 `PHYSICAL_MEMORY_END`，不加回去会编译失败。这一项与 QEMU 版本无关，但每次把 lab2 代码带到新实验时都要检查。
@@ -62,3 +63,15 @@ lab 框架原本针对 QEMU 4.x + OpenSBI v0.4 编写。本仓库的实验环境
 - `kern/sync/monitor.h` 的头文件保护宏写错了（`#ifndef` 用 `MONITOR`，`#define` 用 `MOINTOR`），编译会有 `-Wheader-guard` 警告，保护也没有生效，已改正。
 - lab7 的 `default_sched.c` 和 `default_sched_stride.c` 在骨架里是空的，`sched_init()` 链接时需要 `default_sched_class`，所以要把 lab6 的 RR 和 Stride 迁过来。
 - 任务书里 `phi_*_condvar` 的参数类型 `i32_t` 在代码里不存在。框架实际用 `int`，测试里的函数指针类型是 `void (*)(int32_t)`，两者一致。
+
+### Lab 8
+
+- 骨架里没有 `swap_offset()`：`kern/fs/swap/swapfs.c` 用到了这个宏，但 lab3 起已经没有 `swap.h`，整个仓库里都找不到定义。旧版 GCC 会在链接时报 undefined reference，GCC 15 直接把隐式函数声明当成编译错误。已在 `kern/fs/swap/swapfs.h` 里补上这个宏和 `max_swap_offset` 的声明（lab8 并不使用交换分区，只是为了让 `swapfs.c` 能编译）。
+- `console.c` 要用带输入缓冲的新版（`cons_intr`、`serial_proc_data`，`cons_getc()` 从缓冲区取字符）。lab7 里空实现的 `kbd_intr()`/`serial_intr()` 不能带过来，否则 stdin 永远读不到字符。
+- stdin 设备靠时钟中断喂数据：骨架的 `interrupt_handler()` 整个被挖空，补回 lab3/lab6/lab7 的版本之后，还要在 `IRQ_S_TIMER` 分支里调用 `dev_stdin_write(cons_getc())`。`dev_stdin_write()` 在骨架里没有头文件声明，GCC 15 下会报隐式声明错误，已在 `kern/fs/devs/dev.h` 补上声明。
+- `init_main()` 的 lab8 版本先 `vfs_set_bootfs("disk0:")`，结尾调用 `fs_cleanup()`，并且不要再调用 lab7 的 `check_sync()`：哲学家线程的输出会和 sh 的输出交错，而评分脚本是逐行匹配输出的。
+- `proc_init()` 里 idle 进程要自己 `files_create()` 再 `files_count_inc()`（`alloc_proc()` 只负责把 `filesp` 置 NULL），`do_exit()` 里要 `put_files(current)`。`do_execve()` 变成 `(name, argc, argv)`，`kernel_execve()` 变成 `(name, argv)`，仍然沿用 lab5 的做法：调完 `do_execve()` 直接跳到 `__trapret`，不需要原版的 `ebreak`。
+- `pmm_init()`：lab8 骨架新增了 `switch_kernel_memorylayout()`，`boot_pgdir_va` 不再指向 `boot_page_table_sv39`，而是重新建的内核页表（`entry.S` 多了一页 `bootstackguard` 做栈保护页）。前面实验里"`pmm_init` 直接把 `boot_pgdir_va` 指向 `boot_page_table_sv39`"那段要换掉；第 3 节第 2 条的 `0x80000000` 恒等映射仍要保留。
+- 用户库：骨架的 `user/libs/syscall.c` 没有 `sys_exec()`，要补；`printfmt`/`vprintfmt` 多了 `fd` 参数，`error_string` 要补 12 个新错误码的名字；`unistd.h` 里没有 `SYS_brk`；`forktree` 的 `DEPTH` 改成了 3。`umain(argc, argv)` 的参数来自 `a0`/`a1`，而 `initcode.S` 只是 `call umain`，所以 `load_icode()` 要在 trapframe 里设置 `a0 = argc`、`a1 = argv`（`sh` 不带参数时不设也能跑，带脚本参数时会读到错误的 `argc`）。
+- 评分：`make grade` 把目录复制到 `/tmp/lab8_grade`，注入测试后编译、运行，并用 gdb 在 `readline` 处断住（需要 `riscv64-unknown-elf-gdb`），一次约 75 秒。检查项为 `sh` 启动 10、`user sh` 10、SFS 读 25、`hello` 15、`exit`/`forktest` 20、`yield` 10、无内核异常 10，共 100。
+- 本仓库把 lab8 的五个练习点（`alloc_proc`/`proc_run`/`do_fork` 的更新、`sfs_io_nolock`、`load_icode`）只留了标记，补全之前内核无法编译（`load_icode`、`sfs_io_nolock` 未定义）。用放在 `/tmp` 的参考实现补全后实测：`make grade` 为 100/100，交互式运行 `hello`、`exit` 正常。

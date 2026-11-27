@@ -613,8 +613,6 @@ int page_insert(pde_t *pgdir, struct Page *page, uintptr_t la, uint32_t perm) {
     return 0;
 }
 
-// LAB5:填写你在lab5中实现的代码
-
 /**
  * @brief Invalidate the TLB entry of linear address la after its PTE was changed.
  *

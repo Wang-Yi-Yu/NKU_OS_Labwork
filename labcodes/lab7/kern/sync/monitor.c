@@ -52,6 +52,19 @@ void monitor_free(monitor_t *mtp, size_t num_cv) {
 
 //lab7 function1 YOUR CODE
 
+/**
+ * @brief Wait on a condition variable until another process signals it.
+ *
+ * The caller is inside the monitor. It is counted as a waiter (cvp->count), then it gives the
+ * monitor away: to a signaler that sleeps on mtp->next if there is one (next_count > 0), otherwise
+ * by upping mtp->mutex so that a new process can enter. Then it sleeps on cvp->sem. When
+ * cond_signal() wakes it, the signaler has not released the monitor but sleeps on mtp->next, so the
+ * woken process owns the monitor on return and does not have to take mtp->mutex again.
+ *
+ * @param cvp condition variable to wait on; cvp->owner is the monitor the caller is in
+ * @note Because the monitor is handed over directly, the condition that was signaled still holds on
+ *       return; the caller may use `if` instead of `while` around the call.
+ */
 void cond_wait(condvar_t *cvp) {
     monitor_t *mtp = cvp->owner;
 
@@ -66,6 +79,19 @@ void cond_wait(condvar_t *cvp) {
     cvp->count--;
 }
 
+/**
+ * @brief Wake up one process waiting on a condition variable and let it run first.
+ *
+ * The caller is inside the monitor. If nobody waits on @p cvp (cvp->count == 0) nothing changes and
+ * the signal is lost. Otherwise the caller is counted as a suspended signaler (mtp->next_count),
+ * ups cvp->sem to wake one waiter, and sleeps on mtp->next. The woken process runs inside the
+ * monitor; when it leaves the monitor or waits again it ups mtp->next, which wakes the caller, and
+ * the caller continues with next_count decremented.
+ *
+ * @param cvp condition variable to signal; cvp->owner is the monitor the caller is in
+ * @note The caller may sleep inside this function, so shared state can change before it returns
+ *       if the woken process modified it.
+ */
 void cond_signal(condvar_t *cvp) {
     monitor_t *mtp = cvp->owner;
 

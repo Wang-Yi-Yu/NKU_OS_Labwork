@@ -204,6 +204,14 @@ monitor_t mt, *mtp = &mt;  // monitor
 
 //lab7 function2 YOUR CODE
 
+/**
+ * @brief Leave the monitor: hand it to a suspended signaler, or unlock it.
+ *
+ * Every routine of the monitor ends with this call. If a signaling process sleeps on mt.next
+ * (next_count > 0) it is woken up and gets the monitor directly, which keeps its priority over the
+ * processes that wait to enter. Otherwise mt.mutex is upped so that a new process can enter.
+ * @note Must be the last step of a monitor routine, called by the process that holds the monitor.
+ */
 static void monitor_leave_condvar(void) {
     if (mtp->next_count > 0) {
         up(&(mtp->next));
@@ -212,6 +220,16 @@ static void monitor_leave_condvar(void) {
     }
 }
 
+/**
+ * @brief Let philosopher i eat if it is hungry and neither neighbour is eating (monitor version).
+ *
+ * If the condition holds the state becomes EATING and cond_signal() is called on mt.cv[i]. That
+ * wakes philosopher i if it already waits there. If it has not started to wait yet the signal is
+ * lost, which is harmless because phi_take_forks_condvar() sees the state EATING and does not wait.
+ * @param i number of the philosopher, 0 to N-1
+ * @note Must be called inside the monitor. When a waiter is woken, the caller sleeps in
+ *       cond_signal() until that philosopher leaves the monitor or waits again.
+ */
 static void phi_test_condvar(int i) {
     if (state_condvar[i] == HUNGRY && state_condvar[LEFT] != EATING &&
         state_condvar[RIGHT] != EATING) {
@@ -220,6 +238,16 @@ static void phi_test_condvar(int i) {
     }
 }
 
+/**
+ * @brief Philosopher i tries to take both forks; returns when it may eat (monitor version).
+ *
+ * Enters the monitor (down(&mt.mutex)), declares itself HUNGRY and tests whether it can eat. If the
+ * state did not become EATING it waits on mt.cv[i] with cond_wait(), which gives the monitor away
+ * while it sleeps. Once it is EATING it leaves the monitor.
+ * @param i number of the philosopher, 0 to N-1
+ * @note `if` is enough around cond_wait(): the signaler hands the monitor over directly, so the
+ *       state is EATING when cond_wait() returns.
+ */
 static void phi_take_forks_condvar(int i) {
     down(&(mtp->mutex));
     state_condvar[i] = HUNGRY;
@@ -230,6 +258,14 @@ static void phi_take_forks_condvar(int i) {
     monitor_leave_condvar();
 }
 
+/**
+ * @brief Philosopher i puts both forks down (monitor version).
+ *
+ * Enters the monitor, sets its state to THINKING, tests the left and then the right neighbour
+ * (either may be waiting for a fork of philosopher i), which signals a neighbour that can now eat,
+ * and leaves the monitor.
+ * @param i number of the philosopher, 0 to N-1
+ */
 static void phi_put_forks_condvar(int i) {
     down(&(mtp->mutex));
     state_condvar[i] = THINKING;

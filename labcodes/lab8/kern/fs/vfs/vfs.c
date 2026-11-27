@@ -13,8 +13,7 @@ static struct inode *bootfs_node = NULL;
 extern void vfs_devlist_init(void);
 
 // __alloc_fs - allocate memory for fs, and set fs type
-struct fs *
-__alloc_fs(int type) {
+struct fs *__alloc_fs(int type) {
     struct fs *fs;
     if ((fs = kmalloc(sizeof(struct fs))) != NULL) {
         fs->fs_type = type;
@@ -23,31 +22,25 @@ __alloc_fs(int type) {
 }
 
 // vfs_init -  vfs initialize
-void
-vfs_init(void) {
+void vfs_init(void) {
     sem_init(&bootfs_sem, 1);
     vfs_devlist_init();
 }
 
 // lock_bootfs - lock  for bootfs
-static void
-lock_bootfs(void) {
+static void lock_bootfs(void) {
     down(&bootfs_sem);
 }
 // ulock_bootfs - ulock for bootfs
-static void
-unlock_bootfs(void) {
+static void unlock_bootfs(void) {
     up(&bootfs_sem);
 }
 
-// change_bootfs - set the new fs inode 
-static void
-change_bootfs(struct inode *node) {
+// change_bootfs - set the new fs inode
+static void change_bootfs(struct inode *node) {
     struct inode *old;
     lock_bootfs();
-    {
-        old = bootfs_node, bootfs_node = node;
-    }
+    { old = bootfs_node, bootfs_node = node; }
     unlock_bootfs();
     if (old != NULL) {
         vop_ref_dec(old);
@@ -55,8 +48,7 @@ change_bootfs(struct inode *node) {
 }
 
 // vfs_set_bootfs - change the dir of file system
-int
-vfs_set_bootfs(char *fsname) {
+int vfs_set_bootfs(char *fsname) {
     struct inode *node = NULL;
     if (fsname != NULL) {
         char *s;
@@ -76,8 +68,7 @@ vfs_set_bootfs(char *fsname) {
 }
 
 // vfs_get_bootfs - get the inode of bootfs
-int
-vfs_get_bootfs(struct inode **node_store) {
+int vfs_get_bootfs(struct inode **node_store) {
     struct inode *node = NULL;
     if (bootfs_node != NULL) {
         lock_bootfs();
@@ -94,4 +85,3 @@ vfs_get_bootfs(struct inode **node_store) {
     *node_store = node;
     return 0;
 }
-

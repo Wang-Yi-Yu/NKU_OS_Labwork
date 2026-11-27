@@ -10,8 +10,7 @@
  *                initialize io_offset as desired;
  *                initialize io_resid to the total amount of data that can be transferred through this io.
  */
-struct iobuf *
-iobuf_init(struct iobuf *iob, void *base, size_t len, off_t offset) {
+struct iobuf *iobuf_init(struct iobuf *iob, void *base, size_t len, off_t offset) {
     iob->io_base = base;
     iob->io_offset = offset;
     iob->io_len = iob->io_resid = len;
@@ -25,8 +24,7 @@ iobuf_init(struct iobuf *iob, void *base, size_t len, off_t offset) {
  * additional data until the available buffer space the io refers to
  * is exhausted.
  */
-int
-iobuf_move(struct iobuf *iob, void *data, size_t len, bool m2b, size_t *copiedp) {
+int iobuf_move(struct iobuf *iob, void *data, size_t len, bool m2b, size_t *copiedp) {
     size_t alen;
     if ((alen = iob->io_resid) > len) {
         alen = len;
@@ -50,8 +48,7 @@ iobuf_move(struct iobuf *iob, void *data, size_t len, bool m2b, size_t *copiedp)
  * iobuf_move_zeros - set io buffer zero
  * @copiedp:  the size of data memcopied
  */
-int
-iobuf_move_zeros(struct iobuf *iob, size_t len, size_t *copiedp) {
+int iobuf_move_zeros(struct iobuf *iob, size_t len, size_t *copiedp) {
     size_t alen;
     if ((alen = iob->io_resid) > len) {
         alen = len;
@@ -69,9 +66,7 @@ iobuf_move_zeros(struct iobuf *iob, size_t len, size_t *copiedp) {
 /*
  * iobuf_skip - change the current position of io buffer
  */
-void
-iobuf_skip(struct iobuf *iob, size_t n) {
+void iobuf_skip(struct iobuf *iob, size_t n) {
     assert(iob->io_resid >= n);
     iob->io_base += n, iob->io_offset += n, iob->io_resid -= n;
 }
-

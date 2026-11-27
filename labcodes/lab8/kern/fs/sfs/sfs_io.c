@@ -16,8 +16,8 @@
  * @write: BOOL: Read or Write
  * @check: BOOL: if check (blono < sfs super.blocks)
  */
-static int
-sfs_rwblock_nolock(struct sfs_fs *sfs, void *buf, uint32_t blkno, bool write, bool check) {
+static int sfs_rwblock_nolock(struct sfs_fs *sfs, void *buf, uint32_t blkno, bool write,
+                              bool check) {
     assert((blkno != 0 || !check) && blkno < sfs->super.blocks);
     struct iobuf __iob, *iob = iobuf_init(&__iob, buf, SFS_BLKSIZE, blkno * SFS_BLKSIZE);
     return dop_io(sfs->dev, iob, write);
@@ -31,8 +31,7 @@ sfs_rwblock_nolock(struct sfs_fs *sfs, void *buf, uint32_t blkno, bool write, bo
  * @nblks: Rd/Wr number of disk block
  * @write: BOOL: Read - 0 or Write - 1
  */
-static int
-sfs_rwblock(struct sfs_fs *sfs, void *buf, uint32_t blkno, uint32_t nblks, bool write) {
+static int sfs_rwblock(struct sfs_fs *sfs, void *buf, uint32_t blkno, uint32_t nblks, bool write) {
     int ret = 0;
     lock_sfs_io(sfs);
     {
@@ -40,7 +39,7 @@ sfs_rwblock(struct sfs_fs *sfs, void *buf, uint32_t blkno, uint32_t nblks, bool 
             if ((ret = sfs_rwblock_nolock(sfs, buf, blkno, write, 1)) != 0) {
                 break;
             }
-            blkno ++, nblks --;
+            blkno++, nblks--;
             buf += SFS_BLKSIZE;
         }
     }
@@ -55,8 +54,7 @@ sfs_rwblock(struct sfs_fs *sfs, void *buf, uint32_t blkno, uint32_t nblks, bool 
  * @blkno: the NO. of disk block
  * @nblks: Rd/Wr number of disk block
  */
-int
-sfs_rblock(struct sfs_fs *sfs, void *buf, uint32_t blkno, uint32_t nblks) {
+int sfs_rblock(struct sfs_fs *sfs, void *buf, uint32_t blkno, uint32_t nblks) {
     return sfs_rwblock(sfs, buf, blkno, nblks, 0);
 }
 
@@ -67,8 +65,7 @@ sfs_rblock(struct sfs_fs *sfs, void *buf, uint32_t blkno, uint32_t nblks) {
  * @blkno: the NO. of disk block
  * @nblks: Rd/Wr number of disk block
  */
-int
-sfs_wblock(struct sfs_fs *sfs, void *buf, uint32_t blkno, uint32_t nblks) {
+int sfs_wblock(struct sfs_fs *sfs, void *buf, uint32_t blkno, uint32_t nblks) {
     return sfs_rwblock(sfs, buf, blkno, nblks, 1);
 }
 
@@ -80,8 +77,7 @@ sfs_wblock(struct sfs_fs *sfs, void *buf, uint32_t blkno, uint32_t nblks) {
  * @blkno:  the NO. of disk block
  * @offset: the offset in the content of disk block
  */
-int
-sfs_rbuf(struct sfs_fs *sfs, void *buf, size_t len, uint32_t blkno, off_t offset) {
+int sfs_rbuf(struct sfs_fs *sfs, void *buf, size_t len, uint32_t blkno, off_t offset) {
     assert(offset >= 0 && offset < SFS_BLKSIZE && offset + len <= SFS_BLKSIZE);
     int ret;
     lock_sfs_io(sfs);
@@ -102,8 +98,7 @@ sfs_rbuf(struct sfs_fs *sfs, void *buf, size_t len, uint32_t blkno, off_t offset
  * @blkno:  the NO. of disk block
  * @offset: the offset in the content of disk block
  */
-int
-sfs_wbuf(struct sfs_fs *sfs, void *buf, size_t len, uint32_t blkno, off_t offset) {
+int sfs_wbuf(struct sfs_fs *sfs, void *buf, size_t len, uint32_t blkno, off_t offset) {
     assert(offset >= 0 && offset < SFS_BLKSIZE && offset + len <= SFS_BLKSIZE);
     int ret;
     lock_sfs_io(sfs);
@@ -120,8 +115,7 @@ sfs_wbuf(struct sfs_fs *sfs, void *buf, size_t len, uint32_t blkno, off_t offset
 /*
  * sfs_sync_super - write sfs->super (in memory) into disk (SFS_BLKN_SUPER, 1) with lock protect.
  */
-int
-sfs_sync_super(struct sfs_fs *sfs) {
+int sfs_sync_super(struct sfs_fs *sfs) {
     int ret;
     lock_sfs_io(sfs);
     {
@@ -136,8 +130,7 @@ sfs_sync_super(struct sfs_fs *sfs) {
 /*
  * sfs_sync_freemap - write sfs bitmap into disk (SFS_BLKN_FREEMAP, nblks)  without lock protect.
  */
-int
-sfs_sync_freemap(struct sfs_fs *sfs) {
+int sfs_sync_freemap(struct sfs_fs *sfs) {
     uint32_t nblks = sfs_freemap_blocks(&(sfs->super));
     return sfs_wblock(sfs, bitmap_getdata(sfs->freemap, NULL), SFS_BLKN_FREEMAP, nblks);
 }
@@ -148,8 +141,7 @@ sfs_sync_freemap(struct sfs_fs *sfs) {
  * @blkno: the NO. of disk block
  * @nblks: Rd/Wr number of disk block
  */
-int
-sfs_clear_block(struct sfs_fs *sfs, uint32_t blkno, uint32_t nblks) {
+int sfs_clear_block(struct sfs_fs *sfs, uint32_t blkno, uint32_t nblks) {
     int ret;
     lock_sfs_io(sfs);
     {
@@ -158,10 +150,9 @@ sfs_clear_block(struct sfs_fs *sfs, uint32_t blkno, uint32_t nblks) {
             if ((ret = sfs_rwblock_nolock(sfs, sfs->sfs_buffer, blkno, 1, 1)) != 0) {
                 break;
             }
-            blkno ++, nblks --;
+            blkno++, nblks--;
         }
     }
     unlock_sfs_io(sfs);
     return ret;
 }
-

@@ -5,7 +5,9 @@
 #include <ramdisk.h>
 #include <stdio.h>
 
-static int ide_wait_ready(unsigned short iobase, bool check_error) { return 0; }
+static int ide_wait_ready(unsigned short iobase, bool check_error) {
+    return 0;
+}
 
 void ide_init(void) {
     static_assert((SECTSIZE % 4) == 0);
@@ -20,7 +22,9 @@ void ide_init(void) {
     assert(VALID_IDE(DISK0_DEV_NO));
 }
 
-bool ide_device_valid(unsigned short ideno) { return VALID_IDE(ideno); }
+bool ide_device_valid(unsigned short ideno) {
+    return VALID_IDE(ideno);
+}
 
 size_t ide_device_size(unsigned short ideno) {
     if (ide_device_valid(ideno)) {
@@ -29,17 +33,14 @@ size_t ide_device_size(unsigned short ideno) {
     return 0;
 }
 
-int ide_read_secs(unsigned short ideno, uint32_t secno, void *dst,
-                  size_t nsecs) {
+int ide_read_secs(unsigned short ideno, uint32_t secno, void *dst, size_t nsecs) {
     assert(nsecs <= MAX_NSECS && VALID_IDE(ideno));
     assert(secno < MAX_DISK_NSECS && secno + nsecs <= MAX_DISK_NSECS);
     return ide_devices[ideno].read_secs(&ide_devices[ideno], secno, dst, nsecs);
 }
 
-int ide_write_secs(unsigned short ideno, uint32_t secno, const void *src,
-                   size_t nsecs) {
+int ide_write_secs(unsigned short ideno, uint32_t secno, const void *src, size_t nsecs) {
     assert(nsecs <= MAX_NSECS && VALID_IDE(ideno));
     assert(secno < MAX_DISK_NSECS && secno + nsecs <= MAX_DISK_NSECS);
-    return ide_devices[ideno].write_secs(&ide_devices[ideno], secno, src,
-                                         nsecs);
+    return ide_devices[ideno].write_secs(&ide_devices[ideno], secno, src, nsecs);
 }

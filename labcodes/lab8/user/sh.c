@@ -6,23 +6,22 @@
 #include <error.h>
 #include <unistd.h>
 
-#define printf(...)                     fprintf(1, __VA_ARGS__)
-#define putc(c)                         printf("%c", c)
+#define printf(...) fprintf(1, __VA_ARGS__)
+#define putc(c)     printf("%c", c)
 
-#define BUFSIZE                         4096
-#define WHITESPACE                      " \t\r\n"
-#define SYMBOLS                         "<|>&;"
+#define BUFSIZE    4096
+#define WHITESPACE " \t\r\n"
+#define SYMBOLS    "<|>&;"
 
 char shcwd[BUFSIZE];
 
-int
-gettoken(char **p1, char **p2) {
+int gettoken(char **p1, char **p2) {
     char *s;
     if ((s = *p1) == NULL) {
         return 0;
     }
     while (strchr(WHITESPACE, *s) != NULL) {
-        *s ++ = '\0';
+        *s++ = '\0';
     }
     if (*s == '\0') {
         return 0;
@@ -31,23 +30,21 @@ gettoken(char **p1, char **p2) {
     *p2 = s;
     int token = 'w';
     if (strchr(SYMBOLS, *s) != NULL) {
-        token = *s, *s ++ = '\0';
-    }
-    else {
+        token = *s, *s++ = '\0';
+    } else {
         bool flag = 0;
         while (*s != '\0' && (flag || strchr(WHITESPACE SYMBOLS, *s) == NULL)) {
             if (*s == '"') {
                 *s = ' ', flag = !flag;
             }
-            s ++;
+            s++;
         }
     }
     *p1 = (*s != '\0' ? s : NULL);
     return token;
 }
 
-char *
-readline(const char *prompt) {
+char *readline(const char *prompt) {
     static char buffer[BUFSIZE];
     if (prompt != NULL) {
         printf("%s", prompt);
@@ -57,8 +54,7 @@ readline(const char *prompt) {
         char c;
         if ((ret = read(0, &c, sizeof(char))) < 0) {
             return NULL;
-        }
-        else if (ret == 0) {
+        } else if (ret == 0) {
             if (i > 0) {
                 buffer[i] = '\0';
                 break;
@@ -68,16 +64,13 @@ readline(const char *prompt) {
 
         if (c == 3) {
             return NULL;
-        }
-        else if (c >= ' ' && i < BUFSIZE - 1) {
+        } else if (c >= ' ' && i < BUFSIZE - 1) {
             putc(c);
-            buffer[i ++] = c;
-        }
-        else if (c == '\b' && i > 0) {
+            buffer[i++] = c;
+        } else if (c == '\b' && i > 0) {
             putc(c);
-            i --;
-        }
-        else if (c == '\n' || c == '\r') {
+            i--;
+        } else if (c == '\n' || c == '\r') {
             putc(c);
             buffer[i] = '\0';
             break;
@@ -86,13 +79,11 @@ readline(const char *prompt) {
     return buffer;
 }
 
-void
-usage(void) {
+void usage(void) {
     printf("usage: sh [command-file]\n");
 }
 
-int
-reopen(int fd2, const char *filename, uint32_t open_flags) {
+int reopen(int fd2, const char *filename, uint32_t open_flags) {
     int ret, fd1;
     close(fd2);
     if ((ret = open(filename, open_flags)) >= 0 && ret != fd2) {
@@ -103,8 +94,7 @@ reopen(int fd2, const char *filename, uint32_t open_flags) {
     return ret < 0 ? ret : 0;
 }
 
-int
-testfile(const char *name) {
+int testfile(const char *name) {
     int ret;
     if ((ret = open(name, O_RDONLY)) < 0) {
         return ret;
@@ -113,90 +103,86 @@ testfile(const char *name) {
     return 0;
 }
 
-int
-runcmd(char *cmd) {
+int runcmd(char *cmd) {
     static char argv0[BUFSIZE];
-    static const char *argv[EXEC_MAX_ARG_NUM + 1];//must be static!
+    static const char *argv[EXEC_MAX_ARG_NUM + 1];  //must be static!
     char *t;
     int argc, token, ret, p[2];
 again:
     argc = 0;
     while (1) {
         switch (token = gettoken(&cmd, &t)) {
-        case 'w':
-            if (argc == EXEC_MAX_ARG_NUM) {
-                printf("sh error: too many arguments\n");
-                return -1;
-            }
-            argv[argc ++] = t;
-            break;
-        case '<':
-            if (gettoken(&cmd, &t) != 'w') {
-                printf("sh error: syntax error: < not followed by word\n");
-                return -1;
-            }
-            if ((ret = reopen(0, t, O_RDONLY)) != 0) {
-                return ret;
-            }
-            break;
-        case '>':
-            if (gettoken(&cmd, &t) != 'w') {
-                printf("sh error: syntax error: > not followed by word\n");
-                return -1;
-            }
-            if ((ret = reopen(1, t, O_RDWR | O_TRUNC | O_CREAT)) != 0) {
-                return ret;
-            }
-            break;
-        case '|':
-          //  if ((ret = pipe(p)) != 0) {
-          //      return ret;
-          //  }
-            if ((ret = fork()) == 0) {
-                close(0);
-                if ((ret = dup2(p[0], 0)) < 0) {
+            case 'w':
+                if (argc == EXEC_MAX_ARG_NUM) {
+                    printf("sh error: too many arguments\n");
+                    return -1;
+                }
+                argv[argc++] = t;
+                break;
+            case '<':
+                if (gettoken(&cmd, &t) != 'w') {
+                    printf("sh error: syntax error: < not followed by word\n");
+                    return -1;
+                }
+                if ((ret = reopen(0, t, O_RDONLY)) != 0) {
                     return ret;
                 }
-                close(p[0]), close(p[1]);
-                goto again;
-            }
-            else {
-                if (ret < 0) {
+                break;
+            case '>':
+                if (gettoken(&cmd, &t) != 'w') {
+                    printf("sh error: syntax error: > not followed by word\n");
+                    return -1;
+                }
+                if ((ret = reopen(1, t, O_RDWR | O_TRUNC | O_CREAT)) != 0) {
                     return ret;
                 }
-                close(1);
-                if ((ret = dup2(p[1], 1)) < 0) {
-                    return ret;
+                break;
+            case '|':
+                //  if ((ret = pipe(p)) != 0) {
+                //      return ret;
+                //  }
+                if ((ret = fork()) == 0) {
+                    close(0);
+                    if ((ret = dup2(p[0], 0)) < 0) {
+                        return ret;
+                    }
+                    close(p[0]), close(p[1]);
+                    goto again;
+                } else {
+                    if (ret < 0) {
+                        return ret;
+                    }
+                    close(1);
+                    if ((ret = dup2(p[1], 1)) < 0) {
+                        return ret;
+                    }
+                    close(p[0]), close(p[1]);
+                    goto runit;
                 }
-                close(p[0]), close(p[1]);
+                break;
+            case 0:
                 goto runit;
-            }
-            break;
-        case 0:
-            goto runit;
-        case ';':
-            if ((ret = fork()) == 0) {
-                goto runit;
-            }
-            else {
-                if (ret < 0) {
-                    return ret;
+            case ';':
+                if ((ret = fork()) == 0) {
+                    goto runit;
+                } else {
+                    if (ret < 0) {
+                        return ret;
+                    }
+                    waitpid(ret, NULL);
+                    goto again;
                 }
-                waitpid(ret, NULL);
-                goto again;
-            }
-            break;
-        default:
-            printf("sh error: bad return %d from gettoken\n", token);
-            return -1;
+                break;
+            default:
+                printf("sh error: bad return %d from gettoken\n", token);
+                return -1;
         }
     }
 
 runit:
     if (argc == 0) {
         return 0;
-    }
-    else if (strcmp(argv[0], "cd") == 0) {
+    } else if (strcmp(argv[0], "cd") == 0) {
         if (argc != 2) {
             return -1;
         }
@@ -214,8 +200,7 @@ runit:
     return __exec(argv[0], argv);
 }
 
-int
-main(int argc, char **argv) {
+int main(int argc, char **argv) {
     cputs("user sh is running!!!");
     int ret, interactive = 1;
     if (argc == 2) {
@@ -223,8 +208,7 @@ main(int argc, char **argv) {
             return ret;
         }
         interactive = 0;
-    }
-    else if (argc > 2) {
+    } else if (argc > 2) {
         usage();
         return -1;
     }
@@ -251,4 +235,3 @@ main(int argc, char **argv) {
     }
     return 0;
 }
-

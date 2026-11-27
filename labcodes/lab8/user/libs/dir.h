@@ -16,4 +16,3 @@ int chdir(const char *path);
 int getcwd(char *buffer, size_t len);
 
 #endif /* !__USER_LIBS_DIR_H__ */
-

@@ -34,41 +34,41 @@ struct iobuf;   // kernel or userspace I/O buffer (iobuf.h)
  */
 struct fs {
     union {
-        struct sfs_fs __sfs_info;                   
-    } fs_info;                                     // filesystem-specific data 
+        struct sfs_fs __sfs_info;
+    } fs_info;  // filesystem-specific data
     enum {
         fs_type_sfs_info,
-    } fs_type;                                     // filesystem type 
-    int (*fs_sync)(struct fs *fs);                 // Flush all dirty buffers to disk 
-    struct inode *(*fs_get_root)(struct fs *fs);   // Return root inode of filesystem.
-    int (*fs_unmount)(struct fs *fs);              // Attempt unmount of filesystem.
-    void (*fs_cleanup)(struct fs *fs);             // Cleanup of filesystem.???
+    } fs_type;                                    // filesystem type
+    int (*fs_sync)(struct fs *fs);                // Flush all dirty buffers to disk
+    struct inode *(*fs_get_root)(struct fs *fs);  // Return root inode of filesystem.
+    int (*fs_unmount)(struct fs *fs);             // Attempt unmount of filesystem.
+    void (*fs_cleanup)(struct fs *fs);            // Cleanup of filesystem.???
 };
 
-#define __fs_type(type)                                             fs_type_##type##_info
+#define __fs_type(type) fs_type_##type##_info
 
-#define check_fs_type(fs, type)                                     ((fs)->fs_type == __fs_type(type))
+#define check_fs_type(fs, type) ((fs)->fs_type == __fs_type(type))
 
-#define __fsop_info(_fs, type) ({                                   \
-            struct fs *__fs = (_fs);                                \
-            assert(__fs != NULL && check_fs_type(__fs, type));      \
-            &(__fs->fs_info.__##type##_info);                       \
-        })
+#define __fsop_info(_fs, type)                             \
+    ({                                                     \
+        struct fs *__fs = (_fs);                           \
+        assert(__fs != NULL && check_fs_type(__fs, type)); \
+        &(__fs->fs_info.__##type##_info);                  \
+    })
 
-#define fsop_info(fs, type)                 __fsop_info(fs, type)
+#define fsop_info(fs, type) __fsop_info(fs, type)
 
-#define info2fs(info, type)                                         \
-    to_struct((info), struct fs, fs_info.__##type##_info)
+#define info2fs(info, type) to_struct((info), struct fs, fs_info.__##type##_info)
 
 struct fs *__alloc_fs(int type);
 
-#define alloc_fs(type)                                              __alloc_fs(__fs_type(type))
+#define alloc_fs(type) __alloc_fs(__fs_type(type))
 
 // Macros to shorten the calling sequences.
-#define fsop_sync(fs)                       ((fs)->fs_sync(fs))
-#define fsop_get_root(fs)                   ((fs)->fs_get_root(fs))
-#define fsop_unmount(fs)                    ((fs)->fs_unmount(fs))
-#define fsop_cleanup(fs)                    ((fs)->fs_cleanup(fs))
+#define fsop_sync(fs)     ((fs)->fs_sync(fs))
+#define fsop_get_root(fs) ((fs)->fs_get_root(fs))
+#define fsop_unmount(fs)  ((fs)->fs_unmount(fs))
+#define fsop_cleanup(fs)  ((fs)->fs_cleanup(fs))
 
 /*
  * Virtual File System layer functions.
@@ -188,4 +188,3 @@ int vfs_unmount(const char *devname);
 int vfs_unmount_all(void);
 
 #endif /* !__KERN_FS_VFS_VFS_H__ */
-

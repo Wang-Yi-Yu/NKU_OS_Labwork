@@ -15,23 +15,23 @@ bool check_initrd(const char _initrd_begin[], const char _initrd_end[]) {
         cprintf("Warning: No Initrd!\n");
         return 0;
     }
-    cprintf("Initrd: 0x%08x - 0x%08x, size: 0x%08x\n", _initrd_begin,
-            _initrd_end - 1, _initrd_end - _initrd_begin);
+    cprintf("Initrd: 0x%08x - 0x%08x, size: 0x%08x\n", _initrd_begin, _initrd_end - 1,
+            _initrd_end - _initrd_begin);
     return 1;
 }
 
-static int ramdisk_read(struct ide_device *dev, size_t secno, void *dst,
-                        size_t nsecs) {
+static int ramdisk_read(struct ide_device *dev, size_t secno, void *dst, size_t nsecs) {
     nsecs = MIN(nsecs, dev->size - secno);
-    if (nsecs < 0) return -1;
+    if (nsecs < 0)
+        return -1;
     memcpy(dst, (void *)(dev->iobase + secno * SECTSIZE), nsecs * SECTSIZE);
     return 0;
 }
 
-static int ramdisk_write(struct ide_device *dev, size_t secno, const void *src,
-                         size_t nsecs) {
+static int ramdisk_write(struct ide_device *dev, size_t secno, const void *src, size_t nsecs) {
     nsecs = MIN(nsecs, dev->size - secno);
-    if (nsecs < 0) return -1;
+    if (nsecs < 0)
+        return -1;
     memcpy((void *)(dev->iobase + secno * SECTSIZE), src, nsecs * SECTSIZE);
     return 0;
 }

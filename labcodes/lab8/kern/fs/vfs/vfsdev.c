@@ -11,7 +11,7 @@
 #include <error.h>
 #include <assert.h>
 #include <proc.h>
-// device info entry in vdev_list 
+// device info entry in vdev_list
 typedef struct {
     const char *devname;
     struct inode *devnode;
@@ -20,31 +20,26 @@ typedef struct {
     list_entry_t vdev_link;
 } vfs_dev_t;
 
-#define le2vdev(le, member)                         \
-    to_struct((le), vfs_dev_t, member)
+#define le2vdev(le, member) to_struct((le), vfs_dev_t, member)
 
-static list_entry_t vdev_list;     // device info list in vfs layer
+static list_entry_t vdev_list;  // device info list in vfs layer
 static semaphore_t vdev_list_sem;
 
-static void
-lock_vdev_list(void) {
+static void lock_vdev_list(void) {
     down(&vdev_list_sem);
 }
 
-static void
-unlock_vdev_list(void) {
+static void unlock_vdev_list(void) {
     up(&vdev_list_sem);
 }
 
-void
-vfs_devlist_init(void) {
+void vfs_devlist_init(void) {
     list_init(&vdev_list);
     sem_init(&vdev_list_sem, 1);
 }
 
 // vfs_cleanup - finally clean (or sync) fs
-void
-vfs_cleanup(void) {
+void vfs_cleanup(void) {
     if (!list_empty(&vdev_list)) {
         lock_vdev_list();
         {
@@ -64,8 +59,7 @@ vfs_cleanup(void) {
  * vfs_get_root - Given a device name (stdin, stdout, etc.), hand
  *                back an appropriate inode.
  */
-int
-vfs_get_root(const char *devname, struct inode **node_store) {
+int vfs_get_root(const char *devname, struct inode **node_store) {
     assert(devname != NULL);
     int ret = -E_NO_DEV;
     if (!list_empty(&vdev_list)) {
@@ -78,15 +72,13 @@ vfs_get_root(const char *devname, struct inode **node_store) {
                     struct inode *found = NULL;
                     if (vdev->fs != NULL) {
                         found = fsop_get_root(vdev->fs);
-                    }
-                    else if (!vdev->mountable) {
+                    } else if (!vdev->mountable) {
                         vop_ref_inc(vdev->devnode);
                         found = vdev->devnode;
                     }
                     if (found != NULL) {
                         ret = 0, *node_store = found;
-                    }
-                    else {
+                    } else {
                         ret = -E_NA_DEV;
                     }
                     break;
@@ -101,8 +93,7 @@ vfs_get_root(const char *devname, struct inode **node_store) {
 /*
  * vfs_get_devname - Given a filesystem, hand back the name of the device it's mounted on.
  */
-const char *
-vfs_get_devname(struct fs *fs) {
+const char *vfs_get_devname(struct fs *fs) {
     assert(fs != NULL);
     list_entry_t *list = &vdev_list, *le = list;
     while ((le = list_next(le)) != list) {
@@ -117,8 +108,7 @@ vfs_get_devname(struct fs *fs) {
 /*
  * check_devname_confilct - Is there alreadily device which has the same name?
  */
-static bool
-check_devname_conflict(const char *devname) {
+static bool check_devname_conflict(const char *devname) {
     list_entry_t *list = &vdev_list, *le = list;
     while ((le = list_next(le)) != list) {
         vfs_dev_t *vdev = le2vdev(le, vdev_link);
@@ -137,10 +127,10 @@ check_devname_conflict(const char *devname) {
 * to have a filesystem mounted on it, and a raw device will be created
 * for direct access.
 */
-static int
-vfs_do_add(const char *devname, struct inode *devnode, struct fs *fs, bool mountable) {
+static int vfs_do_add(const char *devname, struct inode *devnode, struct fs *fs, bool mountable) {
     assert(devname != NULL);
-    assert((devnode == NULL && !mountable) || (devnode != NULL && check_inode_type(devnode, device)));
+    assert((devnode == NULL && !mountable) ||
+           (devnode != NULL && check_inode_type(devnode, device)));
     if (strlen(devname) > FS_MAX_DNAME_LEN) {
         return -E_TOO_BIG;
     }
@@ -182,8 +172,7 @@ failed_cleanup_name:
  * vfs_add_fs - Add a new fs,  by name. See  vfs_do_add information for the description of
  *              mountable.
  */
-int
-vfs_add_fs(const char *devname, struct fs *fs) {
+int vfs_add_fs(const char *devname, struct fs *fs) {
     return vfs_do_add(devname, NULL, fs, 0);
 }
 
@@ -191,8 +180,7 @@ vfs_add_fs(const char *devname, struct fs *fs) {
  * vfs_add_dev - Add a new device, by name. See  vfs_do_add information for the description of
  *               mountable.
  */
-int
-vfs_add_dev(const char *devname, struct inode *devnode, bool mountable) {
+int vfs_add_dev(const char *devname, struct inode *devnode, bool mountable) {
     return vfs_do_add(devname, devnode, NULL, mountable);
 }
 
@@ -200,8 +188,7 @@ vfs_add_dev(const char *devname, struct inode *devnode, bool mountable) {
  * find_mount - Look for a mountable device named DEVNAME.
  *              Should already hold vdev_list lock.
  */
-static int
-find_mount(const char *devname, vfs_dev_t **vdev_store) {
+static int find_mount(const char *devname, vfs_dev_t **vdev_store) {
     assert(devname != NULL);
     list_entry_t *list = &vdev_list, *le = list;
     while ((le = list_next(le)) != list) {
@@ -220,8 +207,7 @@ find_mount(const char *devname, vfs_dev_t **vdev_store) {
  *
  * The DATA argument is passed through unchanged to MOUNTFUNC.
  */
-int
-vfs_mount(const char *devname, int (*mountfunc)(struct device *dev, struct fs **fs_store)) {
+int vfs_mount(const char *devname, int (*mountfunc)(struct device *dev, struct fs **fs_store)) {
     int ret;
     lock_vdev_list();
     vfs_dev_t *vdev;
@@ -249,8 +235,7 @@ out:
  * vfs_unmount - Unmount a filesystem/device by name.
  *               First calls FSOP_SYNC on the filesystem; then calls FSOP_UNMOUNT.
  */
-int
-vfs_unmount(const char *devname) {
+int vfs_unmount(const char *devname) {
     int ret;
     lock_vdev_list();
     vfs_dev_t *vdev;
@@ -279,8 +264,7 @@ out:
 /*
  * vfs_unmount_all - Global unmount function.
  */
-int
-vfs_unmount_all(void) {
+int vfs_unmount_all(void) {
     if (!list_empty(&vdev_list)) {
         lock_vdev_list();
         {
@@ -291,11 +275,11 @@ vfs_unmount_all(void) {
                     int ret;
                     if ((ret = fsop_sync(vdev->fs)) != 0) {
                         cprintf("vfs: warning: sync failed for %s: %e.\n", vdev->devname, ret);
-                        continue ;
+                        continue;
                     }
                     if ((ret = fsop_unmount(vdev->fs)) != 0) {
                         cprintf("vfs: warning: unmount failed for %s: %e.\n", vdev->devname, ret);
-                        continue ;
+                        continue;
                     }
                     vdev->fs = NULL;
                     cprintf("vfs: unmount %s.\n", vdev->devname);
@@ -306,4 +290,3 @@ vfs_unmount_all(void) {
     }
     return 0;
 }
-

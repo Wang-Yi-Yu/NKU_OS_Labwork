@@ -10,4 +10,3 @@ struct dirent {
 };
 
 #endif /* !__LIBS_DIRENT_H__ */
-

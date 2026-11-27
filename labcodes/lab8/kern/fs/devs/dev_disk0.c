@@ -10,55 +10,48 @@
 #include <error.h>
 #include <assert.h>
 
-#define DISK0_BLKSIZE                   PGSIZE
-#define DISK0_BUFSIZE                   (4 * DISK0_BLKSIZE)
-#define DISK0_BLK_NSECT                 (DISK0_BLKSIZE / SECTSIZE)
+#define DISK0_BLKSIZE   PGSIZE
+#define DISK0_BUFSIZE   (4 * DISK0_BLKSIZE)
+#define DISK0_BLK_NSECT (DISK0_BLKSIZE / SECTSIZE)
 
 static char *disk0_buffer;
 static semaphore_t disk0_sem;
 
-static void
-lock_disk0(void) {
+static void lock_disk0(void) {
     down(&(disk0_sem));
 }
 
-static void
-unlock_disk0(void) {
+static void unlock_disk0(void) {
     up(&(disk0_sem));
 }
 
-static int
-disk0_open(struct device *dev, uint32_t open_flags) {
+static int disk0_open(struct device *dev, uint32_t open_flags) {
     return 0;
 }
 
-static int
-disk0_close(struct device *dev) {
+static int disk0_close(struct device *dev) {
     return 0;
 }
 
-static void
-disk0_read_blks_nolock(uint32_t blkno, uint32_t nblks) {
+static void disk0_read_blks_nolock(uint32_t blkno, uint32_t nblks) {
     int ret;
     uint32_t sectno = blkno * DISK0_BLK_NSECT, nsecs = nblks * DISK0_BLK_NSECT;
     if ((ret = ide_read_secs(DISK0_DEV_NO, sectno, disk0_buffer, nsecs)) != 0) {
-        panic("disk0: read blkno = %d (sectno = %d), nblks = %d (nsecs = %d): 0x%08x.\n",
-                blkno, sectno, nblks, nsecs, ret);
+        panic("disk0: read blkno = %d (sectno = %d), nblks = %d (nsecs = %d): 0x%08x.\n", blkno,
+              sectno, nblks, nsecs, ret);
     }
 }
 
-static void
-disk0_write_blks_nolock(uint32_t blkno, uint32_t nblks) {
+static void disk0_write_blks_nolock(uint32_t blkno, uint32_t nblks) {
     int ret;
     uint32_t sectno = blkno * DISK0_BLK_NSECT, nsecs = nblks * DISK0_BLK_NSECT;
     if ((ret = ide_write_secs(DISK0_DEV_NO, sectno, disk0_buffer, nsecs)) != 0) {
-        panic("disk0: write blkno = %d (sectno = %d), nblks = %d (nsecs = %d): 0x%08x.\n",
-                blkno, sectno, nblks, nsecs, ret);
+        panic("disk0: write blkno = %d (sectno = %d), nblks = %d (nsecs = %d): 0x%08x.\n", blkno,
+              sectno, nblks, nsecs, ret);
     }
 }
 
-static int
-disk0_io(struct device *dev, struct iobuf *iob, bool write) {
+static int disk0_io(struct device *dev, struct iobuf *iob, bool write) {
     off_t offset = iob->io_offset;
     size_t resid = iob->io_resid;
     uint32_t blkno = offset / DISK0_BLKSIZE;
@@ -87,8 +80,7 @@ disk0_io(struct device *dev, struct iobuf *iob, bool write) {
             assert(copied != 0 && copied <= resid && copied % DISK0_BLKSIZE == 0);
             nblks = copied / DISK0_BLKSIZE;
             disk0_write_blks_nolock(blkno, nblks);
-        }
-        else {
+        } else {
             if (alen > resid) {
                 alen = resid;
             }
@@ -103,13 +95,11 @@ disk0_io(struct device *dev, struct iobuf *iob, bool write) {
     return 0;
 }
 
-static int
-disk0_ioctl(struct device *dev, int op, void *data) {
+static int disk0_ioctl(struct device *dev, int op, void *data) {
     return -E_UNIMP;
 }
 
-static void
-disk0_device_init(struct device *dev) {
+static void disk0_device_init(struct device *dev) {
     static_assert(DISK0_BLKSIZE % SECTSIZE == 0);
     if (!ide_device_valid(DISK0_DEV_NO)) {
         panic("disk0 device isn't available.\n");
@@ -128,8 +118,7 @@ disk0_device_init(struct device *dev) {
     }
 }
 
-void
-dev_init_disk0(void) {
+void dev_init_disk0(void) {
     struct inode *node;
     if ((node = dev_create_inode()) == NULL) {
         panic("disk0: dev_create_node.\n");
@@ -141,4 +130,3 @@ dev_init_disk0(void) {
         panic("disk0: vfs_add_dev: %e.\n", ret);
     }
 }
-

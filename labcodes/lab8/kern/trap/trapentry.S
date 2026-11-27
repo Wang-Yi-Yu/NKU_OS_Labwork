@@ -1,7 +1,35 @@
+/**
+ * @file   trapentry.S
+ * @brief  Assembly trap entry and exit for both privilege levels: build a struct trapframe, call
+ *         trap(), restore and sret.
+ *
+ * stvec points to __alltraps. SAVE_ALL pushes 36 words on the kernel stack in the layout of
+ * struct trapframe (trap.h): x0..x31 at words 0..31, then sstatus, sepc, stval, scause at words
+ * 32..35. RESTORE_ALL is its inverse. REGBYTES, STORE and LOAD come from riscv.h.
+ *
+ * Since lab5 a trap may come from user mode as well. The convention is: sscratch holds the kernel
+ * stack pointer while a user program runs, and 0 while the CPU runs in the kernel. SAVE_ALL tells
+ * the two cases apart by swapping sp and sscratch; RESTORE_ALL has to put the right value back
+ * into sscratch before returning, depending on the mode that is returned to.
+ *
+ * forkrets is the exit path used by a brand-new thread or process (see forkret() in proc.c); it
+ * reuses __trapret, so a new process leaves the kernel through the same restore/sret code. This is
+ * also how kernel_execve() enters user mode for the first time.
+ */
 #include <riscv.h>
 
     .altmacro
     .align 2
+    /*
+     * SAVE_ALL - push the whole CPU context as a struct trapframe (provided by the lab framework).
+     *
+     * On entry sscratch is the kernel sp if the trap came from user mode and 0 if it came from the
+     * kernel. The csrrw swaps sp and sscratch: a non-zero sp is then the kernel stack, otherwise
+     * the kernel stack pointer is read back from sscratch. The sp of the interrupted code (the user
+     * sp, or the kernel sp) ends up in the x2 slot of the frame, and sscratch is set to 0 so that a
+     * nested trap inside the kernel is recognised as coming from the kernel.
+     * Clobbers s0..s4 after they have been saved.
+     */
     .macro SAVE_ALL
     LOCAL _restore_kernel_sp
     LOCAL _save_context
@@ -52,10 +80,11 @@ _save_context:
     # get sr, epc, tval, cause
     # Set sscratch register to 0, so that if a recursive exception
     # occurs, the exception vector knows it came from the kernel
+    # (s0 receives the old sscratch: the user sp, or the kernel sp, to be stored in the x2 slot)
     csrrw s0, sscratch, x0
     csrr s1, sstatus
     csrr s2, sepc
-    csrr s3, 0x143
+    csrr s3, 0x143    # stval
     csrr s4, scause
 
     STORE s0, 2*REGBYTES(sp)
@@ -65,23 +94,116 @@ _save_context:
     STORE s4, 35*REGBYTES(sp)
     .endm
 
+    /*
+     * RESTORE_ALL - inverse of SAVE_ALL; restores a frame that may return to user or kernel mode
+     * (lab3 exercise 1, extended in lab5 module 1).
+     *
+     * Reloads every register and the CSRs that must survive a trap from the trap frame at sp
+     * (trap() may have changed epc) and leaves sp equal to the sp of the interrupted code.
+     *
+     * The mode that is returned to is read from sstatus.SPP of the frame:
+     *  - SPP = 0: the frame describes a user program (an interrupted one, a system call return, or
+     *    the frame built by load_icode()). While it runs, sscratch must hold the kernel stack top,
+     *    which is the address just above this frame (sp + 36 * REGBYTES), so that the next trap can
+     *    find the kernel stack in SAVE_ALL. It is stored before sp is replaced by the user sp.
+     *  - SPP = 1: the frame describes kernel code. sscratch stays 0 (SAVE_ALL cleared it), which is
+     *    what tells a nested trap that it comes from the kernel.
+     * Clobbers s0..s2 (reloaded afterwards from the frame).
+     */
     .macro RESTORE_ALL
-    #lab5:填写你在lab5中实现的代码
+    LOCAL _save_kernel_sp
+    LOCAL _restore_context
+
+    #lab3 function1 2414007
+    #lab5 function1 2414007 update RESTORE_ALL: add the user/kernel distinction
+    LOAD s1, 32*REGBYTES(sp)
+    LOAD s2, 33*REGBYTES(sp)
+
+    # sstatus.SPP is the privilege level the sret returns to: 1 = S mode (kernel), 0 = U mode.
+    andi s0, s1, SSTATUS_SPP
+    bnez s0, _restore_context
+
+_save_kernel_sp:
+    # Returning to user mode: park the unwound kernel stack top in sscratch for the next trap.
+    addi s0, sp, 36 * REGBYTES
+    csrw sscratch, s0
+
+_restore_context:
+    # Restore the CSRs before the register reloads below overwrite s1/s2 (the staging registers).
+    # sepc is reloaded because trap() may have advanced it.
+    csrw sstatus, s1
+    csrw sepc, s2
+
+    # x0 is hard-wired to zero and x2 (sp) is handled last, so both are skipped here.
+    LOAD x1, 1*REGBYTES(sp)
+    LOAD x3, 3*REGBYTES(sp)
+    LOAD x4, 4*REGBYTES(sp)
+    LOAD x5, 5*REGBYTES(sp)
+    LOAD x6, 6*REGBYTES(sp)
+    LOAD x7, 7*REGBYTES(sp)
+    LOAD x8, 8*REGBYTES(sp)
+    LOAD x9, 9*REGBYTES(sp)
+    LOAD x10, 10*REGBYTES(sp)
+    LOAD x11, 11*REGBYTES(sp)
+    LOAD x12, 12*REGBYTES(sp)
+    LOAD x13, 13*REGBYTES(sp)
+    LOAD x14, 14*REGBYTES(sp)
+    LOAD x15, 15*REGBYTES(sp)
+    LOAD x16, 16*REGBYTES(sp)
+    LOAD x17, 17*REGBYTES(sp)
+    LOAD x18, 18*REGBYTES(sp)
+    LOAD x19, 19*REGBYTES(sp)
+    LOAD x20, 20*REGBYTES(sp)
+    LOAD x21, 21*REGBYTES(sp)
+    LOAD x22, 22*REGBYTES(sp)
+    LOAD x23, 23*REGBYTES(sp)
+    LOAD x24, 24*REGBYTES(sp)
+    LOAD x25, 25*REGBYTES(sp)
+    LOAD x26, 26*REGBYTES(sp)
+    LOAD x27, 27*REGBYTES(sp)
+    LOAD x28, 28*REGBYTES(sp)
+    LOAD x29, 29*REGBYTES(sp)
+    LOAD x30, 30*REGBYTES(sp)
+    LOAD x31, 31*REGBYTES(sp)
+
+    # The x2 slot holds the sp of the interrupted code, not the frame address. Every load above
+    # is addressed through sp, so x2 must be the very last register to be reloaded.
+    LOAD x2, 2*REGBYTES(sp)
     .endm
 
+    /*
+     * __alltraps - trap entry installed in stvec; 4-byte aligned as stvec requires.
+     * Saves the context, then calls trap(struct trapframe *tf) with the address of the frame
+     * (lab3 exercise 1); trap() returns into __trapret below.
+     */
     .globl __alltraps
 __alltraps:
     SAVE_ALL
 
-    #lab3：填写你在lab3中实现的代码
+    #lab3 function1 2414007
+    # The frame lives at the current sp, so sp is the first argument (a0) of trap(tf).
+    move a0, sp
+    jal trap
     # sp should be the same as before "jal trap"
 
+    /*
+     * __trapret - common exit of a trap: restore the context and return with sret
+     * (pc = sepc, privilege = sstatus.SPP, SIE = SPIE). Falls through from __alltraps.
+     */
     .globl __trapret
 __trapret:
     RESTORE_ALL
     # return from supervisor call
     sret
- 
+
+    /*
+     * forkrets - first exit of a newly created thread or process.
+     * Called from C as forkrets(struct trapframe *tf), i.e. tf arrives in a0. It points sp at
+     * the trap frame that copy_thread placed on the new kernel stack and jumps into __trapret,
+     * so the process starts executing at tf->epc with the registers and status from the frame.
+     * Whether it lands in kernel or in user mode is decided by sstatus.SPP in that frame.
+     * It never returns to its caller.
+     */
     .globl forkrets
 forkrets:
     # set stack to this new process's trapframe

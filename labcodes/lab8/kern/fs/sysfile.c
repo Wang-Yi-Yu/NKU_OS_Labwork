@@ -13,11 +13,10 @@
 #include <error.h>
 #include <assert.h>
 
-#define IOBUF_SIZE                          4096
+#define IOBUF_SIZE 4096
 
 /* copy_path - copy path name */
-static int
-copy_path(char **to, const char *from) {
+static int copy_path(char **to, const char *from) {
     struct mm_struct *mm = current->mm;
     char *buffer;
     if ((buffer = kmalloc(FS_MAX_FPATH_LEN + 1)) == NULL) {
@@ -38,8 +37,7 @@ failed_cleanup:
 }
 
 /* sysfile_open - open file */
-int
-sysfile_open(const char *__path, uint32_t open_flags) {
+int sysfile_open(const char *__path, uint32_t open_flags) {
     int ret;
     char *path;
     if ((ret = copy_path(&path, __path)) != 0) {
@@ -51,14 +49,12 @@ sysfile_open(const char *__path, uint32_t open_flags) {
 }
 
 /* sysfile_close - close file */
-int
-sysfile_close(int fd) {
+int sysfile_close(int fd) {
     return file_close(fd);
 }
 
 /* sysfile_read - read file */
-int
-sysfile_read(int fd, void *base, size_t len) {
+int sysfile_read(int fd, void *base, size_t len) {
     struct mm_struct *mm = current->mm;
     if (len == 0) {
         return 0;
@@ -84,8 +80,7 @@ sysfile_read(int fd, void *base, size_t len) {
                 if (copy_to_user(mm, base, buffer, alen)) {
                     assert(len >= alen);
                     base += alen, len -= alen, copied += alen;
-                }
-                else if (ret == 0) {
+                } else if (ret == 0) {
                     ret = -E_INVAL;
                 }
             }
@@ -105,8 +100,7 @@ out:
 }
 
 /* sysfile_write - write file */
-int
-sysfile_write(int fd, void *base, size_t len) {
+int sysfile_write(int fd, void *base, size_t len) {
     struct mm_struct *mm = current->mm;
     if (len == 0) {
         return 0;
@@ -153,14 +147,12 @@ out:
 }
 
 /* sysfile_seek - seek file */
-int
-sysfile_seek(int fd, off_t pos, int whence) {
+int sysfile_seek(int fd, off_t pos, int whence) {
     return file_seek(fd, pos, whence);
 }
 
 /* sysfile_fstat - stat file */
-int
-sysfile_fstat(int fd, struct stat *__stat) {
+int sysfile_fstat(int fd, struct stat *__stat) {
     struct mm_struct *mm = current->mm;
     int ret;
     struct stat __local_stat, *stat = &__local_stat;
@@ -179,14 +171,12 @@ sysfile_fstat(int fd, struct stat *__stat) {
 }
 
 /* sysfile_fsync - sync file */
-int
-sysfile_fsync(int fd) {
+int sysfile_fsync(int fd) {
     return file_fsync(fd);
 }
 
 /* sysfile_chdir - change dir */
-int
-sysfile_chdir(const char *__path) {
+int sysfile_chdir(const char *__path) {
     int ret;
     char *path;
     if ((ret = copy_path(&path, __path)) != 0) {
@@ -198,8 +188,7 @@ sysfile_chdir(const char *__path) {
 }
 
 /* sysfile_link - link file */
-int
-sysfile_link(const char *__path1, const char *__path2) {
+int sysfile_link(const char *__path1, const char *__path2) {
     int ret;
     char *old_path, *new_path;
     if ((ret = copy_path(&old_path, __path1)) != 0) {
@@ -215,8 +204,7 @@ sysfile_link(const char *__path1, const char *__path2) {
 }
 
 /* sysfile_rename - rename file */
-int
-sysfile_rename(const char *__path1, const char *__path2) {
+int sysfile_rename(const char *__path1, const char *__path2) {
     int ret;
     char *old_path, *new_path;
     if ((ret = copy_path(&old_path, __path1)) != 0) {
@@ -232,8 +220,7 @@ sysfile_rename(const char *__path1, const char *__path2) {
 }
 
 /* sysfile_unlink - unlink file */
-int
-sysfile_unlink(const char *__path) {
+int sysfile_unlink(const char *__path) {
     int ret;
     char *path;
     if ((ret = copy_path(&path, __path)) != 0) {
@@ -245,8 +232,7 @@ sysfile_unlink(const char *__path) {
 }
 
 /* sysfile_get cwd - get current working directory */
-int
-sysfile_getcwd(char *buf, size_t len) {
+int sysfile_getcwd(char *buf, size_t len) {
     struct mm_struct *mm = current->mm;
     if (len == 0) {
         return -E_INVAL;
@@ -265,8 +251,7 @@ sysfile_getcwd(char *buf, size_t len) {
 }
 
 /* sysfile_getdirentry - get the file entry in DIR */
-int
-sysfile_getdirentry(int fd, struct dirent *__direntp) {
+int sysfile_getdirentry(int fd, struct dirent *__direntp) {
     struct mm_struct *mm = current->mm;
     struct dirent *direntp;
     if ((direntp = kmalloc(sizeof(struct dirent))) == NULL) {
@@ -276,7 +261,8 @@ sysfile_getdirentry(int fd, struct dirent *__direntp) {
     int ret = 0;
     lock_mm(mm);
     {
-        if (!copy_from_user(mm, &(direntp->offset), &(__direntp->offset), sizeof(direntp->offset), 1)) {
+        if (!copy_from_user(mm, &(direntp->offset), &(__direntp->offset), sizeof(direntp->offset),
+                            1)) {
             ret = -E_INVAL;
         }
     }
@@ -300,18 +286,14 @@ out:
 }
 
 /* sysfile_dup -  duplicate fd1 to fd2 */
-int
-sysfile_dup(int fd1, int fd2) {
+int sysfile_dup(int fd1, int fd2) {
     return file_dup(fd1, fd2);
 }
 
-int
-sysfile_pipe(int *fd_store) {
+int sysfile_pipe(int *fd_store) {
     return -E_UNIMP;
 }
 
-int
-sysfile_mkfifo(const char *__name, uint32_t open_flags) {
+int sysfile_mkfifo(const char *__name, uint32_t open_flags) {
     return -E_UNIMP;
 }
-

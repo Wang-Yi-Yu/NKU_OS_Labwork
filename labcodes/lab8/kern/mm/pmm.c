@@ -1,3 +1,19 @@
+/**
+ * @file   pmm.c
+ * @brief  Framework of physical memory management (PMM): selects the physical
+ *         memory manager, probes physical memory and builds the Page array,
+ *         provides the entry points alloc_pages(), free_pages() and
+ *         nr_free_pages(), and hosts the page table helpers get_pte(),
+ *         get_page() and the page_insert()/page_remove() exercise area.
+ *
+ * The allocation algorithm is supplied by a struct pmm_manager instance
+ * (First-Fit in default_pmm.c). The three entry points disable interrupts while
+ * they call into the manager (local_intr_save()/local_intr_restore()).
+ *
+ * Initialisation call chain (from kern_init):
+ * `pmm_init() -> init_pmm_manager() -> page_init() -> check_alloc_page()
+ *  -> switch_kernel_memorylayout() -> check_pgdir() -> check_boot_pgdir() -> kmalloc_init()`
+ */
 #include <default_pmm.h>
 #include <defs.h>
 #include <error.h>
@@ -13,132 +29,213 @@
 #include <vmm.h>
 #include <riscv.h>
 
-// virtual address of physical page array
+/** @brief Virtual address of the Page descriptor array; `pages[i]` describes page number `i + nbase`. Set by page_init(). */
 struct Page *pages;
-// amount of physical memory (in pages)
+/** @brief Exclusive upper bound of the managed physical page numbers (end of usable DRAM / PGSIZE). Set by page_init(). */
 size_t npage = 0;
-// The kernel image is mapped at VA=KERNBASE and PA=info.base
+/** @brief Offset of the kernel linear mapping (`va = pa + va_pa_offset`); set to PHYSICAL_MEMORY_OFFSET by page_init(). */
 uint_t va_pa_offset;
-// memory starts at 0x80000000 in RISC-V
+/** @brief Page number of the start of DRAM (DRAM_BASE / PGSIZE, 0x80000 on RISC-V); the index base of ::pages. */
 const size_t nbase = DRAM_BASE / PGSIZE;
 
-// virtual address of boot-time page directory
+/** @brief Virtual address of the kernel page directory (root page table); set by switch_kernel_memorylayout() in pmm_init(). */
 pde_t *boot_pgdir_va = NULL;
-// physical address of boot-time page directory
+/** @brief Physical address of the kernel page directory, PADDR(boot_pgdir_va). */
 uintptr_t boot_pgdir_pa;
 
-// physical memory management
+/** @brief The physical memory manager in use, assigned by init_pmm_manager(). */
 const struct pmm_manager *pmm_manager;
 
 static void check_alloc_page(void);
 static void check_pgdir(void);
 static void check_boot_pgdir(void);
 
-// init_pmm_manager - initialize a pmm_manager instance
-static void init_pmm_manager(void)
-{
+/**
+ * @brief Select the physical memory manager and initialise it.
+ *
+ * The allocation algorithm is switched by assigning a different instance to
+ * ::pmm_manager (e.g. &default_pmm_manager). The manager's name is printed and
+ * its init method is called.
+ */
+static void init_pmm_manager(void) {
     pmm_manager = &default_pmm_manager;
     cprintf("memory management: %s\n", pmm_manager->name);
     pmm_manager->init();
 }
 
-// init_memmap - call pmm->init_memmap to build Page struct for free memory
-static void init_memmap(struct Page *base, size_t n)
-{
+/**
+ * @brief Register a range of initially free physical pages with the current manager.
+ * @param base descriptor of the first page of the range
+ * @param n    number of pages in the range
+ */
+static void init_memmap(struct Page *base, size_t n) {
     pmm_manager->init_memmap(base, n);
 }
 
-// alloc_pages - call pmm->alloc_pages to allocate a continuous n*PAGESIZE
-// memory
-struct Page *alloc_pages(size_t n)
-{
+/**
+ * @brief Allocate n contiguous physical pages (forwards to pmm_manager->alloc_pages).
+ * @details Interrupts are disabled while the manager works on its free list.
+ * @param n number of pages (not bytes)
+ * @return descriptor of the first page, or NULL if no free block is large enough
+ */
+struct Page *alloc_pages(size_t n) {
     struct Page *page = NULL;
     bool intr_flag;
     local_intr_save(intr_flag);
-    {
-        page = pmm_manager->alloc_pages(n);
-    }
+    { page = pmm_manager->alloc_pages(n); }
     local_intr_restore(intr_flag);
     return page;
 }
 
-// free_pages - call pmm->free_pages to free a continuous n*PAGESIZE memory
-void free_pages(struct Page *base, size_t n)
-{
+/**
+ * @brief Free n contiguous physical pages (forwards to pmm_manager->free_pages).
+ * @details Interrupts are disabled while the manager works on its free list.
+ * @param base descriptor of the first page
+ * @param n    number of pages; must match the earlier allocation
+ */
+void free_pages(struct Page *base, size_t n) {
     bool intr_flag;
     local_intr_save(intr_flag);
-    {
-        pmm_manager->free_pages(base, n);
-    }
+    { pmm_manager->free_pages(base, n); }
     local_intr_restore(intr_flag);
 }
 
-// nr_free_pages - call pmm->nr_free_pages to get the size (nr*PAGESIZE)
-// of current free memory
-size_t nr_free_pages(void)
-{
+/**
+ * @brief Query the number of free physical pages (forwards to pmm_manager->nr_free_pages).
+ * @details Free bytes = `nr_free_pages() * PGSIZE`. Interrupts are disabled during the query.
+ * @return number of free pages
+ */
+size_t nr_free_pages(void) {
     size_t ret;
     bool intr_flag;
     local_intr_save(intr_flag);
-    {
-        ret = pmm_manager->nr_free_pages();
-    }
+    { ret = pmm_manager->nr_free_pages(); }
     local_intr_restore(intr_flag);
     return ret;
 }
 
-//lab2 请补充你在lab2中的代码
+//lab2 function1 2414007
 
-// boot_map_segment - setup&enable the paging mechanism
-// parameters
-//  la:   linear address of this memory need to map (after x86 segment map)
-//  size: memory size
-//  pa:   physical address of this memory
-//  perm: permission of this memory
-static void boot_map_segment(pde_t *pgdir, uintptr_t la, size_t size,
-                             uintptr_t pa, uint32_t perm)
-{
+/**
+ * @brief Probe physical memory and build the Page descriptors.
+ * @author Yiyu Wang(2414007)
+ *
+ * Memory layout built by this function (physical addresses grow to the right):
+ * @code
+ * | OpenSBI | kernel image | gap | Page array | gap | free pages ...  | tail |
+ * 0x80000000  0x80200000   end   pages        mem_begin             mem_end
+ * @endcode
+ * Only the free pages between `mem_begin` and `mem_end` are handed to the
+ * current ::pmm_manager; everything else stays reserved.
+ *
+ * Steps:
+ *  1. set ::va_pa_offset to PHYSICAL_MEMORY_OFFSET (the kernel linear mapping);
+ *  2. read the DRAM base and size found in the device tree and print them;
+ *  3. set ::npage to the page number of the (capped) end of DRAM;
+ *  4. place the Page array, page aligned, right after the kernel symbol `end`,
+ *     and mark every descriptor reserved so no page is allocatable early;
+ *  5. compute the first physical address behind the Page array, round it up and
+ *     the end of DRAM down to page boundaries, and register the pages in between
+ *     through init_memmap().
+ *
+ * @note The `end` symbol and ::pages are virtual addresses; they are converted
+ *       with PADDR() before being compared with physical addresses.
+ * @note The partial page at the end of DRAM (if any) is never given to the allocator.
+ * @warning Panics if the device tree did not provide a memory range. init_memmap()
+ *          is not called when no complete free page is left.
+ */
+static void page_init(void) {
+    extern char end[];
+
+    va_pa_offset = PHYSICAL_MEMORY_OFFSET;
+
+    uint64_t mem_begin = get_memory_base();
+    uint64_t mem_size = get_memory_size();
+    if (mem_begin == 0 || mem_size == 0) {
+        panic("DTB memory info not available");
+    }
+    uint64_t mem_end = mem_begin + mem_size;
+
+    cprintf("physical memory map:\n");
+    cprintf("  memory: 0x%016lx, [0x%016lx, 0x%016lx].\n", mem_size, mem_begin, mem_end - 1);
+
+    // The kernel only manages memory below PHYSICAL_MEMORY_END.
+    if (mem_end > PHYSICAL_MEMORY_END) {
+        mem_end = PHYSICAL_MEMORY_END;
+    }
+    npage = mem_end / PGSIZE;
+
+    // The Page array starts at the first page boundary behind the kernel image and
+    // has one entry for each page in [nbase, npage). Clear it first: the memory
+    // behind `end` is not guaranteed to be zero.
+    pages = (struct Page *)ROUNDUP((uintptr_t)end, PGSIZE);
+    memset(pages, 0, sizeof(struct Page) * (npage - nbase));
+    for (size_t i = 0; i < npage - nbase; i++) {
+        SetPageReserved(pages + i);
+    }
+
+    // The first physical address behind the Page array; everything below it is
+    // occupied by OpenSBI, the kernel image or the Page array itself.
+    uintptr_t freemem = PADDR((uintptr_t)pages + sizeof(struct Page) * (npage - nbase));
+    mem_begin = ROUNDUP(freemem, PGSIZE);
+    mem_end = ROUNDDOWN(mem_end, PGSIZE);
+    if (mem_begin < mem_end) {
+        init_memmap(pa2page(mem_begin), (mem_end - mem_begin) / PGSIZE);
+    }
+}
+
+/**
+ * @brief Map a physical range linearly (la -> pa) into a page directory.
+ *
+ * Every page of [la, la + size) gets a leaf PTE with `pa + (va - la)` and
+ * permission perm; missing intermediate tables are created by get_pte().
+ * @param pgdir root page directory (kernel virtual address)
+ * @param la    linear (virtual) start address
+ * @param size  number of bytes; the range is rounded out to whole pages
+ * @param pa    physical start address
+ * @param perm  permission bits of the leaf PTEs, e.g. READ_WRITE
+ * @note Requires `PGOFF(la) == PGOFF(pa)`. Used by switch_kernel_memorylayout() to build the
+ *       kernel mapping with per-section permissions.
+ */
+static void boot_map_segment(pde_t *pgdir, uintptr_t la, size_t size, uintptr_t pa, uint32_t perm) {
     assert(PGOFF(la) == PGOFF(pa));
     size_t n = ROUNDUP(size + PGOFF(la), PGSIZE) / PGSIZE;
     la = ROUNDDOWN(la, PGSIZE);
     pa = ROUNDDOWN(pa, PGSIZE);
-    for (; n > 0; n--, la += PGSIZE, pa += PGSIZE)
-    {
+    for (; n > 0; n--, la += PGSIZE, pa += PGSIZE) {
         pte_t *ptep = get_pte(pgdir, la, 1);
         assert(ptep != NULL);
         *ptep = pte_create(pa >> PGSHIFT, PTE_V | perm);
     }
 }
 
-// boot_alloc_page - allocate one page using pmm->alloc_pages(1)
-// return value: the kernel virtual address of this allocated page
-// note: this function is used to get the memory for PDT(Page Directory
-// Table)&PT(Page Table)
-static void *boot_alloc_page(void)
-{
+/**
+ * @brief Allocate one physical page for a page table and return its kernel virtual address.
+ * @return kernel virtual address of the new (not zeroed) page; panics if no memory is left
+ * @note Used by switch_kernel_memorylayout() for the new root page directory.
+ */
+static void *boot_alloc_page(void) {
     struct Page *p = alloc_page();
-    if (p == NULL)
-    {
+    if (p == NULL) {
         panic("boot_alloc_page failed.\n");
     }
     return page2kva(p);
 }
 
 /**
- * from transient boot pgdir switch to a new one and add some protection
- * 1. switch pgdir
- * 2. set refined permission(rx, rw...)
- * 3. set previous transient boot pgdir and another dedicated page
- *  as guard pages for kernel stack
+ * @brief Replace the transient boot page table by a refined kernel page table and add stack guards.
+ *
+ * entry.S enables paging with a single 1 GiB boot mapping that is readable, writable and
+ * executable. This function (lab8 framework) builds a new root page directory instead:
+ *  1. maps the kernel text [KERNBASE, etext) as R|X and everything above it up to KERNTOP as R|W;
+ *  2. installs the new table in satp and flushes the TLB;
+ *  3. unmaps the page below bootstack (bootstackguard) and the page above it (the old boot page
+ *     table, boot_page_table_sv39) so that a kernel stack overflow or underflow faults at once.
+ *
+ * @note Intermediate page tables of the old boot mapping are not freed: it consists of one big
+ *       page, so no intermediate page was ever allocated.
  */
-static void
-switch_kernel_memorylayout()
-{
-    /**
-     * Free intermediate here is uncessary because initially we use
-     * big-big-big page such that not intermediate page is occupied
-     */
-
+static void switch_kernel_memorylayout() {
     // new page directory
     pde_t *kern_pgdir = (pde_t *)boot_alloc_page();
     memset(kern_pgdir, 0, PGSIZE);
@@ -156,20 +253,18 @@ switch_kernel_memorylayout()
     flush_tlb();
     cprintf("Page table directory switch succeeded!\n");
 
-    /**
-     *  set up kernel stack guardian pages
-     */
+    // set up the kernel stack guard pages
     extern char bootstackguard[], boot_page_table_sv39[];
-    if ((bootstackguard + PGSIZE == bootstack) && (bootstacktop == boot_page_table_sv39))
-    {
-        // check writeable and set 0
+    if ((bootstackguard + PGSIZE == bootstack) && (bootstacktop == boot_page_table_sv39)) {
+        // check that the pages are writable, then clear them
         memset(boot_page_table_sv39, 0, PGSIZE);
         bootstack[-1] = 0;
         bootstack[-PGSIZE] = 0;
 
-        // set pages beneath and above the kernel stack as guardians
+        // the pages below and above the kernel stack become guard pages (no permission)
         boot_map_segment(boot_pgdir_va, bootstackguard, PGSIZE, PADDR(bootstackguard), 0);
-        boot_map_segment(boot_pgdir_va, boot_page_table_sv39, PGSIZE, PADDR(boot_page_table_sv39), 0);
+        boot_map_segment(boot_pgdir_va, boot_page_table_sv39, PGSIZE, PADDR(boot_page_table_sv39),
+                         0);
         flush_tlb();
 
         // the following four statements should all crash
@@ -182,11 +277,14 @@ switch_kernel_memorylayout()
     }
 }
 
-// pmm_init - setup a pmm to manage physical memory, build PDT&PT to setup
-// paging mechanism
-//         - check the correctness of pmm & paging mechanism, print PDT&PT
-void pmm_init(void)
-{
+/**
+ * @brief Initialise memory management; called once from kern_init().
+ *
+ * Order: init_pmm_manager(), page_init(), check_alloc_page(), switch_kernel_memorylayout()
+ * (which records the new boot_pgdir_va / boot_pgdir_pa), check_pgdir(), a static_assert that
+ * KERNBASE and KERNTOP are PTSIZE aligned, check_boot_pgdir(), kmalloc_init().
+ */
+void pmm_init(void) {
     // We need to alloc/free the physical memory (granularity is 4KB or other
     // size).
     // So a framework of physical memory manager (struct pmm_manager)is defined
@@ -219,103 +317,129 @@ void pmm_init(void)
     kmalloc_init();
 }
 
-// get_pte - get pte and return the kernel virtual address of this pte for la
-//        - if the PT contians this pte didn't exist, alloc a page for PT
-// parameter:
-//  pgdir:  the kernel virtual base address of PDT
-//  la:     the linear address need to map
-//  create: a logical value to decide if alloc a page for PT
-// return vaule: the kernel virtual address of this pte
-pte_t *get_pte(pde_t *pgdir, uintptr_t la, bool create)
-{
+/**
+ * @brief Find the leaf PTE of linear address la, creating page tables if asked.
+ *
+ * Walks the three-level Sv39 table from the root `pgdir`: PDX1(la) -> PDX0(la)
+ * -> PTX(la). A missing intermediate table is allocated (one zeroed page, ref = 1)
+ * only when `create` is non-zero. Intermediate entries are pointers with
+ * only PTE_V set (R = W = X = 0; no U/A/D bits, which RISC-V reserves in non-leaf entries and
+ * QEMU 8.x rejects), so the permissions of the leaf PTE alone decide the access.
+ *
+ * @param pgdir  kernel virtual address of the root page directory
+ * @param la     linear address to look up; need not be page aligned
+ * @param create non-zero: allocate missing page tables; zero: never allocate
+ * @return kernel virtual address of the leaf PTE, or NULL if a table is missing and
+ *         was not created (or allocation failed). The leaf PTE itself is not created,
+ *         so *ptep may be 0 (PTE_V clear); the caller checks it.
+ */
+pte_t *get_pte(pde_t *pgdir, uintptr_t la, bool create) {
     pde_t *pdep1 = &pgdir[PDX1(la)];
-    if (!(*pdep1 & PTE_V))
-    {
+    if (!(*pdep1 & PTE_V)) {
         struct Page *page;
-        if (!create || (page = alloc_page()) == NULL)
-        {
+        if (!create || (page = alloc_page()) == NULL) {
             return NULL;
         }
         set_page_ref(page, 1);
         uintptr_t pa = page2pa(page);
         memset(KADDR(pa), 0, PGSIZE);
-        *pdep1 = pte_create(page2ppn(page), PTE_U | PTE_V);
+        // QEMU 8.x adaptation: non-leaf entries must not carry U/A/D (was PTE_U | PTE_V).
+        *pdep1 = ptd_create(page2ppn(page));
     }
 
     pde_t *pdep0 = &((pde_t *)KADDR(PDE_ADDR(*pdep1)))[PDX0(la)];
-    if (!(*pdep0 & PTE_V))
-    {
+    if (!(*pdep0 & PTE_V)) {
         struct Page *page;
-        if (!create || (page = alloc_page()) == NULL)
-        {
+        if (!create || (page = alloc_page()) == NULL) {
             return NULL;
         }
         set_page_ref(page, 1);
         uintptr_t pa = page2pa(page);
         memset(KADDR(pa), 0, PGSIZE);
-        *pdep0 = pte_create(page2ppn(page), PTE_U | PTE_V);
+        // QEMU 8.x adaptation: non-leaf entries must not carry U/A/D (was PTE_U | PTE_V).
+        *pdep0 = ptd_create(page2ppn(page));
     }
     return &((pte_t *)KADDR(PDE_ADDR(*pdep0)))[PTX(la)];
 }
 
-// get_page - get related Page struct for linear address la using PDT pgdir
-struct Page *get_page(pde_t *pgdir, uintptr_t la, pte_t **ptep_store)
-{
+/**
+ * @brief Return the page mapped at linear address la, if any.
+ * @param pgdir      root page directory (kernel virtual address)
+ * @param la         linear address
+ * @param ptep_store if non-NULL, receives the leaf PTE pointer (NULL if the table is missing)
+ * @return page descriptor, or NULL if la has no valid mapping. Never allocates tables.
+ */
+struct Page *get_page(pde_t *pgdir, uintptr_t la, pte_t **ptep_store) {
     pte_t *ptep = get_pte(pgdir, la, 0);
-    if (ptep_store != NULL)
-    {
+    if (ptep_store != NULL) {
         *ptep_store = ptep;
     }
-    if (ptep != NULL && *ptep & PTE_V)
-    {
+    if (ptep != NULL && *ptep & PTE_V) {
         return pte2page(*ptep);
     }
     return NULL;
 }
 
-// page_remove_pte - free an Page sturct which is related linear address la
-//                - and clean(invalidate) pte which is related linear address la
-// note: PT is changed, so the TLB need to be invalidate
-static inline void page_remove_pte(pde_t *pgdir, uintptr_t la, pte_t *ptep)
-{
-    if (*ptep & PTE_V)
-    { //(1) check if this page table entry is
-        struct Page *page =
-            pte2page(*ptep); //(2) find corresponding page to pte
-        page_ref_dec(page);  //(3) decrease page reference
-        if (page_ref(page) ==
-            0)
-        { //(4) and free this page when page reference reachs 0
+/**
+ * @brief Drop one mapping whose leaf PTE is already known (provided by the lab framework).
+ *
+ * If the PTE is valid, the reference count of the mapped page is decreased, the page is freed
+ * when the count reaches 0, the PTE is cleared and the TLB entry of la is dropped.
+ * @param pgdir root page directory
+ * @param la    linear address of the mapping
+ * @param ptep  leaf PTE of la
+ */
+static inline void page_remove_pte(pde_t *pgdir, uintptr_t la, pte_t *ptep) {
+    if (*ptep & PTE_V) {
+        struct Page *page = pte2page(*ptep);
+        page_ref_dec(page);
+        if (page_ref(page) == 0) {
             free_page(page);
         }
-        *ptep = 0;                 //(5) clear second page table entry
-        tlb_invalidate(pgdir, la); //(6) flush tlb
+        *ptep = 0;
+        tlb_invalidate(pgdir, la);
     }
 }
 
-void unmap_range(pde_t *pgdir, uintptr_t start, uintptr_t end)
-{
+/**
+ * @brief Unmap every page in [start, end) of a user address space (provided by the lab framework).
+ *
+ * Walks the range with get_pte() and calls page_remove_pte() for each non-empty PTE; a missing
+ * page table lets the walk skip to the next PTSIZE boundary. The page tables themselves stay;
+ * exit_range() frees them.
+ * @param pgdir root page directory
+ * @param start page-aligned start address, must be a user address
+ * @param end   page-aligned end address (exclusive), must be a user address
+ */
+void unmap_range(pde_t *pgdir, uintptr_t start, uintptr_t end) {
     assert(start % PGSIZE == 0 && end % PGSIZE == 0);
     assert(USER_ACCESS(start, end));
 
-    do
-    {
+    do {
         pte_t *ptep = get_pte(pgdir, start, 0);
-        if (ptep == NULL)
-        {
+        if (ptep == NULL) {
             start = ROUNDDOWN(start + PTSIZE, PTSIZE);
             continue;
         }
-        if (*ptep != 0)
-        {
+        if (*ptep != 0) {
             page_remove_pte(pgdir, start, ptep);
         }
         start += PGSIZE;
     } while (start != 0 && start < end);
 }
 
-void exit_range(pde_t *pgdir, uintptr_t start, uintptr_t end)
-{
+/**
+ * @brief Free the page tables of [start, end) that no longer hold a valid entry (provided by the
+ *        lab framework).
+ *
+ * For every level-0 table in the range that has no valid PTE the table page is freed and its entry
+ * cleared; a level-1 directory whose entries are all gone is freed as well. Call it after
+ * unmap_range() of the same range.
+ * @param pgdir root page directory
+ * @param start page-aligned start address, must be a user address
+ * @param end   page-aligned end address (exclusive), must be a user address
+ */
+void exit_range(pde_t *pgdir, uintptr_t start, uintptr_t end) {
     assert(start % PGSIZE == 0 && end % PGSIZE == 0);
     assert(USER_ACCESS(start, end));
 
@@ -324,8 +448,7 @@ void exit_range(pde_t *pgdir, uintptr_t start, uintptr_t end)
     pde_t *pd0, *pt, pde1, pde0;
     d1start = ROUNDDOWN(start, PDSIZE);
     d0start = ROUNDDOWN(start, PTSIZE);
-    do
-    {
+    do {
         // level 1 page directory entry
         pde1 = pgdir[PDX1(d1start)];
         // if there is a valid entry, get into level 0
@@ -333,39 +456,32 @@ void exit_range(pde_t *pgdir, uintptr_t start, uintptr_t end)
         // all valid entries in level 0 page directory,
         // then try to free this level 0 page directory
         // and update level 1 entry
-        if (pde1 & PTE_V)
-        {
+        if (pde1 & PTE_V) {
             pd0 = page2kva(pde2page(pde1));
             // try to free all page tables
             free_pd0 = 1;
-            do
-            {
+            do {
                 pde0 = pd0[PDX0(d0start)];
-                if (pde0 & PTE_V)
-                {
+                if (pde0 & PTE_V) {
                     pt = page2kva(pde2page(pde0));
                     // try to free page table
                     free_pt = 1;
                     for (int i = 0; i < NPTEENTRY; i++)
-                        if (pt[i] & PTE_V)
-                        {
+                        if (pt[i] & PTE_V) {
                             free_pt = 0;
                             break;
                         }
                     // free it only when all entry are already invalid
-                    if (free_pt)
-                    {
+                    if (free_pt) {
                         free_page(pde2page(pde0));
                         pd0[PDX0(d0start)] = 0;
                     }
-                }
-                else
+                } else
                     free_pd0 = 0;
                 d0start += PTSIZE;
             } while (d0start != 0 && d0start < d1start + PDSIZE && d0start < end);
             // free level 0 page directory only when all pde0s in it are already invalid
-            if (free_pd0)
-            {
+            if (free_pd0) {
                 free_page(pde2page(pde1));
                 pgdir[PDX1(d1start)] = 0;
             }
@@ -375,50 +491,187 @@ void exit_range(pde_t *pgdir, uintptr_t start, uintptr_t end)
     } while (d1start != 0 && d1start < end);
 }
 
-// LAB4:填写你在lab4中实现的代码
+//lab5 function3 2414007
+/**
+ * @fn int copy_range(pde_t *to, pde_t *from, uintptr_t start, uintptr_t end, bool share)
+ * @brief Copy the user pages of [start, end) from one page table into another.
+ *
+ * Walks the range page by page in the source table. For every valid leaf PTE it takes a new
+ * physical page, copies the 4 KiB content of the source page into it and maps the copy at the same
+ * virtual address in the destination with the permission bits of the source PTE (PTE_U included).
+ * Missing page tables in the destination are created by get_pte() / page_insert(). A source
+ * address without a page table lets the walk skip to the next PTSIZE boundary, and an address with
+ * an invalid PTE is simply left unmapped in the destination.
+ *
+ * With @p share set the destination maps the very same physical page instead of a copy
+ * (page_insert() counts the extra reference); the plain fork of this lab always passes 0.
+ *
+ * @param to    destination root page directory (kernel virtual address)
+ * @param from  source root page directory (kernel virtual address)
+ * @param start page-aligned first address, must be a user address
+ * @param end   page-aligned end address (exclusive), must be a user address
+ * @param share non-zero to share the pages instead of copying them
+ * @return 0 on success; -E_NO_MEM if a page or a page table cannot be allocated. Pages copied so
+ *         far stay mapped in @p to; the caller releases them with exit_mmap().
+ */
+int copy_range(pde_t *to, pde_t *from, uintptr_t start, uintptr_t end, bool share) {
+    assert(start % PGSIZE == 0 && end % PGSIZE == 0);
+    assert(USER_ACCESS(start, end));
+
+    do {
+        pte_t *ptep = get_pte(from, start, 0);
+        if (ptep == NULL) {
+            // No page table here: nothing is mapped up to the next PTSIZE boundary.
+            start = ROUNDDOWN(start + PTSIZE, PTSIZE);
+            continue;
+        }
+        if (*ptep & PTE_V) {
+            // Make sure the destination PTE slot (and its page tables) exists before copying.
+            if (get_pte(to, start, 1) == NULL) {
+                return -E_NO_MEM;
+            }
+            uint32_t perm = (*ptep & PTE_USER);
+            struct Page *page = pte2page(*ptep);
+            struct Page *npage = page;
+            if (!share) {
+                npage = alloc_page();
+                if (npage == NULL) {
+                    return -E_NO_MEM;
+                }
+                memcpy(page2kva(npage), page2kva(page), PGSIZE);
+            }
+            int ret = page_insert(to, npage, start, perm);
+            if (ret != 0) {
+                if (!share) {
+                    free_page(npage);
+                }
+                return ret;
+            }
+        }
+        start += PGSIZE;
+    } while (start != 0 && start < end);
+    return 0;
+}
+
+//LAB4 function1 2414015
+/**
+ * @brief Remove the mapping of la, if one exists.
+ *
+ * A missing page table or a clear PTE is not an error: the call returns without changing
+ * anything else.
+ * @param pgdir root page directory (kernel virtual address)
+ * @param la    linear address; need not be page aligned
+ */
+void page_remove(pde_t *pgdir, uintptr_t la) {
+    pte_t *ptep = get_pte(pgdir, la, 0);
+    if (ptep != NULL && (*ptep & PTE_V)) {
+        page_remove_pte(pgdir, la, ptep);
+    }
+}
+
+/**
+ * @brief Map page at la with permission perm, replacing any previous mapping.
+ *
+ * The new reference is counted before an old mapping of the same page is considered, so that
+ * page is not freed and then reused. A leaf that grants R, W or X also gets A and D. That is
+ * not required on QEMU 8.2.2 (it updates them itself), but an implementation may fault on
+ * A = 0 or D = 0 instead, so they are set up front to stay portable.
+ * @param pgdir root page directory (kernel virtual address)
+ * @param page  physical page to map
+ * @param la    linear address
+ * @param perm  permission bits besides PTE_V (added by pte_create)
+ * @return 0, or -E_NO_MEM if an intermediate page table cannot be allocated
+ */
+int page_insert(pde_t *pgdir, struct Page *page, uintptr_t la, uint32_t perm) {
+    // Allocate missing intermediate tables first: on failure nothing has been modified yet.
+    pte_t *ptep = get_pte(pgdir, la, 1);
+    if (ptep == NULL) {
+        return -E_NO_MEM;
+    }
+    // Count the new reference before touching the old mapping, so that remapping the same page
+    // never drops its count to 0.
+    page_ref_inc(page);
+    if (*ptep & PTE_V) {
+        struct Page *mapped = pte2page(*ptep);
+        if (mapped == page) {
+            // Same page: only the permission changes, undo the extra reference.
+            page_ref_dec(page);
+        } else {
+            // Different page: unmap the old one (frees it if this was its last reference).
+            page_remove_pte(pgdir, la, ptep);
+        }
+    }
+    // W without R is a reserved encoding in RISC-V.
+    if (perm & PTE_W) {
+        perm |= PTE_R;
+    }
+    if (perm & (PTE_R | PTE_W | PTE_X)) {
+        perm |= PTE_A | PTE_D;
+    }
+    *ptep = pte_create(page2ppn(page), perm);
+    tlb_invalidate(pgdir, la);
+    return 0;
+}
 
 // LAB5:填写你在lab5中实现的代码
 
-// invalidate a TLB entry, but only if the page tables being
-// edited are the ones currently in use by the processor.
-void tlb_invalidate(pde_t *pgdir, uintptr_t la)
-{
+/**
+ * @brief Invalidate the TLB entry of linear address la after its PTE was changed.
+ *
+ * Must be called after every change of a valid PTE. It issues `sfence.vma` with
+ * rs1 = la, which drops translations for that address (all ASIDs) instead of the
+ * whole TLB as flush_tlb() does.
+ * @param pgdir page directory whose entries were changed (not used; kept for the interface)
+ * @param la    linear address whose cached translation may be stale
+ */
+void tlb_invalidate(pde_t *pgdir, uintptr_t la) {
     asm volatile("sfence.vma %0" : : "r"(la));
 }
 
-// pgdir_alloc_page - call alloc_page & page_insert functions to
-//                  - allocate a page size memory & setup an addr map
-//                  - pa<->la with linear address la and the PDT pgdir
-struct Page *pgdir_alloc_page(pde_t *pgdir, uintptr_t la, uint32_t perm)
-{
+/**
+ * @brief Allocate one physical page and map it at la in pgdir (provided by the lab framework).
+ *
+ * @param pgdir root page directory
+ * @param la    linear address to map
+ * @param perm  permission bits of the mapping
+ * @return the page, or NULL if no page is free or page_insert() fails (the page is freed again)
+ * @note Used by load_icode() to back the program and the stack of a user process.
+ */
+struct Page *pgdir_alloc_page(pde_t *pgdir, uintptr_t la, uint32_t perm) {
     struct Page *page = alloc_page();
-    if (page != NULL)
-    {
-        if (page_insert(pgdir, page, la, perm) != 0)
-        {
+    if (page != NULL) {
+        if (page_insert(pgdir, page, la, perm) != 0) {
             free_page(page);
             return NULL;
         }
         // swap_map_swappable(check_mm_struct, la, page, 0);
         page->pra_vaddr = la;
         assert(page_ref(page) == 1);
-        // cprintf("get No. %d  page: pra_vaddr %x, pra_link.prev %x,
-        // pra_link_next %x in pgdir_alloc_page\n", (page-pages),
-        // page->pra_vaddr,page->pra_page_link.prev,
-        // page->pra_page_link.next);
     }
 
     return page;
 }
 
-static void check_alloc_page(void)
-{
+/**
+ * @brief Run the current manager's self test and print a message on success.
+ * @details A failed check triggers assert/panic and does not return.
+ */
+static void check_alloc_page(void) {
     pmm_manager->check();
     cprintf("check_alloc_page() succeeded!\n");
 }
 
-static void check_pgdir(void)
-{
+/**
+ * @brief Self test of the page mapping functions on the boot page directory.
+ *
+ * Checks get_page() on an unmapped address, that page_insert() creates the
+ * intermediate tables, that mapping the same page at a second address gives
+ * reference count 2, and that page_remove() drops the reference counts back.
+ * All temporary tables and pages are freed afterwards and the free page count
+ * must be restored. boot_pgdir_va[0] is cleared at the end.
+ * @note Failures panic through assert(). Depends on the lab's page_insert() and page_remove().
+ */
+static void check_pgdir(void) {
     // assert(npage <= KMEMSIZE / PGSIZE);
     // The memory starts at 2GB in RISC-V
     // so npage is always larger than KMEMSIZE / PGSIZE
@@ -448,7 +701,8 @@ static void check_pgdir(void)
     assert((ptep = get_pte(boot_pgdir_va, PGSIZE, 0)) != NULL);
     assert(*ptep & PTE_U);
     assert(*ptep & PTE_W);
-    assert(boot_pgdir_va[0] & PTE_U);
+    // QEMU 8.x adaptation: the original `assert(boot_pgdir_va[0] & PTE_U)` is removed, because the
+    // non-leaf entries created by get_pte() no longer carry PTE_U (QEMU 8.x rejects such entries).
     assert(page_ref(p2) == 1);
 
     assert(page_insert(boot_pgdir_va, p1, PGSIZE, 0) == 0);
@@ -479,16 +733,27 @@ static void check_pgdir(void)
     cprintf("check_pgdir() succeeded!\n");
 }
 
-static void check_boot_pgdir(void)
-{
+/**
+ * @brief Check the kernel mapping and a user-style mapping on the boot page directory.
+ *
+ * The intended checks walk the physical pages of [KERNBASE, npage * PGSIZE) and
+ * assert that get_pte(boot_pgdir_va, KADDR(pa)) maps each one back to pa. Then a
+ * page is mapped at 0x100 and 0x100 + PGSIZE, a string is written through one alias
+ * and read through the other, and the temporary tables are freed.
+ * @warning The loop variable `i` is declared as `int`, but KERNBASE is a 64-bit
+ *          value. The initial value is truncated to a negative int, so the condition
+ *          `i < npage * PGSIZE` is false at once and the kernel-mapping loop runs
+ *          zero times on RV64. The other checks still run. Fixing this means
+ *          changing `i` to a 64-bit type (not done here).
+ */
+static void check_boot_pgdir(void) {
     size_t nr_free_store;
     pte_t *ptep;
     int i;
 
     nr_free_store = nr_free_pages();
 
-    for (i = ROUNDDOWN(KERNBASE, PGSIZE); i < npage * PGSIZE; i += PGSIZE)
-    {
+    for (i = ROUNDDOWN(KERNBASE, PGSIZE); i < npage * PGSIZE; i += PGSIZE) {
         assert((ptep = get_pte(boot_pgdir_va, (uintptr_t)KADDR(i), 0)) != NULL);
         assert(PTE_ADDR(*ptep) == i);
     }
@@ -521,9 +786,16 @@ static void check_boot_pgdir(void)
     cprintf("check_boot_pgdir() succeeded!\n");
 }
 
-// perm2str - use string 'u,r,w,-' to present the permission
-static const char *perm2str(int perm)
-{
+/**
+ * @brief Format the permission bits of a PTE as a 3-character string.
+ *
+ * Output format: `u` if PTE_U is set else `-`, then `r` (always), then `w` if
+ * PTE_W is set else `-`, e.g. "ur-" or "-rw"; this is a string such as "ur-".
+ * @param perm PTE permission bits (PTE_U and PTE_W are examined)
+ * @return pointer to a static buffer; overwritten by the next call (not reentrant)
+ * @note Used by print_pgdir().
+ */
+static const char *perm2str(int perm) {
     static char str[4];
     str[0] = (perm & PTE_U) ? 'u' : '-';
     str[1] = 'r';
@@ -532,47 +804,110 @@ static const char *perm2str(int perm)
     return str;
 }
 
-// get_pgtable_items - In [left, right] range of PDT or PT, find a continuous
-// linear addr space
-//                  - (left_store*X_SIZE~right_store*X_SIZE) for PDT or PT
-//                  - X_SIZE=PTSIZE=4M, if PDT; X_SIZE=PGSIZE=4K, if PT
-// paramemters:
-//  left:        no use ???
-//  right:       the high side of table's range
-//  start:       the low side of table's range
-//  table:       the beginning addr of table
-//  left_store:  the pointer of the high side of table's next range
-//  right_store: the pointer of the low side of table's next range
-//  return value: 0 - not a invalid item range, perm - a valid item range with
-//  perm permission
-static int get_pgtable_items(size_t left, size_t right, size_t start,
-                             uintptr_t *table, size_t *left_store,
-                             size_t *right_store)
-{
-    if (start >= right)
-    {
+/**
+ * @brief Find the next run of valid entries with the same permissions in a table.
+ *
+ * Scans table[start .. right) for the first valid entry (PTE_V set) and extends
+ * the run while the permission bits (PTE_USER mask) stay the same. The run is
+ * reported as the half-open index range [*left_store, *right_store).
+ *
+ * @param left        unused (kept from the original interface)
+ * @param right       exclusive end index of the scan (NPDEENTRY or NPTEENTRY)
+ * @param start       first index to examine
+ * @param table       the page table (array of PTE/PDE values)
+ * @param left_store  out: first index of the run; may be NULL
+ * @param right_store out: index just after the run; may be NULL
+ * @return permission bits of the run (non-zero, includes PTE_V), or 0 if there
+ *         is no valid entry in [start, right)
+ * @note The original comments give X_SIZE as 4 MiB (32-bit ucore). On Sv39 a page
+ *       directory entry covers PTSIZE = 2 MiB and a PTE covers PGSIZE = 4 KiB.
+ *       Currently unused in this lab.
+ */
+static int get_pgtable_items(size_t left, size_t right, size_t start, uintptr_t *table,
+                             size_t *left_store, size_t *right_store) {
+    if (start >= right) {
         return 0;
     }
-    while (start < right && !(table[start] & PTE_V))
-    {
+    while (start < right && !(table[start] & PTE_V)) {
         start++;
     }
-    if (start < right)
-    {
-        if (left_store != NULL)
-        {
+    if (start < right) {
+        if (left_store != NULL) {
             *left_store = start;
         }
         int perm = (table[start++] & PTE_USER);
-        while (start < right && (table[start] & PTE_USER) == perm)
-        {
+        while (start < right && (table[start] & PTE_USER) == perm) {
             start++;
         }
-        if (right_store != NULL)
-        {
+        if (right_store != NULL) {
             *right_store = start;
         }
         return perm;
     }
     return 0;
+}
+
+/**
+ * @brief Sign-extend an Sv39 virtual address (bit 38 is copied into bits 63..39).
+ * @param va 39-bit virtual address assembled from the table indices
+ * @return the canonical 64-bit form of the address
+ */
+static uintptr_t sv39_canonical(uintptr_t va) {
+    return (va & ((uintptr_t)1 << 38)) ? (va | 0xFFFFFF8000000000UL) : va;
+}
+
+//lab5 function1 2414007
+/**
+ * @fn void print_pgdir(void)
+ * @brief Print the page table that is currently active (the one in satp), run by run.
+ *
+ * The three levels of the Sv39 table are walked from the root. At each level, consecutive valid
+ * entries with the same permission are printed as one line "<level>(<count>) <from>-<to> <size>
+ * <perm>", indented by level, using get_pgtable_items() and perm2str(). An entry that grants
+ * R/W/X is a leaf (a gigapage, megapage or page); an entry without them points to the next-level
+ * table and is followed. Called by sys_pgdir() for the user program that wants to see its mapping.
+ * @note The active table is found through satp, so the output is the caller's table when it is
+ *       called from a system call, and the boot table in a kernel thread.
+ */
+void print_pgdir(void) {
+    pde_t *root = (pde_t *)KADDR((uintptr_t)(read_csr(satp) & 0xFFFFFFFFFFFUL) << PGSHIFT);
+    size_t l2, r2 = 0, l1, r1, l0, r0;
+    int perm;
+
+    cprintf("-------------------- BEGIN --------------------\n");
+    while ((perm = get_pgtable_items(0, NPDEENTRY, r2, root, &l2, &r2)) != 0) {
+        cprintf("PDE2(%03x) %016lx-%016lx %09lx %s\n", (int)(r2 - l2),
+                sv39_canonical((uintptr_t)l2 << PDX1SHIFT),
+                sv39_canonical((uintptr_t)r2 << PDX1SHIFT), (unsigned long)(r2 - l2) << PDX1SHIFT,
+                perm2str(perm));
+        if (perm & (PTE_R | PTE_W | PTE_X)) {
+            continue;  // a gigapage: no lower level
+        }
+        for (size_t i2 = l2; i2 < r2; i2++) {
+            pde_t *pd1 = (pde_t *)KADDR(PDE_ADDR(root[i2]));
+            r1 = 0;
+            while ((perm = get_pgtable_items(0, NPDEENTRY, r1, pd1, &l1, &r1)) != 0) {
+                uintptr_t base = (uintptr_t)i2 << PDX1SHIFT;
+                cprintf("  PDE1(%03x) %016lx-%016lx %09lx %s\n", (int)(r1 - l1),
+                        sv39_canonical(base + ((uintptr_t)l1 << PDX0SHIFT)),
+                        sv39_canonical(base + ((uintptr_t)r1 << PDX0SHIFT)),
+                        (unsigned long)(r1 - l1) << PDX0SHIFT, perm2str(perm));
+                if (perm & (PTE_R | PTE_W | PTE_X)) {
+                    continue;  // a megapage
+                }
+                for (size_t i1 = l1; i1 < r1; i1++) {
+                    pte_t *pt = (pte_t *)KADDR(PDE_ADDR(pd1[i1]));
+                    r0 = 0;
+                    while ((perm = get_pgtable_items(0, NPTEENTRY, r0, pt, &l0, &r0)) != 0) {
+                        uintptr_t base0 = base + ((uintptr_t)i1 << PDX0SHIFT);
+                        cprintf("    PTE(%03x) %016lx-%016lx %09lx %s\n", (int)(r0 - l0),
+                                sv39_canonical(base0 + ((uintptr_t)l0 << PTXSHIFT)),
+                                sv39_canonical(base0 + ((uintptr_t)r0 << PTXSHIFT)),
+                                (unsigned long)(r0 - l0) << PTXSHIFT, perm2str(perm));
+                    }
+                }
+            }
+        }
+    }
+    cprintf("--------------------- END ---------------------\n");
 }

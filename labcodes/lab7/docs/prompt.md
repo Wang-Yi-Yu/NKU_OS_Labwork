@@ -220,3 +220,72 @@ void rcu_check(void);
 ````
 
 ### 2.3 2411622-张雨函
+
+以下提示词按依赖关系使用：先完成条件变量，再使用条件变量完成管程版哲学家就餐，最后整理信号量、等待队列和调度机制的理解题。三个提示词只覆盖 Lab7 基础任务，不涉及 Challenge 1 和 Challenge 2。
+
+**功能模块一：条件变量功能**
+
+~~~markdown
+[PROMPT]
+**任务**：修改 kern/sync/monitor.c，在 //lab7 function1 标记处实现 cond_wait() 和 cond_signal()。使用 monitor_t 的 mutex、next、next_count 和 condvar_t 的 sem、count、owner，实现 Hoare 风格条件变量。保留 monitor_init()、monitor_free() 和现有数据结构，不修改 sem.c、wait.c、哲学家代码和 Challenge。
+
+**操作要求**：必须直接修改实际文件。先依据 monitor.h、sem.h、wait.h、sem.c 的真实定义设计；不得忙等待、不得直接维护等待队列、不得新增系统调用、不得改变死锁探测钩子语义。
+
+**输出要求**：补全代码并说明空 signal、多个等待者、唤醒和通知者交接的行为。
+
+[RELY]
+condvar_t 的 sem 初值为 0，count 表示等待者数量，owner 指向所属管程。monitor_t 的 mutex 初值为 1，next 初值为 0，next_count 表示等待 next 的通知者数量。up() 和 down() 已封装睡眠、唤醒和调度。
+
+[GUARANTEE]
+实现：
+void cond_wait(condvar_t *cvp);
+void cond_signal(condvar_t *cvp);
+不得修改结构体和公开接口。
+
+[SPECIFICATION]
+cond_wait 的前置条件是当前线程持有所属管程。它必须先增加 count，再根据 next_count 通过 next 或 mutex 释放管程，然后在 cvp->sem 上阻塞；被唤醒后减少 count 并返回，不能无条件重新获取 mutex。cond_signal 在 count 为 0 时必须完全不改变状态；count 大于 0 时只能唤醒一个等待者，增加 next_count，在 next 上等待被唤醒线程交还管程后恢复并减少 next_count。不得忙等待，释放管程和进入等待之间不得出现丢失通知窗口。
+~~~
+
+**功能模块二：基于管程的哲学家就餐功能**
+
+~~~markdown
+[PROMPT]
+**任务**：修改 kern/sync/check_sync.c，在 //lab7 function2 标记处实现 phi_test_condvar()、phi_take_forks_condvar() 和 phi_put_forks_condvar()，用 mtp->mutex 和 mtp->cv[i] 完成五名哲学家的管程同步。保留已有信号量版本、线程函数、check_sync() 和测试注入接口，不实现 Challenge。
+
+**操作要求**：先阅读 phi_test_sema()、phi_take_forks_sema()、phi_put_forks_sema()。保持函数名、参数和 static 属性。所有 state_condvar[] 的读写必须受管程保护；条件不满足时必须 cond_wait()，不得忙等待。退出管程时 next_count 大于 0 则 up(next)，否则 up(mutex)。
+
+**输出要求**：直接修改实际文件，说明状态转换、资源判定和左右邻居唤醒过程，并通过 tools/test_lab7.c 验证。
+
+[RELY]
+N 为 5；LEFT、RIGHT 宏依赖参数 i；状态为 THINKING、HUNGRY、EATING。state_condvar[N] 是共享状态，mtp->cv[i] 是哲学家 i 的条件变量。只有自身 HUNGRY 且左右邻居都不是 EATING 时才能进餐。
+
+[GUARANTEE]
+实现：
+static void phi_test_condvar(int i);
+static void phi_take_forks_condvar(int i);
+static void phi_put_forks_condvar(int i);
+允许增加本文件内的 static 管程退出辅助函数，不得新增全局同步原语。
+
+[SPECIFICATION]
+phi_test_condvar 必须在管程内检查自身为 HUNGRY 且两侧非 EATING，先写入 EATING 再 signal(cv[i])；否则不改变状态。phi_take_forks_condvar 必须进入管程、设为 HUNGRY、测试条件，失败时在 cv[i] 上阻塞，唤醒后以 EATING 状态退出管程。phi_put_forks_condvar 必须设自身为 THINKING，并在同一管程内依次检查 LEFT 和 RIGHT。相邻哲学家不得同时 EATING，等待不得通过轮询完成。
+~~~
+
+**功能模块三：内核同步基础设施理解题**
+
+~~~markdown
+[PROMPT]
+**任务**：不修改内核代码，阅读 kern/sync/sem.h、sem.c、wait.h、wait.c、kern/schedule/sched.c 和进程状态定义，完成可放入 docs/report.md 的同步基础设施分析。说明线程 A 在 down(&sem) 资源不可用时阻塞、线程 B 执行 up(&sem)、线程 A 最终重新获得 CPU 并继续执行的完整过程。不要实现 Challenge 1/2。
+
+**操作要求**：以当前仓库真实函数签名和控制流为准。当前接口是 wait_current_set(queue, wait, wait_state)、wakeup_wait(queue, wait, wakeup_flags, del)、wakeup_first(queue, wakeup_flags, del)；若教材原型不同，以当前头文件为准。不得修改 sem.c、wait.c 和调度器。
+
+**输出要求**：按数据结构、阻塞路径、唤醒路径、重新调度、接口对应关系和并发保证组织说明，必须给出完整时间线，并解释关中断如何避免丢失唤醒。
+
+[RELY]
+semaphore_t 的基础字段是 value 和 wait_queue；is_mutex、owner 属于 Challenge 扩展。__down() 在关中断区检查 value，资源不足时调用 wait_current_set() 设置 PROC_SLEEPING、入队并在恢复中断后 schedule()。__up() 在关中断区取队首并调用 wakeup_wait()；wakeup_proc() 只使目标线程可运行，线程仍需等待调度器选择。__down() 从 schedule() 返回后调用 wait_current_del() 并检查 wakeup_flags。
+
+[GUARANTEE]
+报告必须说明 semaphore_t、wait_queue_t、wait_t、down()、up()、try_down()、wakeup_proc()、schedule() 的职责，并给出线程 A 的完整阻塞到恢复时序；不修改内核实现。
+
+[SPECIFICATION]
+资源可用时 down() 在关中断区减一并返回；资源不可用时必须先在关中断区入队并设置睡眠状态，再开中断和调度。up() 无等待者时增加 value，有等待者时移除并唤醒队首且不再增加 value。必须区分唤醒和获得 CPU，说明 local_intr_save() 覆盖检查到入队区间以防止 B 在 A 入队前错过等待者。try_down() 失败时返回 false，不入队、不睡眠、不调度。
+~~~

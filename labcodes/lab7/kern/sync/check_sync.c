@@ -35,7 +35,7 @@
 #define EATING 2
 /** @brief Number of meals each philosopher eats before the thread quits. */
 #define TIMES 4
-/** @brief Time of one thinking or eating period, in timer ticks (10 ms each); passed to do_sleep(). */
+/** @brief Length of one thinking or eating period in timer ticks (10 ms each), for do_sleep(). */
 #define SLEEP_TIME 10
 
 //-----------------philosopher problem using monitor ------------
@@ -102,9 +102,9 @@ void drop_chopsticks(int i)
 //---------- philosophers problem using semaphore ----------------------
 /** @brief State (THINKING, HUNGRY or EATING) of each philosopher in the semaphore version. */
 int state_sema[N];
-/** @brief Mutex (initial value 1) that protects state_sema[] and makes the test and the state change atomic. */
+/** @brief Mutex (initial value 1) that protects state_sema[]; makes test and change atomic. */
 semaphore_t mutex;
-/** @brief One semaphore per philosopher (initial value 0): philosopher i sleeps on s[i] until it may eat. */
+/** @brief One semaphore per philosopher (initial value 0): philosopher i sleeps on s[i] to eat. */
 semaphore_t s[N];
 
 /** @brief PCBs of the philosopher threads of the semaphore version, filled in by check_sync(). */
@@ -113,8 +113,8 @@ struct proc_struct *philosopher_proc_sema[N];
 /**
  * @brief Let philosopher i eat if it is hungry and neither neighbour is eating (semaphore version).
  *
- * If the condition holds the state becomes EATING and s[i] is upped, which either lets philosopher i
- * pass its own down(&s[i]) at once or wakes it up if it already sleeps there.
+ * If the condition holds the state becomes EATING and s[i] is upped, which either lets
+ * philosopher i pass its own down(&s[i]) at once or wakes it up if it already sleeps there.
  * @param i number of the philosopher, 0 to N-1
  * @note Must be called with `mutex` held.
  */
@@ -146,7 +146,8 @@ void phi_take_forks_sema(int i) /* i：哲学家号码从0到N-1 */
  * @brief Philosopher i puts both forks down (semaphore version).
  *
  * Enters the critical section, sets its state to THINKING, tests the left and then the right
- * neighbour (either may have been waiting for a fork of philosopher i), and leaves the critical section.
+ * neighbour (either may have been waiting for a fork of philosopher i), and leaves the critical
+ * section.
  * @param i number of the philosopher, 0 to N-1
  */
 void phi_put_forks_sema(int i) /* i：哲学家号码从0到N-1 */
@@ -190,7 +191,7 @@ int philosopher_using_semaphore(void *arg) /* i：哲学家号码，从0到N-1 *
 
 /** @brief PCBs of the philosopher threads of the monitor version, filled in by check_sync(). */
 struct proc_struct *philosopher_proc_condvar[N];  // N philosopher
-/** @brief State (THINKING, HUNGRY or EATING) of each philosopher in the monitor version; only accessed inside the monitor. */
+/** @brief State (THINKING, HUNGRY or EATING) of each philosopher; only used inside the monitor. */
 int state_condvar[N];  // the philosopher's state: EATING, HUNGARY, THINKING
 /**
  * @brief The monitor of the monitor version, and a pointer to it (@c mtp).

@@ -126,7 +126,8 @@ void synchronize_rcu(void) {
         schedule();
         // schedule() keeps a runnable caller on the run queue, so it will not select idleproc.
         // One direct switch gives idleproc the context-switch quiescent state.
-        if (idleproc != current && idleproc->rcu_gp_seen < target && idleproc->rcu_read_depth == 0) {
+        if (idleproc != current && idleproc->rcu_gp_seen < target &&
+            idleproc->rcu_read_depth == 0) {
             sched_switch_idle();
         }
         local_intr_save(intr_flag);

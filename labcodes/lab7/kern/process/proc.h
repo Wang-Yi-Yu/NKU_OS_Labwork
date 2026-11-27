@@ -108,8 +108,8 @@ struct proc_struct {
     skew_heap_entry_t lab6_run_pool;         // lab6 only: the entry in the Stride run pool
     uint32_t lab6_stride;                    // lab6 only: the current stride of the process
     uint32_t lab6_priority;  // lab6 only: priority, set by lab6_set_priority(uint32_t)
-    int rcu_read_depth;                      // lab7 RCU: nesting of rcu_read_lock(); 0 is a quiescent reader
-    unsigned rcu_gp_seen;                    // lab7 RCU: newest grace period this process has passed
+    int rcu_read_depth;      // lab7 RCU: nesting of rcu_read_lock(); 0 is a quiescent reader
+    unsigned rcu_gp_seen;    // lab7 RCU: newest grace period this process has passed
 };
 
 /** @brief Flag in proc_struct::flags: the process has been asked to exit (set by do_kill). */

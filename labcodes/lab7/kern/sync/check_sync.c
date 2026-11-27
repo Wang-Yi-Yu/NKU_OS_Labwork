@@ -202,7 +202,7 @@ int state_condvar[N];  // the philosopher's state: EATING, HUNGARY, THINKING
  */
 monitor_t mt, *mtp = &mt;  // monitor
 
-//lab7 function2 YOUR CODE
+//lab7 function2 2411622
 
 /**
  * @brief Leave the monitor: hand it to a suspended signaler, or unlock it.

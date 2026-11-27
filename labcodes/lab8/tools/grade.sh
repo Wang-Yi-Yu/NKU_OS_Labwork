@@ -296,7 +296,10 @@ osimg=$(make_print ucoreimg)
 swapimg=$(make_print swapimg)
 
 ## set default qemu-options
-qemuopts="-machine virt -nographic -bios default -device loader,file=bin/ucore.img,addr=0x80200000"
+# QEMU 8.2 (OpenSBI v1.3, fw_dynamic) must be given the kernel with -kernel. The old
+# "-device loader,file=bin/ucore.img,addr=0x80200000" leaves "Domain0 Next Address" at 0, so the
+# kernel would never start.
+qemuopts="-machine virt -nographic -bios default -kernel bin/ucore.img"
 
 ## The injected files change contents without touching the target timestamps,
 ## so drop the previous artifacts to force a full rebuild of the injected

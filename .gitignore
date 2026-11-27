@@ -2,6 +2,9 @@
 bin/
 obj/
 
+# lab8: directory that `make` fills with the user programs before mksfs packs it into sfs.img
+disk0/
+
 # make grade / GDB 调试临时文件
 .gdb.in
 .qemu.out
